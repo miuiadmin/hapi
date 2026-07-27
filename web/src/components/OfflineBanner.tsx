@@ -1,11 +1,13 @@
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { useTranslation } from '@/lib/use-translation'
 
-export function OfflineBanner() {
+export function OfflineBanner({ sseConnected }: { sseConnected: boolean }) {
     const { t } = useTranslation()
     const isOnline = useOnlineStatus()
 
-    if (isOnline) {
+    // navigator.onLine can report offline while the hub is still reachable
+    // (e.g. Telegram WebView), so only show when the SSE stream is down too
+    if (isOnline || sseConnected) {
         return null
     }
 

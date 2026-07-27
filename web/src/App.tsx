@@ -141,6 +141,7 @@ function AppInner() {
     const { isSyncing, startSync, endSync } = useSyncingState()
     const [sseDisconnected, setSseDisconnected] = useState(false)
     const [sseDisconnectReason, setSseDisconnectReason] = useState<string | null>(null)
+    const [sseConnected, setSseConnected] = useState(false)
     const syncTokenRef = useRef(0)
     const isFirstConnectRef = useRef(true)
     const baseUrlRef = useRef(baseUrl)
@@ -204,6 +205,7 @@ function AppInner() {
 
     const handleSseConnect = useCallback(() => {
         // Clear disconnected state on successful connection
+        setSseConnected(true)
         setSseDisconnected(false)
         setSseDisconnectReason(null)
 
@@ -244,6 +246,7 @@ function AppInner() {
     }, [api, queryClient, selectedSessionId, startSync, endSync])
 
     const handleSseDisconnect = useCallback((reason: string) => {
+        setSseConnected(false)
         // Only show reconnecting banner if we've already connected once
         if (!isFirstConnectRef.current) {
             setSseDisconnected(true)
@@ -457,7 +460,7 @@ function AppInner() {
                     reason={sseDisconnectReason}
                 />
                 <VoiceErrorBanner />
-                <OfflineBanner />
+                <OfflineBanner sseConnected={sseConnected} />
                 <div className="h-full min-h-0 flex flex-col">
                     <Outlet />
                 </div>
