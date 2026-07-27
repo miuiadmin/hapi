@@ -75,8 +75,10 @@ describe('CursorExtensionAdapter', () => {
         });
         expect(handled).toBe(true);
         await expect(pending).resolves.toEqual({
-            outcome: 'answered',
-            answers: [{ questionId: 'q1', selectedOptionIds: ['opt-a'] }]
+            outcome: {
+                outcome: 'answered',
+                answers: [{ questionId: 'q1', selectedOptionIds: ['opt-a'] }]
+            }
         });
     });
 
@@ -90,7 +92,7 @@ describe('CursorExtensionAdapter', () => {
             decision: 'denied'
         });
 
-        await expect(pending).resolves.toEqual({ outcome: 'cancelled' });
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
     });
 
     it('resolves create_plan approval as accepted', async () => {
@@ -106,7 +108,7 @@ describe('CursorExtensionAdapter', () => {
             decision: 'approved'
         });
 
-        await expect(pending).resolves.toEqual({ outcome: 'accepted' });
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'accepted' } });
     });
 
     it('resolves create_plan denial as rejected', async () => {
@@ -119,7 +121,7 @@ describe('CursorExtensionAdapter', () => {
             decision: 'denied'
         });
 
-        await expect(pending).resolves.toEqual({ outcome: 'rejected' });
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'rejected' } });
     });
 
     it('returns false from handlePermissionResponse for unrelated permission ids', async () => {
@@ -198,8 +200,8 @@ describe('CursorExtensionAdapter', () => {
 
         await adapter.cancelAll('User aborted');
 
-        await expect(askPending).resolves.toEqual({ outcome: 'cancelled' });
-        await expect(planPending).resolves.toEqual({ outcome: 'cancelled' });
+        await expect(askPending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+        await expect(planPending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
         expect(getAgentState().requests).toEqual({});
         expect(getAgentState().completedRequests).toMatchObject({
             'q-cancel': { status: 'canceled', decision: 'abort' },

@@ -101,21 +101,25 @@ export class CursorExtensionAdapter {
         this.pending.delete(response.id);
 
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied');
+        // Cursor ACP extension methods expect the result nested as
+        // { outcome: { outcome: ... } }; a flat result reads as cancelled.
         if (pending.tool === 'CursorAskQuestion') {
             if (decision === 'abort' || decision === 'denied') {
-                pending.respond({ outcome: 'cancelled' });
+                pending.respond({ outcome: { outcome: 'cancelled' } });
             } else {
                 pending.respond({
-                    outcome: 'answered',
-                    answers: formatQuestionAnswers(pending.arguments, response.answers)
+                    outcome: {
+                        outcome: 'answered',
+                        answers: formatQuestionAnswers(pending.arguments, response.answers)
+                    }
                 });
             }
         } else if (decision === 'abort') {
-            pending.respond({ outcome: 'cancelled' });
+            pending.respond({ outcome: { outcome: 'cancelled' } });
         } else if (decision === 'denied') {
-            pending.respond({ outcome: 'rejected' });
+            pending.respond({ outcome: { outcome: 'rejected' } });
         } else {
-            pending.respond({ outcome: 'accepted' });
+            pending.respond({ outcome: { outcome: 'accepted' } });
         }
 
         const status = response.approved ? 'approved' : 'denied';
@@ -205,11 +209,7 @@ export class CursorExtensionAdapter {
         this.pending.clear();
 
         for (const [id, pending] of entries) {
-            pending.respond(
-                pending.tool === 'CursorAskQuestion'
-                    ? { outcome: 'cancelled' }
-                    : { outcome: 'cancelled' }
-            );
+            pending.respond({ outcome: { outcome: 'cancelled' } });
 
             this.session.updateAgentState((currentState) => {
                 const requestEntry = currentState.requests?.[id];
