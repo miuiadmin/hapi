@@ -317,7 +317,8 @@ export function ScratchlistDrawerHost(props: {
     onDelete: ReturnType<typeof useScratchlist>['remove']
     onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
     /**
-     * Called when the operator promotes an entry to the composer.
+     * Called when the operator promotes an entry to the composer, or
+     * when a promote-to-queue send is accepted.
      *
      * Promoting means "I want to send this for real now" - so the host
      * MUST exit scratchlist mode, otherwise the next composer submit
@@ -336,10 +337,15 @@ export function ScratchlistDrawerHost(props: {
         // Promote-to-queue bypasses the scratchlist-mode wrapper by
         // calling props.onSend directly (the chat send), so the queue
         // entry lands in the conversation regardless of scratchlist
-        // mode. Mode itself stays on - the operator may still be
-        // capturing related notes.
-        return await props.onSend(text)
-    }, [props.onSend])
+        // mode. On an accepted send, exit scratchlist mode (same as
+        // promote-to-composer) so the operator can immediately type a
+        // follow-up; on a rejected send, keep the mode and the entry.
+        const sent = await props.onSend(text)
+        if (sent) {
+            props.onExitScratchlistMode()
+        }
+        return sent
+    }, [props.onSend, props.onExitScratchlistMode])
     return (
         <ScratchlistDrawer
             entries={props.entries}
