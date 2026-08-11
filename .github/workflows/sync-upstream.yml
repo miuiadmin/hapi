@@ -1,0 +1,54 @@
+# Daily upstream sync.
+# This fork only ADDS files (patches/, workflows/, install.sh, README) on top of
+# upstream — it never modifies tracked source — so merging upstream/main is always
+# conflict-free. When upstream advances, this merges + pushes, which triggers build.yml.
+name: sync-upstream
+
+on:
+  schedule:
+    # daily ~06:37 UTC (off the :00/:30 marks)
+    - cron: '37 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: fetch upstream
+        run: |
+          git remote add upstream https://github.com/tiann/hapi.git
+          git fetch upstream main
+
+      - name: merge upstream/main
+        id: merge
+        run: |
+          BEFORE=$(git rev-parse HEAD)
+          git merge upstream/main --no-edit
+          AFTER=$(git rev-parse HEAD)
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "advanced: $BEFORE -> $AFTER"
+          else
+            echo "already up to date"
+          fi
+
+      - name: push
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin main

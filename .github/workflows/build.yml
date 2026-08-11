@@ -1,0 +1,111 @@
+# Build hapi with the embedded tunwg/WireGuard tunnel component stripped, for all
+# platforms, and publish to a rolling "latest" release.
+#
+# Why: hapi embeds tunwg (github.com/tiann/tunwg, a WireGuard userspace tunnel) for
+# its optional public-relay feature. That binary makes network scanners flag the word
+# "wireguard", which some corporate infosec policies prohibit. Self-hosted-hub setups
+# don't use the relay, so stripping it costs nothing and produces a scanner-clean binary.
+#
+# Safety net: the verify step greps every produced exe for "wireguard" and fails the
+# build if any hit is found — so if a future hapi version re-introduces it, we notice.
+name: build
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '43 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: apply strip patch
+        run: git apply --verbose patches/strip-tunwg.patch
+
+      - name: install
+        run: bun install
+
+      - name: build all platforms
+        run: bun run build:single-exe:all
+
+      - name: verify wireguard stripped (fail if any hit)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            n=$(grep -aci wireguard "$f" || true)
+            echo "::notice::$f wireguard hits = $n"
+            [ "$n" -ne 0 ] && { echo "::error::$f still contains wireguard"; fail=1; }
+          done < <(find cli/dist-exe -type f \( -name hapi -o -name 'hapi.exe' \))
+          exit "$fail"
+
+      - name: stage artifacts
+        run: |
+          set -e
+          mkdir -p artifacts
+          cd cli/dist-exe
+          for d in bun-*/; do
+            plat="${d%/}"
+            short="${plat#bun-}"        # darwin-arm64, linux-x64, win32-x64, ...
+            if [ -f "${d}hapi" ]; then
+              cp "${d}hapi" "$GITHUB_WORKSPACE/artifacts/hapi-${short}"
+            fi
+            if [ -f "${d}hapi.exe" ]; then
+              cp "${d}hapi.exe" "$GITHUB_WORKSPACE/artifacts/hapi-${short}.exe"
+            fi
+          done
+          cd "$GITHUB_WORKSPACE/artifacts"
+          chmod +x hapi-* 2>/dev/null || true
+          sha256sum hapi-* | sed 's#  #  #' > checksums.sha256
+          ls -la
+
+      - name: version
+        id: ver
+        run: echo "v=$(jq -r .version cli/package.json)" >> "$GITHUB_OUTPUT"
+
+      - name: create rolling latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: hapi ${{ steps.ver.outputs.v }} (stripped)
+          target_commitish: main
+          body: |
+            Automated build of **hapi ${{ steps.ver.outputs.v }}** with the embedded
+            `tunwg` / WireGuard tunnel component stripped.
+
+            Built from upstream `tiann/hapi` @ ${{ github.sha }}.
+            The strip patch is [`patches/strip-tunwg.patch`](https://github.com/${{ github.repository }}/blob/main/patches/strip-tunwg.patch).
+
+            ## Install (macOS / Linux)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+            ```
+
+            ## Verify
+            Each binary is scanner-clean: `grep -aci wireguard hapi-*` → `0`.
+            See `checksums.sha256`.
+
+            ## What's removed
+            Only the embedded `tunwg` binary (used solely by the optional
+            `hapi hub --relay` public-relay feature). All other features — self-hosted
+            hub, runner, sessions, web UI — are identical to upstream.
+          files: |
+            artifacts/*
+          make_latest: true
+          prerelease: false
