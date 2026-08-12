@@ -12,7 +12,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/miuiadmin/hapi/main/install.sh | bash
 #
 # Non-interactive (CI / pre-seeded):
-#   HAPI_API_URL=https://hub.example.nip.io CLI_API_TOKEN=xxxx \
+#   HAPI_API_URL=https://hapi.supertoken.lol CLI_API_TOKEN=xxxx \
 #     curl -fsSL .../install.sh | bash
 set -euo pipefail
 
@@ -95,7 +95,7 @@ fi
 
 # ── 7. hub URL + token (interactive unless pre-seeded) ───────────────────────
 if [ -z "${HAPI_API_URL:-}" ]; then
-  ask "hapi hub URL (e.g. https://hapi.<ip>.nip.io): " HAPI_API_URL n
+  ask "hapi hub URL (e.g. https://hapi.supertoken.lol): " HAPI_API_URL n
 fi
 if [ -z "${CLI_API_TOKEN:-}" ]; then
   ask "CLI API token (input hidden): " CLI_API_TOKEN y

@@ -37,7 +37,7 @@ your hapi hub (the token is shown once when the hub is deployed).
 ### Non-interactive (pre-seed)
 
 ```bash
-HAPI_API_URL=https://hapi.<ip>.nip.io CLI_API_TOKEN=xxxx \
+HAPI_API_URL=https://hapi.supertoken.lol CLI_API_TOKEN=xxxx \
   curl -fsSL https://raw.githubusercontent.com/miuiadmin/hapi/main/install.sh | bash
 ```
 
@@ -52,7 +52,7 @@ For the install and the runner to work from a restricted corporate network, allo
 | `github.com` | repo + release metadata |
 | `raw.githubusercontent.com` | `install.sh` download |
 | `objects.githubusercontent.com` | release binary download |
-| **your hub host** (e.g. `hapi.<ip>.nip.io`) | the hapi hub the runner connects to |
+| **your hub host** (e.g. `hapi.supertoken.lol`) | the hapi hub the runner connects to |
 
 The runner maintains a single persistent HTTPS connection to your hub.
 
