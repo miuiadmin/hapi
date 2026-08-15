@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  workflows: write   # upstream sometimes touches .github/workflows/* (e.g. v0.27.3 test.yml) — GITHUB_TOKEN needs this to push those merges
 
 concurrency:
   group: sync-upstream
