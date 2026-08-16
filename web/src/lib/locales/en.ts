@@ -235,7 +235,7 @@ export default {
   'session.action.pinFailed': 'Could not update pin',
   'sessions.pinnedSection': 'Pinned sessions',
   'session.action.export': 'Export conversation',
-  'session.action.syncCodex': 'Sync from Codex',
+  'session.action.syncCodex': 'Sync Codex',
   'session.action.syncPi': 'Sync Pi history',
   'session.action.archive': 'Archive',
   'session.action.reopen': 'Reopen',
@@ -275,6 +275,9 @@ export default {
   'dialog.rename.save': 'Save',
   'dialog.rename.saving': 'Saving…',
   'dialog.rename.error': 'Failed to rename. Please try again.',
+  'dialog.rename.generate': 'Generate',
+  'dialog.rename.generating': 'Generating…',
+  'dialog.rename.generateError': 'Failed to generate a title. Please try again.',
   'dialog.archive.title': 'Archive Session',
   'dialog.archive.description': 'Are you sure you want to archive "{name}"? This will disconnect active session.',
   'dialog.archive.confirm': 'Archive',
@@ -502,6 +505,14 @@ export default {
   'file.error.diffUnavailable': 'Diff unavailable.',
   'file.error.diffUnavailableWithDetail': 'Diff unavailable: {error}',
 
+  // Inline media
+  'media.displayed.image': 'Displayed image',
+  'media.displayed.video': 'Displayed video',
+  'media.displayed.audio': 'Displayed audio',
+  'media.displayed.file': 'Displayed file',
+  'media.displayed.header': '{label}: {fileName}',
+  'media.displayed.unavailable': '{label} is unavailable. {error}',
+
   // Tool card
   'tool.askQuestion': 'Other',
   'tool.edit': 'Edit',
@@ -688,6 +699,8 @@ export default {
   'reconnecting.reason.closed': 'stream closed',
   'reconnecting.reason.heartbeatTimeout': 'heartbeat timeout',
   'reconnecting.reason.visibilityRecovery': 'resuming after background',
+  'reconnecting.reason.connectTimeout': 'connect timeout',
+  'reconnecting.reason.transportError': 'stream error',
   'pwa.update.title': 'New version available',
   'pwa.update.body': 'Reload to get the latest HAPI',
   'pwa.update.reload': 'Reload',

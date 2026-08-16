@@ -396,6 +396,7 @@ function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
 
 type SessionChatProps = {
     api: ApiClient
+    titleSuggestionAvailable?: boolean
     session: Session
     cursorChatOnDisk?: boolean
     reopenDisabledReason?: string
@@ -1591,6 +1592,7 @@ function SessionChatInner(props: SessionChatProps) {
                 onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
                 terminalActive={terminalVisible}
                 api={props.api}
+                titleSuggestionAvailable={props.titleSuggestionAvailable}
                 canReopen={inactiveCanResume}
                 reopenDisabledReason={props.reopenDisabledReason}
                 reopenHint={props.reopenHint}

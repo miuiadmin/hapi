@@ -11,8 +11,8 @@ export default {
   'message.copy': '复制',
   'message.copied': '已复制',
   'message.info': '消息详情',
-  'message.fork': 'Fork',
-  'message.rewind': 'Rewind',
+  'message.fork': '分叉',
+  'message.rewind': '回退',
   'message.fork.confirmTitle': '分叉对话',
   'message.fork.confirmDescription': '从此处创建新会话？\n当前会话不会被修改。',
   'message.fork.confirming': '分叉中…',
@@ -235,7 +235,7 @@ export default {
   'session.action.pinFailed': '无法更新置顶状态',
   'sessions.pinnedSection': '置顶会话',
   'session.action.export': '导出对话',
-  'session.action.syncCodex': '从 Codex 同步',
+  'session.action.syncCodex': '同步 Codex',
   'session.action.syncPi': '同步 Pi 历史',
   'session.action.archive': '归档',
   'session.action.reopen': '重新打开',
@@ -275,6 +275,9 @@ export default {
   'dialog.rename.save': '保存',
   'dialog.rename.saving': '保存中…',
   'dialog.rename.error': '重命名失败，请重试。',
+  'dialog.rename.generate': '生成',
+  'dialog.rename.generating': '生成中…',
+  'dialog.rename.generateError': '标题生成失败，请重试。',
 
   'dialog.archive.title': '归档会话',
   'dialog.archive.description': '确定要归档 "{name}" 吗？这将断开活动会话。',
@@ -501,6 +504,14 @@ export default {
   'file.error.diffUnavailable': 'Diff 不可用。',
   'file.error.diffUnavailableWithDetail': 'Diff 不可用：{error}',
 
+  // 内联媒体
+  'media.displayed.image': '展示图片',
+  'media.displayed.video': '展示视频',
+  'media.displayed.audio': '展示音频',
+  'media.displayed.file': '展示文件',
+  'media.displayed.header': '{label}：{fileName}',
+  'media.displayed.unavailable': '{label}不可用：{error}',
+
   // Tool card
   'tool.askQuestion': '其他',
   'tool.edit': '编辑',
@@ -687,6 +698,8 @@ export default {
   'reconnecting.reason.closed': '流连接已关闭',
   'reconnecting.reason.heartbeatTimeout': '心跳超时',
   'reconnecting.reason.visibilityRecovery': '后台恢复中',
+  'reconnecting.reason.connectTimeout': '连接超时',
+  'reconnecting.reason.transportError': '流连接错误',
   'pwa.update.title': '新版本可用',
   'pwa.update.body': '重新加载以获取最新版 HAPI',
   'pwa.update.reload': '重新加载',

@@ -242,6 +242,15 @@ If a remote session reports authentication failure, run `grok login --device-aut
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`), driven as an interactive PTY with hook-based permission bridging. [Google Antigravity](https://antigravity.google)
 - **Pi** (`hapi pi`) — the Pi coding agent running as `pi --mode rpc` (JSON-line RPC over piped stdio); remote-control only, no local TUI input path. [badlogic/pi-mono](https://github.com/badlogic/pi-mono)
 
+  HAPI translates a subset of Pi's TUI slash commands to native Pi RPC calls, so they work from the web chat as well:
+
+  - `/compact [instructions]` — manually compact context with optional custom summary instructions (runs Pi's `compact` RPC; the summary is rendered as a dedicated block in the chat with the token delta in its header).
+  - `/session` — show session stats (messages, tokens, cost, context usage).
+  - `/model [modelId]` — show the current model and available models, or switch with `/model <modelId>`.
+  - `/help` — list the commands supported from HAPI.
+
+  Pi's extension commands and prompt templates (discovered via `get_commands`) keep working from the `/` menu, and skills are available through `$skill-name` like other ACP flavors. Other Pi TUI builtins (e.g. `/tree`, `/export`, `/reload`) cannot run over RPC; typing them in web shows an explicit "terminal-only" notice instead of silently forwarding the text to the model.
+
 ## Related
 
 - [How it Works](./how-it-works.md) - Architecture and data flow

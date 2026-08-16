@@ -252,6 +252,20 @@ describe('getEventPresentation — recap (away_summary)', () => {
     })
 })
 
+describe('getEventPresentation — compact-summary', () => {
+    it('keeps the label short (the chat renders the full summary as a block)', () => {
+        const result = getEventPresentation({
+            type: 'compact-summary',
+            summary: '## Goal\nLong summary content',
+            tokensBefore: 1000,
+            estimatedTokensAfter: 120
+        })
+
+        expect(result.icon).toBe('📦')
+        expect(result.text).toBe('Context compacted')
+    })
+})
+
 describe('formatResetTime', () => {
     it('formats a unix timestamp to a non-empty string', () => {
         const result = formatResetTime(1774278000)

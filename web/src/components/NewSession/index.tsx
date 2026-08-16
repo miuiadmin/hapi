@@ -1498,7 +1498,7 @@ export function NewSession(props: {
     )
 
     return (
-        <div className="flex flex-col divide-y divide-[var(--app-divider)]">
+        <div className="flex flex-col divide-y divide-[var(--app-divider)] [&>div]:pr-[10px] lg:[&>div]:pr-3">
             <MachineSelector
                 machines={props.machines}
                 machineId={machineId}

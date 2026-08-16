@@ -204,7 +204,18 @@ On first run, HAPI:
 | `TRANSCRIPTION_BASE_URL` | - | Settings / env | OpenAI-compatible/local transcription base URL |
 | `TRANSCRIPTION_MODEL` | - | Settings / env | Model for the OpenAI-compatible transcription endpoint |
 | `TRANSCRIPTION_API_KEY` | - | Settings / env | Optional bearer token for that endpoint |
+| `HAPI_TITLE_PROVIDER_BASE_URL` | - | - | Server-only OpenAI-compatible Chat Completions base URL for generated session titles |
+| `HAPI_TITLE_PROVIDER_API_KEY` | - | - | Server-only API key for generated session titles; never sent to the browser |
+| `HAPI_TITLE_PROVIDER_MODEL` | - | - | Server-only lightweight model used for generated session titles |
+| `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | - | Maximum title suggestions per session in the rate-limit window |
+| `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | - | Title suggestion rate-limit window in milliseconds |
 </details>
+
+The session rename dialog's **Generate** action is unavailable until all three
+`HAPI_TITLE_PROVIDER_*` variables are configured on the Hub. The provider is
+called only on demand; the existing manual rename flow does not require these
+variables. Each request sends recent visible user/assistant conversation text
+(up to 200 stored messages and a bounded prompt) to that configured provider.
 
 <details>
 <summary>settings.json example</summary>

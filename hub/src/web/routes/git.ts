@@ -228,10 +228,15 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const query = parsed.data.query?.trim() ?? ''
+        // ripgrep's gitignore-style globs use '/' as the path separator even on Windows.
+        // Accept the native separator users see in Windows paths before building the glob.
+        const normalizedQuery = isWindowsSessionPath(sessionPath)
+            ? normalizeFileSearchPath(query)
+            : query
         const limit = parsed.data.limit ?? 200
         const args = ['--files']
-        if (query) {
-            args.push('--iglob', `*${query}*`)
+        if (normalizedQuery) {
+            args.push('--iglob', `*${normalizedQuery}*`)
         }
 
         const result = await runRpc(() => engine.runRipgrep(sessionResult.sessionId, args, sessionPath))

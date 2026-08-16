@@ -307,7 +307,7 @@ function FileListSkeleton(props: { label: string; rows?: number }) {
 const SCROLL_KEY_PREFIX = 'hapi-dir-scroll-'
 
 export default function FilesPage() {
-    const { api } = useAppContext()
+    const { api, titleSuggestionAvailable = false } = useAppContext()
     const { t, locale } = useTranslation()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
@@ -473,6 +473,7 @@ export default function FilesPage() {
                 onToggleOutline={handleToggleOutline}
                 outlineActive={false}
                 api={api}
+                titleSuggestionAvailable={titleSuggestionAvailable}
                 onSessionDeleted={goBack}
                 onSessionReopened={async (newSessionId) => {
                     await transferComposerDraftThenNavigate(

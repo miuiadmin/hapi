@@ -5,6 +5,7 @@ type AppContextValue = {
     api: ApiClient
     token: string
     baseUrl: string
+    titleSuggestionAvailable?: boolean
 }
 
 const AppContext = createContext<AppContextValue | null>(null)

@@ -195,8 +195,10 @@ function handleResponse(
         resolvePendingRpc(resolver, response);
         // get_session_stats is a best-effort compatibility probe. Older Pi
         // versions may reject it, so fall back silently instead of surfacing an
-        // error event to the user on every completed turn.
-        if (command !== 'get_session_stats' && command !== 'steer') {
+        // error event to the user on every completed turn. compact/set_model
+        // are owned by the awaited slash-command/config handlers, which report
+        // their own formatted failure message.
+        if (!['get_session_stats', 'steer', 'compact', 'set_model'].includes(command)) {
             session.sendSessionEvent({ type: 'message', message: error });
         }
         if (command === 'prompt' && pendingLocalIds.length > 0) {
@@ -324,7 +326,12 @@ function handleResponse(
                                     onStartupFailure?.(new Error(`Pi startup model outcome is indeterminate: ${error.message}`));
                                     return;
                                 }
-                                logger.debug(`[pi] Startup model set_model rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);
+                                const detail = error instanceof Error ? error.message : String(error);
+                                logger.debug(`[pi] Startup model set_model rejected, keeping Pi default: ${detail}`);
+                                session.sendSessionEvent({
+                                    type: 'message',
+                                    message: `⚠️ Startup model switch failed: ${detail}`,
+                                });
                             }
                         })();
                     } else {

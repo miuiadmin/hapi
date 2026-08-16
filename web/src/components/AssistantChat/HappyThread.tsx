@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
+import { ThreadPrimitive, unstable_useThreadMessageIds, useAuiState } from '@assistant-ui/react'
+import type { ComponentProps } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { HappyRuntimeExtras } from '@/lib/assistant-runtime'
@@ -300,6 +301,32 @@ const THREAD_MESSAGE_COMPONENTS = {
     AssistantMessage: HappyAssistantMessage,
     SystemMessage: HappySystemMessage
 } as const
+
+type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.Unstable_MessageById>['components']
+
+/**
+ * Render messages by stable id instead of their current array index.
+ *
+ * Rewind can replace a non-empty transcript with an empty one in a single
+ * external-runtime update. Index-based providers may then ask assistant-ui
+ * for message 0 while its lookup table is already empty. Stable id providers
+ * unmount removed rows without consulting a stale index.
+ */
+export function ThreadMessagesById({ components }: { components: ThreadMessageComponents }) {
+    const messageIds = unstable_useThreadMessageIds()
+
+    return (
+        <>
+            {messageIds.map((messageId) => (
+                <ThreadPrimitive.Unstable_MessageById
+                    key={messageId}
+                    messageId={messageId}
+                    components={components}
+                />
+            ))}
+        </>
+    )
+}
 
 export function ConversationOutlinePanel(props: {
     items: readonly ConversationOutlineItem[]
@@ -1625,7 +1652,7 @@ export function HappyThread(props: {
                 >
                     <div
                         ref={viewportRef}
-                        className="app-scroll-y chat-scroll-y min-h-0 flex-1 overflow-x-hidden"
+                        className="app-scroll-y chat-scroll-y min-h-0 flex-1 overflow-x-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-link)]"
                         tabIndex={0}
                     >
                         <div ref={contentRef} className="chat-scroll-content mx-auto w-full max-w-content min-w-0 p-3">
@@ -1648,7 +1675,7 @@ export function HappyThread(props: {
                                 </>
                             )}
                             <div className="happy-thread-messages flex flex-col gap-3">
-                                <ThreadPrimitive.Messages components={THREAD_MESSAGE_COMPONENTS} />
+                                <ThreadMessagesById components={THREAD_MESSAGE_COMPONENTS} />
                             </div>
                         </div>
                     </div>

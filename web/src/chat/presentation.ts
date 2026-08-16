@@ -255,6 +255,11 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
     if (event.type === 'compact') {
         return { icon: '📦', text: 'Conversation compacted' }
     }
+    if (event.type === 'compact-summary') {
+        // The chat renders the full summary as a dedicated block; this label
+        // only feeds compact contexts (outline anchors, tool traces).
+        return { icon: '📦', text: 'Context compacted' }
+    }
     if (event.type === 'recap') {
         // Lowercase `recap:` intentionally mirrors Claude Code's own TUI recap label.
         const text = typeof event.text === 'string' ? event.text : ''

@@ -710,6 +710,7 @@ export function SessionListSearch(props: {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
+    const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const dateButtonRef = useRef<HTMLButtonElement>(null)
     const hasDateRange = Boolean(props.customStart && props.customEnd)
 
@@ -794,25 +795,48 @@ export function SessionListSearch(props: {
         const collapsedLabel = hasTextQuery ? `${searchLabel}: ${props.value}` : searchLabel
         return (
             <div className="relative flex items-center gap-1">
-                <button
-                    type="button"
-                    onClick={() => props.onExpandedChange(true)}
-                    className={cn(
-                        'relative flex min-w-0 max-w-[9rem] items-center gap-1 rounded-full transition-colors',
-                        hasTextQuery
-                            // Dedicated chip tokens (blue wash) so the active query stays
-                            // readable when truncated text disappears at small widths.
-                            ? 'bg-[var(--app-chat-user-chip-bg)] px-2 py-1 text-[var(--app-chat-user-chip-fg)] hover:opacity-90'
-                            : 'shrink-0 p-1.5 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]'
-                    )}
-                    title={collapsedLabel}
-                    aria-label={collapsedLabel}
-                >
-                    <SearchIcon className="h-5 w-5 shrink-0" />
+                <div className={cn(
+                    'relative flex min-w-0 items-center rounded-full transition-colors',
+                    hasTextQuery
+                        // Keep the query and its clear action inside the same compact chip.
+                        ? 'max-w-[9rem] bg-[var(--app-chat-user-chip-bg)] text-[var(--app-chat-user-chip-fg)]'
+                        : 'shrink-0'
+                )}>
+                    <button
+                        ref={collapsedButtonRef}
+                        type="button"
+                        onClick={() => props.onExpandedChange(true)}
+                        className={cn(
+                            'relative flex min-w-0 items-center gap-1 transition-colors',
+                            hasTextQuery
+                                ? 'flex-1 rounded-l-full bg-[var(--app-chat-user-chip-bg)] px-2 py-1 text-[var(--app-chat-user-chip-fg)] hover:opacity-90'
+                                : 'shrink-0 rounded-full p-1.5 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]'
+                        )}
+                        title={collapsedLabel}
+                        aria-label={collapsedLabel}
+                    >
+                        <SearchIcon className="h-5 w-5 shrink-0" />
+                        {hasTextQuery ? (
+                            <span className="min-w-0 truncate text-xs font-medium">{props.value}</span>
+                        ) : null}
+                    </button>
                     {hasTextQuery ? (
-                        <span className="min-w-0 truncate text-xs font-medium">{props.value}</span>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                props.onChange('')
+                                // The clear button unmounts with the query; keep focus on
+                                // the collapsed search trigger instead of dropping to body.
+                                collapsedButtonRef.current?.focus()
+                            }}
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-r-full bg-[var(--app-chat-user-chip-action-bg)] text-[var(--app-chat-user-chip-action-fg)] transition-colors hover:text-[var(--app-chat-user-chip-action-hover-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
+                            title={t('sessions.search.clear')}
+                            aria-label={t('sessions.search.clear')}
+                        >
+                            <XIcon className="h-3.5 w-3.5" />
+                        </button>
                     ) : null}
-                </button>
+                </div>
                 {renderDateFilter('standalone')}
             </div>
         )
@@ -870,6 +894,7 @@ function SessionItem(props: {
     onSelect: (sessionId: string) => void
     showPath?: boolean
     api: ApiClient | null
+    titleSuggestionAvailable?: boolean
     selected?: boolean
     showDetailedStatus?: boolean
     inRunningSection?: boolean
@@ -878,7 +903,18 @@ function SessionItem(props: {
 }) {
     const { t } = useTranslation()
     const { addToast } = useToast()
-    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false, inRunningSection = false, projectLabel, machineLabel } = props
+    const {
+        session: s,
+        onSelect,
+        showPath = true,
+        api,
+        titleSuggestionAvailable = false,
+        selected = false,
+        showDetailedStatus = false,
+        inRunningSection = false,
+        projectLabel,
+        machineLabel
+    } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -911,7 +947,7 @@ function SessionItem(props: {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, deleteSession, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
@@ -1042,6 +1078,8 @@ function SessionItem(props: {
                     onClose={() => setRenameOpen(false)}
                     currentName={sessionName}
                     onRename={renameSession}
+                    onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
+                    onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
                     isPending={isPending}
                 />
             ) : null}
@@ -1132,12 +1170,21 @@ export function SessionList(props: {
     renderHeader?: boolean
     headerActions?: React.ReactNode
     api: ApiClient | null
+    titleSuggestionAvailable?: boolean
     machineLabelsById?: Record<string, string>
     machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
 }) {
     const { t } = useTranslation()
-    const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, machinesById = {}, onNewSessionInDirectory } = props
+    const {
+        renderHeader = true,
+        api,
+        titleSuggestionAvailable = false,
+        selectedSessionId,
+        machineLabelsById = {},
+        machinesById = {},
+        onNewSessionInDirectory
+    } = props
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
@@ -1447,6 +1494,7 @@ export function SessionList(props: {
                                     onSelect={props.onSelect}
                                     showPath={false}
                                     api={api}
+                                    titleSuggestionAvailable={titleSuggestionAvailable}
                                     selected={s.id === selectedSessionId}
                                     showDetailedStatus={showDetailedStatus}
                                 />
@@ -1808,6 +1856,7 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
@@ -1869,6 +1918,7 @@ export function SessionList(props: {
                                                     onSelect={props.onSelect}
                                                     showPath={false}
                                                     api={api}
+                                                    titleSuggestionAvailable={titleSuggestionAvailable}
                                                     selected={s.id === selectedSessionId}
                                                     showDetailedStatus={showDetailedStatus}
                                                     inRunningSection

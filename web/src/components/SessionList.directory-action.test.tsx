@@ -193,9 +193,10 @@ describe('SessionList time filter', () => {
 
         const searchButton = screen.getByRole('button', { name: SEARCH_LABEL })
         const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
-        expect(searchButton.nextElementSibling).toBe(filterButton)
-        expect(searchButton.parentElement).toBe(filterButton.parentElement)
-        expect(searchButton.parentElement).toHaveClass('relative', 'gap-1')
+        const searchControl = searchButton.parentElement
+        expect(searchControl?.nextElementSibling).toBe(filterButton)
+        expect(searchControl?.parentElement).toBe(filterButton.parentElement)
+        expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1')
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
 
         fireEvent.click(filterButton)
@@ -959,8 +960,54 @@ describe('SessionList search toggle', () => {
         expect(collapsed).toHaveTextContent('jellybot')
         expect(collapsed.className).toContain('bg-[var(--app-chat-user-chip-bg)]')
         expect(collapsed.className).toContain('text-[var(--app-chat-user-chip-fg)]')
+        const clearButton = screen.getByRole('button', { name: 'Clear search' })
+        expect(clearButton.className).toContain('bg-[var(--app-chat-user-chip-action-bg)]')
+        expect(clearButton.className).toContain('text-[var(--app-chat-user-chip-action-fg)]')
+        expect(clearButton.className).toContain('hover:text-[var(--app-chat-user-chip-action-hover-fg)]')
         expect(screen.getByRole('button', { name: /jellybot task/ })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /Other task/ })).toBeNull()
+    })
+
+    it('clears a collapsed text filter without expanding the search control', () => {
+        const sessions = [
+            makeSession({
+                id: 'session-match',
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Matching task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-other',
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Other task', flavor: 'codex' },
+            }),
+        ]
+
+        renderWithProviders(
+            <SessionList
+                sessions={sessions}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(input, { target: { value: 'Matching' } })
+        fireEvent.blur(input)
+
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+
+        expect(screen.queryByRole('button', { name: 'Clear search' })).toBeNull()
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+        expect(screen.getByRole('button', { name: SEARCH_LABEL })).toHaveFocus()
+        expect(screen.getByRole('button', { name: /Matching task/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Other task/ })).toBeInTheDocument()
     })
 
     it('stays expanded with focus on the input after clearing the query', () => {
