@@ -50,11 +50,13 @@ jobs:
           # merge carrying them would be rejected at push (root cause of the
           # 08-13/08-14 sync failures). We keep this fork's workflow set as-is.
           git merge upstream/main --no-commit --no-ff || true
+          if [ -z "$(git rev-parse -q --verify MERGE_HEAD)" ]; then
+            echo "already up to date"; exit 0
+          fi
           if ! git diff --cached --name-only | grep -q '^\.github/workflows/'; then
-            git merge --continue 2>/dev/null || git commit --no-edit
+            git commit --no-edit
           else
             git checkout HEAD -- .github/workflows/
-            git add .github/workflows/ 2>/dev/null || true
             # also drop NEW workflow files upstream may have added
             for f in $(git diff --cached --name-only --diff-filter=A | grep '^\.github/workflows/' || true); do
               git rm --cached -q "$f" && rm -f "$f"
