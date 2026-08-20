@@ -185,7 +185,6 @@
     <string name="notif_session_not_found">Session not found on any paired hub</string>
     <string name="notif_action_failed">Couldn’t reach the hub — open the app to respond</string>
     <string name="notif_reply_failed">Reply not sent — open the app to try again</string>
-    <string name="notif_working">Contacting hub…</string>
 
     <!-- Session list (B-M2b / B-M3ce, extracted in B-M5a) -->
     <string name="sessions_section_pinned">Pinned</string>

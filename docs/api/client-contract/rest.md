@@ -59,14 +59,15 @@ Optional for v1 (endpoints exist; the v1 native scope does not require them): `P
 
 ### Messages
 
-Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMessageRequestSchema`, `QueuedStateRequestSchema` (`shared/src/apiTypes.ts`), responses `CancelMessageResponseSchema`, `SteerQueuedMessageResponseSchema` (`shared/src/schemas.ts`).
+Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMessageRequestSchema`, `QueuedStateRequestSchema` (`shared/src/apiTypes.ts`), responses `CancelMessageResponseSchema`, `SteerQueuedMessageResponseSchema` (`shared/src/schemas.ts`). Unknown steer delivery is durable and user-resolvable; native clients must implement the same transitions.
 
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
 | `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, excludes attachments and steer | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
-| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` (cancel a queued message; `invoked` = too late) |
+| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = steer still resolving) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
+| `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
 | `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync optimistic sends after reconnect |
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.

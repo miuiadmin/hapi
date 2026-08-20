@@ -5,6 +5,7 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
 import app.hapi.protocol.wire.DeleteUploadResponse
@@ -246,6 +247,9 @@ class HapiApi(
     /** `DELETE /api/sessions/:id/messages/:messageId` — cancel a queued message. */
     override suspend fun cancelMessage(sessionId: String, messageId: String): CancelMessageResponse =
         request("DELETE", url("api", "sessions", sessionId, "messages", messageId).build())
+
+    override suspend fun retryIndeterminateMessage(sessionId: String, messageId: String): RetryIndeterminateMessageResponse =
+        request("POST", url("api", "sessions", sessionId, "messages", messageId, "retry").build(), EMPTY_JSON)
 
     /** `POST /api/sessions/:id/messages/:messageId/steer`. */
     override suspend fun steerMessage(sessionId: String, messageId: String): SteerQueuedMessageResponse =

@@ -35,6 +35,7 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
     public let canAct: Bool
     /// Steer offered: turn active, not future-scheduled, actionable.
     public let canSteer: Bool
+    public let indeterminate: Bool
 
     public init(
         id: String,
@@ -43,7 +44,8 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
         attachmentNames: [String],
         scheduledAt: Int?,
         canAct: Bool,
-        canSteer: Bool
+        canSteer: Bool,
+        indeterminate: Bool = false
     ) {
         self.id = id
         self.localId = localId
@@ -52,6 +54,7 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
         self.scheduledAt = scheduledAt
         self.canAct = canAct
         self.canSteer = canSteer
+        self.indeterminate = indeterminate
     }
 }
 

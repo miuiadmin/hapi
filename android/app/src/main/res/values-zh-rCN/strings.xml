@@ -192,7 +192,6 @@
     <string name="notif_session_not_found">在已配对的 hub 上未找到该会话</string>
     <string name="notif_action_failed">无法连接 hub — 请打开应用处理</string>
     <string name="notif_reply_failed">回复未发送 — 请打开应用重试</string>
-    <string name="notif_working">正在连接 hub…</string>
 
     <!-- Session list (B-M2b / B-M3ce, extracted in B-M5a) -->
     <string name="sessions_section_pinned">置顶会话</string>

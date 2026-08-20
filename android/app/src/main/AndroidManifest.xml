@@ -10,10 +10,13 @@
          denial just silences the OS surface — in-app SSE is unaffected. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Expedited WorkManager notification actions fall back to a short
-         foreground service on API < 31 (dataSync type, targetSdk 34+ rule). -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- WorkManager's library manifest merges FOREGROUND_SERVICE in; we
+         never run foreground work (expedited is API 31+ JobScheduler only,
+         see NotificationActionReceiver), so strip it from the merged
+         manifest — Play flags FGS permissions for declaration review. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"
+        tools:node="remove" />
 
     <!-- QR pairing only; the app is fully usable without a camera
          (manual hub URL + token entry), hence required="false". -->
@@ -39,8 +42,10 @@
     <application
         android:name=".HapiApp"
         android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:localeConfig="@xml/locales_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.HapiCompanion"
         android:usesCleartextTraffic="true">
