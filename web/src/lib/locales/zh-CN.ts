@@ -237,6 +237,7 @@ export default {
   'session.action.pinFailed': '无法更新置顶状态',
   'sessions.pinnedSection': '置顶会话',
   'session.action.export': '导出对话',
+  'session.action.markUnread': '标为未读',
   'session.action.syncCodex': '同步 Codex',
   'session.action.syncPi': '同步 Pi 历史',
   'session.action.archive': '归档',
