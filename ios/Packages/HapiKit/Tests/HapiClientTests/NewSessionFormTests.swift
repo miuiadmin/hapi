@@ -86,6 +86,16 @@ struct NewSessionSpawnBodyTests {
         """)
     }
 
+    @Test func dshUsesManagedPermissionPolicyAndOmitsYolo() throws {
+        let body = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .dsh, yolo: true),
+            codexFastTierVisible: false
+        )
+        #expect(body == """
+        {"agent":"dsh","directory":"/repo","sessionType":"simple"}
+        """)
+    }
+
     @Test func codexDefaultSelectionsSendNoOptionalFieldsAndHiddenFastTierNoServiceTier() throws {
         let body = try canonicalBody(
             NewSessionForm(directory: "/repo", agent: .codex, serviceTier: .fast),

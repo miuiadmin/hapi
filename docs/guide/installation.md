@@ -4,7 +4,7 @@ Install the HAPI CLI and set up the hub.
 
 ## Prerequisites
 
-- At least one supported agent CLI installed (Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, and more — see [Supported Agents](./agents.md))
+- At least one supported agent CLI installed (Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, DeepSeek Harness ACP server, and more — see [Supported Agents](./agents.md))
 
 Verify your CLI is installed:
 

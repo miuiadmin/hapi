@@ -525,6 +525,21 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
+    it('does not forward the global YOLO preference to managed DSH ACP', async () => {
+        savePreferredAgent('dsh')
+        savePreferredYoloMode(true)
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            yolo: undefined,
+            permissionMode: undefined
+        }))
+    })
+
     it('keeps an explicit OpenCode Default selection instead of restoring a concrete model', async () => {
         savePreferredAgent('opencode')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'opencode-session' })

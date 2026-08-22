@@ -1509,7 +1509,7 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
-                yolo: agent === 'grok' || usesCodexFamilyPermissions ? undefined : yoloMode,
+                yolo: agent === 'dsh' || agent === 'grok' || usesCodexFamilyPermissions ? undefined : yoloMode,
                 permissionMode: agent === 'grok'
                     ? grokPermissionMode
                     : usesCodexFamilyPermissions
@@ -1660,7 +1660,7 @@ export function NewSession(props: {
                     onClear={() => setSelectedPiImportSessionId(null)}
                 />
             ) : null}
-            {agent === 'agy' ? (
+            {agent === 'dsh' ? null : agent === 'agy' ? (
                 <AgyModelSelector
                     machineId={machineId}
                     isLoading={agyModelsState.isLoading}

@@ -213,6 +213,17 @@ class SpawnBodyTest {
     }
 
     @Test
+    fun `dsh uses managed permission policy and omits yolo`() {
+        val body = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "dsh", yolo = true),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "sessionType"), body.keys)
+    }
+
+    @Test
     fun `codex default selections send no optional fields, fast tier hidden sends no serviceTier`() {
         val body = encode(
             NewSessionLogic.buildSpawnRequest(

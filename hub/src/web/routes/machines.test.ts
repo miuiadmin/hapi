@@ -250,7 +250,7 @@ describe('machines routes', () => {
         expect(captured![15]).toBe('remote')
     })
 
-    it('rejects a non-remote AGY machine spawn', async () => {
+    it('rejects a non-remote headless-agent machine spawn', async () => {
         const machine = createMachine()
         const spawnSession = () => { throw new Error('must not spawn') }
         const engine = {
@@ -262,13 +262,15 @@ describe('machines routes', () => {
         app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
         app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
 
-        for (const startingMode of ['local', 'pty']) {
-            const response = await app.request('/api/machines/machine-1/spawn', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ directory: '/tmp/x', agent: 'agy', startingMode })
-            })
-            expect(response.status).toBe(400)
+        for (const agent of ['agy', 'dsh']) {
+            for (const startingMode of ['local', 'pty']) {
+                const response = await app.request('/api/machines/machine-1/spawn', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ directory: '/tmp/x', agent, startingMode })
+                })
+                expect(response.status).toBe(400)
+            }
         }
     })
 

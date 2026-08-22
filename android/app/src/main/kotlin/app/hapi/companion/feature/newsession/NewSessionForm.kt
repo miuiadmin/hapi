@@ -95,7 +95,7 @@ object NewSessionLogic {
             } else {
                 null
             },
-            yolo = if (isGrok || codexFamily) null else form.yolo,
+            yolo = if (agent == "dsh" || isGrok || codexFamily) null else form.yolo,
             permissionMode = if (isGrok || codexFamily) form.permissionMode else null,
             sessionType = form.sessionType,
             worktreeName = if (form.sessionType == SESSION_TYPE_WORKTREE) {

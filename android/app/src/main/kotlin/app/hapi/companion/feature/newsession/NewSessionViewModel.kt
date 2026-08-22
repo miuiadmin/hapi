@@ -602,7 +602,7 @@ class NewSessionViewModel(
         }
 
         val permission: PermissionUi = when {
-            agent == "pi" -> PermissionUi.Managed
+            agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
                 PermissionModes.forFlavor(agent).map { OptionItem(it.wireId, it.label) },
             )
