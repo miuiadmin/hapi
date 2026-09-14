@@ -53,23 +53,48 @@ export type CliHandlersDeps = {
     onMessagesConsumed?: (sessionId: string) => void
 }
 
+// resolveSessionAccess runs on EVERY cli socket event (message stream deltas,
+// keep-alives, consumed acks, terminal output) as the authorization gate. A
+// streaming CLI emits dozens of events per second against the same session,
+// and each uncached resolution costs a fresh prepared SELECT + metadata JSON
+// parse — the dominant hub CPU cost under sustained event traffic (profiled:
+// ~40% of a saturated event loop). Positive resolutions for a given session
+// are memoized per-socket for this window. Denials stay uncached so clients
+// see a fresh outcome on every event while a rename/namespace switch settles.
+// The cached fields callers consume are effectively immutable for a session id
+// (namespace) or tolerant of ≤1s staleness (metadata), so the bounded window
+// cannot change an access decision that would otherwise differ.
+const SESSION_ACCESS_CACHE_TTL_MS = 1_000
+
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
     const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
+    let cachedSessionAccess: { sessionId: string; access: AccessResult<StoredSession>; expiresAt: number } | null = null
+
     const resolveSessionAccess = (sessionId: string): AccessResult<StoredSession> => {
         if (!namespace) {
             return { ok: false, reason: 'namespace-missing' }
         }
+        const now = Date.now()
+        if (cachedSessionAccess && cachedSessionAccess.sessionId === sessionId && cachedSessionAccess.expiresAt > now) {
+            return cachedSessionAccess.access
+        }
         const session = store.sessions.getSessionByNamespace(sessionId, namespace)
+        let access: AccessResult<StoredSession>
         if (session) {
-            return { ok: true, value: session }
+            access = { ok: true, value: session }
+            cachedSessionAccess = { sessionId, access, expiresAt: now + SESSION_ACCESS_CACHE_TTL_MS }
+        } else {
+            cachedSessionAccess = null
+            if (store.sessions.getSession(sessionId)) {
+                access = { ok: false, reason: 'access-denied' }
+            } else {
+                access = { ok: false, reason: 'not-found' }
+            }
         }
-        if (store.sessions.getSession(sessionId)) {
-            return { ok: false, reason: 'access-denied' }
-        }
-        return { ok: false, reason: 'not-found' }
+        return access
     }
 
     const resolveMachineAccess = (machineId: string): AccessResult<StoredMachine> => {
