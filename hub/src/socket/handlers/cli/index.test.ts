@@ -126,4 +126,78 @@ describe('cli handler session-access memo', () => {
         expect(byNamespaceCalls).toBe(2)
         store.close()
     })
+
+    it('keeps per-session entries under interleaved multi-session traffic (A-B-A)', () => {
+        const store = new Store(':memory:')
+        const a = store.sessions.getOrCreateSession('memo-inter-a', null, null, 'default')
+        const b = store.sessions.getOrCreateSession('memo-inter-b', null, null, 'default')
+
+        let byNamespaceCalls = 0
+        const original = store.sessions.getSessionByNamespace.bind(store.sessions)
+        store.sessions.getSessionByNamespace = ((sessionId: string, namespace: string) => {
+            byNamespaceCalls += 1
+            return original(sessionId, namespace)
+        }) as typeof store.sessions.getSessionByNamespace
+
+        const socket = new FakeCliSocket()
+        socket.data = { namespace: 'default' }
+        const alive = mock()
+        registerCliHandlers(socket as unknown as CliSocketWithData, {
+            io: fakeIo,
+            store,
+            rpcRegistry: anyRegistry,
+            terminalRegistry: anyRegistry,
+            onSessionAlive: alive
+        })
+
+        // A-B-A interleave within the TTL: a single-slot memo thrashes to a
+        // miss on every event here (one runner socket multiplexes concurrent
+        // sessions); the per-session map must resolve each session once.
+        socket.trigger('session-alive', { sid: a.id, time: Date.now() })
+        socket.trigger('session-alive', { sid: b.id, time: Date.now() })
+        socket.trigger('session-alive', { sid: a.id, time: Date.now() })
+        socket.trigger('session-alive', { sid: b.id, time: Date.now() })
+        socket.trigger('session-alive', { sid: a.id, time: Date.now() })
+        expect(byNamespaceCalls).toBe(2)
+        expect(alive).toHaveBeenCalledTimes(5)
+        store.close()
+    })
+
+    it('bounds the cache across many sessions (oldest evicted first)', () => {
+        const store = new Store(':memory:')
+        const ids: string[] = []
+        for (let i = 0; i < 70; i += 1) {
+            ids.push(store.sessions.getOrCreateSession(`memo-many-${i}`, null, null, 'default').id)
+        }
+
+        let byNamespaceCalls = 0
+        const original = store.sessions.getSessionByNamespace.bind(store.sessions)
+        store.sessions.getSessionByNamespace = ((sessionId: string, namespace: string) => {
+            byNamespaceCalls += 1
+            return original(sessionId, namespace)
+        }) as typeof store.sessions.getSessionByNamespace
+
+        const socket = new FakeCliSocket()
+        socket.data = { namespace: 'default' }
+        registerCliHandlers(socket as unknown as CliSocketWithData, {
+            io: fakeIo,
+            store,
+            rpcRegistry: anyRegistry,
+            terminalRegistry: anyRegistry
+        })
+
+        for (const id of ids) {
+            socket.trigger('session-alive', { sid: id, time: Date.now() })
+        }
+        const afterFirstPass = byNamespaceCalls
+
+        // The newest entry is still cached.
+        socket.trigger('session-alive', { sid: ids[69], time: Date.now() })
+        expect(byNamespaceCalls).toBe(afterFirstPass)
+
+        // The oldest entries were evicted once the cache exceeded its cap.
+        socket.trigger('session-alive', { sid: ids[0], time: Date.now() })
+        expect(byNamespaceCalls).toBe(afterFirstPass + 1)
+        store.close()
+    })
 })

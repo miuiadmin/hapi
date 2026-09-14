@@ -61,33 +61,54 @@ export type CliHandlersDeps = {
 // ~40% of a saturated event loop). Positive resolutions for a given session
 // are memoized per-socket for this window. Denials stay uncached so clients
 // see a fresh outcome on every event while a rename/namespace switch settles.
+// The cache is keyed by session id, not a single slot: one runner socket
+// multiplexes MANY concurrent sessions (agents driving parallel sessions on
+// the same machine), and their events interleave. A single-slot memo thrashes
+// to a miss on every event under that interleaving — profiled as seconds-long
+// event-loop saturation while message floods alternate session ids — so the
+// memo must survive A-B-A event sequences. Bounded by MAX_SESSIONS with
+// expired-first then oldest-first eviction (Map preserves insertion order).
 // The cached fields callers consume are effectively immutable for a session id
 // (namespace) or tolerant of ≤1s staleness (metadata), so the bounded window
 // cannot change an access decision that would otherwise differ.
 const SESSION_ACCESS_CACHE_TTL_MS = 1_000
+const SESSION_ACCESS_CACHE_MAX_SESSIONS = 64
 
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
     const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
-    let cachedSessionAccess: { sessionId: string; access: AccessResult<StoredSession>; expiresAt: number } | null = null
+    const sessionAccessCache = new Map<string, { access: AccessResult<StoredSession>; expiresAt: number }>()
 
     const resolveSessionAccess = (sessionId: string): AccessResult<StoredSession> => {
         if (!namespace) {
             return { ok: false, reason: 'namespace-missing' }
         }
         const now = Date.now()
-        if (cachedSessionAccess && cachedSessionAccess.sessionId === sessionId && cachedSessionAccess.expiresAt > now) {
-            return cachedSessionAccess.access
+        const cached = sessionAccessCache.get(sessionId)
+        if (cached && cached.expiresAt > now) {
+            return cached.access
         }
         const session = store.sessions.getSessionByNamespace(sessionId, namespace)
         let access: AccessResult<StoredSession>
         if (session) {
             access = { ok: true, value: session }
-            cachedSessionAccess = { sessionId, access, expiresAt: now + SESSION_ACCESS_CACHE_TTL_MS }
+            sessionAccessCache.set(sessionId, { access, expiresAt: now + SESSION_ACCESS_CACHE_TTL_MS })
+            if (sessionAccessCache.size > SESSION_ACCESS_CACHE_MAX_SESSIONS) {
+                for (const [key, entry] of sessionAccessCache) {
+                    if (entry.expiresAt <= now) {
+                        sessionAccessCache.delete(key)
+                    }
+                }
+                while (sessionAccessCache.size > SESSION_ACCESS_CACHE_MAX_SESSIONS) {
+                    const oldest = sessionAccessCache.keys().next().value
+                    if (oldest === undefined) break
+                    sessionAccessCache.delete(oldest)
+                }
+            }
         } else {
-            cachedSessionAccess = null
+            sessionAccessCache.delete(sessionId)
             if (store.sessions.getSession(sessionId)) {
                 access = { ok: false, reason: 'access-denied' }
             } else {
