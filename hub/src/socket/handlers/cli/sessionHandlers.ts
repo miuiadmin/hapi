@@ -39,7 +39,7 @@ type SessionReadyPayload = {
     time: number
 }
 
-type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
+type ResolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }) => AccessResult<StoredSession>
 
 type EmitAccessError = (scope: 'session' | 'machine', id: string, reason: AccessErrorReason) => void
 
@@ -259,7 +259,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const { sid, metadata, expectedVersion } = parsed.data
-        const sessionAccess = resolveSessionAccess(sid)
+        // Fresh resolve: preserveHubOwnedMetadata below merges against
+        // sessionAccess.value.metadata, so the base must be the live row.
+        // A memo-stale base would drop a concurrently-set hub-owned key or
+        // resurrect a concurrently-cleared one in this very write.
+        const sessionAccess = resolveSessionAccess(sid, { fresh: true })
         if (!sessionAccess.ok) {
             cb({ result: 'error', reason: sessionAccess.reason })
             return

@@ -81,14 +81,22 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
 
     const sessionAccessCache = new Map<string, { access: AccessResult<StoredSession>; expiresAt: number }>()
 
-    const resolveSessionAccess = (sessionId: string): AccessResult<StoredSession> => {
+    const resolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }): AccessResult<StoredSession> => {
         if (!namespace) {
             return { ok: false, reason: 'namespace-missing' }
         }
         const now = Date.now()
-        const cached = sessionAccessCache.get(sessionId)
-        if (cached && cached.expiresAt > now) {
-            return cached.access
+        // `fresh` bypasses the memo read. Callers that use the resolved
+        // session as a write base (e.g. preserving hub-owned metadata keys)
+        // must merge against the live row, not a ≤TTL-stale snapshot — a
+        // stale base would drop a concurrently-set hub-owned key or
+        // resurrect a concurrently-cleared one. A fresh read still
+        // write-throughs the cache.
+        if (!opts?.fresh) {
+            const cached = sessionAccessCache.get(sessionId)
+            if (cached && cached.expiresAt > now) {
+                return cached.access
+            }
         }
         const session = store.sessions.getSessionByNamespace(sessionId, namespace)
         let access: AccessResult<StoredSession>

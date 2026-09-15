@@ -200,4 +200,60 @@ describe('cli handler session-access memo', () => {
         expect(byNamespaceCalls).toBe(afterFirstPass + 1)
         store.close()
     })
+
+    it('update-metadata resolves the session fresh so hub-owned fields survive a warm memo', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('memo-meta', null, null, 'default')
+
+        let byNamespaceCalls = 0
+        const original = store.sessions.getSessionByNamespace.bind(store.sessions)
+        store.sessions.getSessionByNamespace = ((sessionId: string, namespace: string) => {
+            byNamespaceCalls += 1
+            return original(sessionId, namespace)
+        }) as typeof store.sessions.getSessionByNamespace
+
+        const socket = new FakeCliSocket()
+        socket.data = { namespace: 'default' }
+        registerCliHandlers(socket as unknown as CliSocketWithData, {
+            io: fakeIo,
+            store,
+            rpcRegistry: anyRegistry,
+            terminalRegistry: anyRegistry
+        })
+
+        // Warm the memo with a metadata-less snapshot of the session.
+        socket.trigger('session-alive', { sid: session.id, time: Date.now() })
+        expect(byNamespaceCalls).toBe(1)
+
+        // A hub-side write lands the hub-owned key AFTER the memo was warmed.
+        const hubWrite = store.sessions.updateSessionMetadata(
+            session.id,
+            { supersededBySessionId: 'successor' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(hubWrite.result).toBe('success')
+        const live = store.sessions.getSession(session.id)
+        expect(live).not.toBeNull()
+
+        // The client's metadata write omits the hub-owned key. A stale memo
+        // base (metadata: null) would strip it from the merged row; a fresh
+        // resolve preserves it from the live row.
+        let ack: unknown
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            metadata: { title: 'renamed' },
+            expectedVersion: live!.metadataVersion
+        }, (response: unknown) => { ack = response })
+
+        // The write path bypassed the memo (fresh resolve).
+        expect(byNamespaceCalls).toBe(2)
+        expect((ack as { result: string }).result).toBe('success')
+
+        const stored = store.sessions.getSession(session.id)
+        const metadata = stored!.metadata as Record<string, unknown>
+        expect(metadata.title).toBe('renamed')
+        expect(metadata.supersededBySessionId).toBe('successor')
+        store.close()
+    })
 })
