@@ -15,6 +15,13 @@ import type { Database, Statement } from 'bun:sqlite'
 // Keyed weakly so a reopened/replaced Database drops its statements with it.
 const statementsByDb = new WeakMap<Database, Map<string, Statement>>()
 
+// Retention bound. Every current call site passes one of ~80 static SQL
+// strings, so the cap is never reached in practice; it exists so a future
+// caller passing variable-length SQL (e.g. interpolated IN lists) cannot
+// accumulate compiled statements without limit. Beyond the cap the statement
+// is prepared per call — uncached, still correct.
+const MAX_CACHED_STATEMENTS = 512
+
 export function prepareCached(db: Database, sql: string): Statement {
     let bySql = statementsByDb.get(db)
     if (!bySql) {
@@ -24,7 +31,9 @@ export function prepareCached(db: Database, sql: string): Statement {
     let statement = bySql.get(sql)
     if (!statement) {
         statement = db.prepare(sql)
-        bySql.set(sql, statement)
+        if (bySql.size < MAX_CACHED_STATEMENTS) {
+            bySql.set(sql, statement)
+        }
     }
     return statement
 }

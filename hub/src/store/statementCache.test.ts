@@ -34,4 +34,29 @@ describe('prepareCached', () => {
         expect(prepareCached(db, 'SELECT COUNT(*) FROM t')).not.toBe(prepareCached(db, 'SELECT id FROM t'))
         db.close()
     })
+
+    it('bounds retention: beyond the cap statements are prepared per call', () => {
+        const db = new Database(':memory:')
+        db.exec('CREATE TABLE t (id TEXT)')
+
+        // Warm an entry while the cache is below its cap.
+        const early = prepareCached(db, 'SELECT COUNT(*) AS n FROM t')
+
+        // Flood past the retention bound with distinct constant SQL.
+        for (let i = 0; i < 600; i += 1) {
+            prepareCached(db, `SELECT ${i} AS n`)
+        }
+
+        // Entries admitted before the cap stay cached (identity stable).
+        expect(prepareCached(db, 'SELECT COUNT(*) AS n FROM t')).toBe(early)
+
+        // New statements beyond the cap are not retained: each call compiles
+        // its own statement, and both execute correctly.
+        const lateA = prepareCached(db, 'SELECT 4242 AS n')
+        const lateB = prepareCached(db, 'SELECT 4242 AS n')
+        expect(lateA).not.toBe(lateB)
+        expect((lateA.get() as { n: number }).n).toBe(4242)
+        expect((lateB.get() as { n: number }).n).toBe(4242)
+        db.close()
+    })
 })
