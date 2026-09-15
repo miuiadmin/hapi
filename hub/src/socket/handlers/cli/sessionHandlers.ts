@@ -107,7 +107,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
         if (!parsed.success) return
         const { sid, localId, text } = parsed.data
-        const access = resolveSessionAccess(sid)
+        // Fresh resolve: the capabilities gate below decides whether the
+        // queue ledger is written, and capabilities can change via metadata
+        // writes (e.g. a merge copying capabilities onto this session) — a
+        // memo snapshot could silently drop or wrongly accept the entry.
+        // Queued input is human-paced, not a stream hot path.
+        const access = resolveSessionAccess(sid, { fresh: true })
         if (!access.ok) { emitAccessError('session', sid, access.reason); return }
         const metadata = access.value.metadata as Metadata | null
         if (!metadata?.capabilities?.concurrentClients) return
@@ -510,7 +515,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
             return
         }
-        const sessionAccess = resolveSessionAccess(data.sid)
+        // Fresh resolve: the shared-Codex capability gate below decides
+        // whether the queue ledger is swept, and capabilities can change via
+        // metadata writes. Session end fires once per session — not a hot
+        // path — so read the live row rather than a memo snapshot.
+        const sessionAccess = resolveSessionAccess(data.sid, { fresh: true })
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)
             return

@@ -293,4 +293,53 @@ describe('cli handler session-access memo', () => {
         expect(socket.emitted.filter(({ event }) => event === 'error')).toHaveLength(1)
         store.close()
     })
+
+    it('native-queue-message reads live capabilities, not a memo snapshot', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('memo-queue', null, null, 'default')
+
+        let byNamespaceCalls = 0
+        const original = store.sessions.getSessionByNamespace.bind(store.sessions)
+        store.sessions.getSessionByNamespace = ((sessionId: string, namespace: string) => {
+            byNamespaceCalls += 1
+            return original(sessionId, namespace)
+        }) as typeof store.sessions.getSessionByNamespace
+
+        const socket = new FakeCliSocket()
+        socket.data = { namespace: 'default' }
+        const onWebappEvent = mock()
+        registerCliHandlers(socket as unknown as CliSocketWithData, {
+            io: fakeIo,
+            store,
+            rpcRegistry: anyRegistry,
+            terminalRegistry: anyRegistry,
+            onWebappEvent
+        })
+
+        // Warm the memo while the session has no capabilities.
+        socket.trigger('session-alive', { sid: session.id, time: Date.now() })
+        expect(byNamespaceCalls).toBe(1)
+
+        // Capabilities land via a metadata write (hub side, e.g. a merge
+        // copying capabilities onto the session).
+        const write = store.sessions.updateSessionMetadata(
+            session.id,
+            { capabilities: { concurrentClients: true } },
+            session.metadataVersion,
+            'default'
+        )
+        expect(write.result).toBe('success')
+
+        // Within the TTL a memo snapshot would still see capabilities as
+        // absent and silently drop the queued entry; the fresh read
+        // processes it.
+        socket.trigger('native-queue-message', { sid: session.id, localId: 'q1', text: 'queued hello' })
+        expect(byNamespaceCalls).toBe(2)
+
+        const received = onWebappEvent.mock.calls
+            .map(([event]) => event as { type: string })
+            .find((event) => event.type === 'message-received')
+        expect(received).toBeDefined()
+        store.close()
+    })
 })
