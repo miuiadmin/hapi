@@ -256,4 +256,41 @@ describe('cli handler session-access memo', () => {
         expect(metadata.supersededBySessionId).toBe('successor')
         store.close()
     })
+
+    it('drops the memo as soon as the session is deleted (deletion epoch)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('memo-del', null, null, 'default')
+
+        let byNamespaceCalls = 0
+        const original = store.sessions.getSessionByNamespace.bind(store.sessions)
+        store.sessions.getSessionByNamespace = ((sessionId: string, namespace: string) => {
+            byNamespaceCalls += 1
+            return original(sessionId, namespace)
+        }) as typeof store.sessions.getSessionByNamespace
+
+        const socket = new FakeCliSocket()
+        socket.data = { namespace: 'default' }
+        registerCliHandlers(socket as unknown as CliSocketWithData, {
+            io: fakeIo,
+            store,
+            rpcRegistry: anyRegistry,
+            terminalRegistry: anyRegistry
+        })
+
+        // Warm the memo.
+        socket.trigger('session-alive', { sid: session.id, time: Date.now() })
+        expect(byNamespaceCalls).toBe(1)
+
+        // Hub-side delete (webapp API, session merge — every path funnels
+        // through the store's deleteSession).
+        expect(store.sessions.deleteSession(session.id, 'default')).toBe(true)
+
+        // Well inside the TTL, the next event must not be served from the
+        // memo: the deletion bumped the epoch, forcing a fresh resolve that
+        // denies instead of authorizing events against the deleted row.
+        socket.trigger('session-alive', { sid: session.id, time: Date.now() })
+        expect(byNamespaceCalls).toBe(2)
+        expect(socket.emitted.filter(({ event }) => event === 'error')).toHaveLength(1)
+        store.close()
+    })
 })

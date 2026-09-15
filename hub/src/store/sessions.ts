@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import { prepareCached } from './statementCache'
+import { bumpSessionDeletionEpoch } from './sessionInvalidation'
 import { randomUUID } from 'node:crypto'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
@@ -694,8 +695,14 @@ export function getSessionsByNamespace(db: Database, namespace: string): StoredS
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
-    const result = prepareCached(db, 
+    const result = prepareCached(db,
         'DELETE FROM sessions WHERE id = ? AND namespace = ?'
     ).run(id, namespace)
+    if (result.changes > 0) {
+        // Per-socket access memos stamp the epoch they were filled under;
+        // bumping makes their next event re-resolve instead of serving a
+        // grant for a row that no longer exists.
+        bumpSessionDeletionEpoch()
+    }
     return result.changes > 0
 }

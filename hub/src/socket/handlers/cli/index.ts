@@ -9,6 +9,7 @@ import { registerMachineHandlers } from './machineHandlers'
 import { registerRpcHandlers } from './rpcHandlers'
 import { registerSessionHandlers } from './sessionHandlers'
 import { cleanupTerminalHandlers, registerTerminalHandlers } from './terminalHandlers'
+import { sessionDeletionEpoch } from '../../../store/sessionInvalidation'
 
 type SessionAlivePayload = {
     sid: string
@@ -71,6 +72,13 @@ export type CliHandlersDeps = {
 // The cached fields callers consume are effectively immutable for a session id
 // (namespace) or tolerant of ≤1s staleness (metadata), so the bounded window
 // cannot change an access decision that would otherwise differ.
+//
+// Deletion is the one mutation the TTL window cannot absorb: a memoized grant
+// would keep authorizing events (and FK-failing writes) against a row that no
+// longer exists. deleteSession bumps a process-wide monotonic epoch; entries
+// stamp the epoch they were filled under, and a mismatch forces one
+// re-resolve on the next event — an integer compare on the hit path, no DB
+// read. Bumps are rare, so the amortized cost is negligible.
 const SESSION_ACCESS_CACHE_TTL_MS = 1_000
 const SESSION_ACCESS_CACHE_MAX_SESSIONS = 64
 
@@ -79,7 +87,7 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
-    const sessionAccessCache = new Map<string, { access: AccessResult<StoredSession>; expiresAt: number }>()
+    const sessionAccessCache = new Map<string, { access: AccessResult<StoredSession>; expiresAt: number; epoch: number }>()
 
     const resolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }): AccessResult<StoredSession> => {
         if (!namespace) {
@@ -94,7 +102,7 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         // write-throughs the cache.
         if (!opts?.fresh) {
             const cached = sessionAccessCache.get(sessionId)
-            if (cached && cached.expiresAt > now) {
+            if (cached && cached.expiresAt > now && cached.epoch === sessionDeletionEpoch()) {
                 return cached.access
             }
         }
@@ -102,7 +110,7 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         let access: AccessResult<StoredSession>
         if (session) {
             access = { ok: true, value: session }
-            sessionAccessCache.set(sessionId, { access, expiresAt: now + SESSION_ACCESS_CACHE_TTL_MS })
+            sessionAccessCache.set(sessionId, { access, expiresAt: now + SESSION_ACCESS_CACHE_TTL_MS, epoch: sessionDeletionEpoch() })
             if (sessionAccessCache.size > SESSION_ACCESS_CACHE_MAX_SESSIONS) {
                 for (const [key, entry] of sessionAccessCache) {
                     if (entry.expiresAt <= now) {
