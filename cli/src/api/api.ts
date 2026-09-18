@@ -334,7 +334,7 @@ export class ApiClient {
         return new ApiSessionClient(this.token, session, options)
     }
 
-    machineSyncClient(machine: Machine, options?: { workspaceRoots?: string[]; getAliveSessionIds?: () => string[] }): ApiMachineClient {
-        return new ApiMachineClient(this.token, machine, options?.workspaceRoots, options?.getAliveSessionIds)
+    machineSyncClient(machine: Machine, options?: { workspaceRoots?: string[]; getAliveSessionIds?: () => string[]; onSessionWake?: (sessionId: string) => void }): ApiMachineClient {
+        return new ApiMachineClient(this.token, machine, options?.workspaceRoots, options?.getAliveSessionIds, options?.onSessionWake)
     }
 }
