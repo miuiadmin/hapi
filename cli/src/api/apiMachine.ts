@@ -110,7 +110,8 @@ export class ApiMachineClient {
         private readonly token: string,
         private readonly machine: Machine,
         private readonly workspaceRoots?: string[],
-        private readonly getAliveSessionIds?: () => string[]
+        private readonly getAliveSessionIds?: () => string[],
+        private readonly onSessionWake?: (sessionId: string) => void
     ) {
         this.pathPolicy = new MachinePathPolicy({
             workspaceRoots,
@@ -621,6 +622,11 @@ export class ApiMachineClient {
                 }
                 this.machine.runnerStateVersion = update.runnerState.version
             }
+        })
+
+        this.socket.on('session-wake', (data) => {
+            logger.debug('[API MACHINE] Session wake requested by hub', data)
+            this.onSessionWake?.(data.sessionId)
         })
 
         this.socket.on('connect_error', (error) => {
