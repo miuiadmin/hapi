@@ -61,6 +61,9 @@ function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
     reopenSession?: (sessionId: string, namespace: string) => Promise<ReopenResultMock>
     abortSession?: SyncEngine['abortSession']
+    switchSession?: SyncEngine['switchSession']
+    uploadFile?: SyncEngine['uploadFile']
+    deleteUploadFile?: SyncEngine['deleteUploadFile']
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
@@ -157,6 +160,9 @@ function createApp(session: Session, opts?: {
         resumeSession,
         reopenSession,
         abortSession: opts?.abortSession ?? (async () => {}),
+        switchSession: opts?.switchSession ?? (async () => {}),
+        uploadFile: opts?.uploadFile ?? (async () => ({ success: true })),
+        deleteUploadFile: opts?.deleteUploadFile ?? (async () => ({ success: true })),
         getCursorChatStoreStatus: opts?.getCursorChatStoreStatus ?? (async () => ({
             type: 'success' as const,
             status: { onDisk: true, store: 'acp' as const }
@@ -1791,5 +1797,86 @@ describe('session abort delivery errors', () => {
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ ok: true })
         expect(aborted).toBe('session-1')
+    })
+})
+
+// The same delivery semantics as abort apply to switch and file uploads: a
+// dead or wedged engine socket must surface as 409/504, not a bare 500.
+describe('session switch/upload delivery errors', () => {
+    it('returns 409 engine_unreachable when the engine socket is gone for switch', async () => {
+        const { app } = createApp(createSession(), {
+            switchSession: async () => { throw new RpcTargetMissingError('session-1:switch', 'handler-not-registered') }
+        })
+        const res = await app.request('/api/sessions/session-1/switch', { method: 'POST' })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('not connected to the hub'),
+            code: 'engine_unreachable'
+        })
+    })
+
+    it('returns 504 engine_unresponsive when the engine never acks the switch', async () => {
+        const { app } = createApp(createSession(), {
+            switchSession: async () => { throw new RpcTimeoutError('session-1:switch', 30_000) }
+        })
+        const res = await app.request('/api/sessions/session-1/switch', { method: 'POST' })
+        expect(res.status).toBe(504)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('did not acknowledge'),
+            code: 'engine_unresponsive'
+        })
+    })
+
+    it('returns ok when the switch is delivered', async () => {
+        let switched: string | undefined
+        const { app } = createApp(createSession(), {
+            switchSession: async (sessionId: string) => { switched = sessionId }
+        })
+        const res = await app.request('/api/sessions/session-1/switch', { method: 'POST' })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ ok: true })
+        expect(switched).toBe('session-1')
+    })
+
+    it('returns 409 engine_unreachable when the engine socket is gone for upload', async () => {
+        const { app } = createApp(createSession(), {
+            uploadFile: async () => { throw new RpcTargetMissingError('session-1:upload', 'handler-not-registered') }
+        })
+        const res = await app.request('/api/sessions/session-1/upload', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: 'a.txt', content: 'aGVsbG8=', mimeType: 'text/plain' })
+        })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toEqual({
+            success: false,
+            error: expect.stringContaining('not connected to the hub'),
+            code: 'engine_unreachable'
+        })
+    })
+
+    it('returns 504 engine_unresponsive when the engine never acks an upload delete', async () => {
+        const { app } = createApp(createSession(), {
+            deleteUploadFile: async () => { throw new RpcTimeoutError('session-1:upload', 30_000) }
+        })
+        const res = await app.request('/api/sessions/session-1/upload/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: '/tmp/a.txt' })
+        })
+        expect(res.status).toBe(504)
+        expect(await res.json()).toEqual({
+            success: false,
+            error: expect.stringContaining('did not acknowledge'),
+            code: 'engine_unresponsive'
+        })
+    })
+
+    it('returns the engine result when the upload is delivered', async () => {
+        const { app } = createApp(createSession())
+        const res = await app.request('/api/sessions/session-1/upload', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: 'a.txt', content: 'aGVsbG8=', mimeType: 'text/plain' })
+        })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ success: true })
     })
 })

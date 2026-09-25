@@ -316,6 +316,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             )
             return c.json(result)
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                // The engine socket is gone: the upload can never be delivered.
+                return c.json({
+                    success: false,
+                    error: 'Session is not connected to the hub, so the upload cannot be delivered.',
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    success: false,
+                    error: `Session did not acknowledge the upload within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to upload file'
@@ -344,6 +359,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             const result = await engine.deleteUploadFile(sessionResult.sessionId, parsed.data.path)
             return c.json(result)
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                // The engine socket is gone: the delete can never be delivered.
+                return c.json({
+                    success: false,
+                    error: 'Session is not connected to the hub, so the delete cannot be delivered.',
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    success: false,
+                    error: `Session did not acknowledge the delete within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to delete upload'
@@ -587,7 +617,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         if (sessionResult.session.metadata?.capabilities?.concurrentClients) return c.json({ error: 'Shared sessions do not switch modes', code: 'control_mode_not_applicable' }, 409)
-        await engine.switchSession(sessionResult.sessionId, 'remote')
+        try {
+            await engine.switchSession(sessionResult.sessionId, 'remote')
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                // The engine socket is gone: the switch can never be delivered.
+                return c.json({
+                    error: 'Session is not connected to the hub, so the mode switch cannot be delivered.',
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    error: `Session did not acknowledge the mode switch within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 
