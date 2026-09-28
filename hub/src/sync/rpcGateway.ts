@@ -263,7 +263,7 @@ export class RpcGateway {
         | {
             type: 'error'
             message: string
-            code?: 'agent_unavailable' | 'outside_workspace_roots'
+            code?: 'agent_unavailable' | 'outside_workspace_roots' | 'engine_unreachable' | 'engine_unresponsive'
             agent?: AgentFlavor
             /** Explicit false = no OS child; stub safe to delete (#1911 B3). */
             childStarted?: boolean
@@ -343,6 +343,12 @@ export class RpcGateway {
         } catch (error) {
             // Ambiguous: the machine RPC may have started a child before failing.
             // Do not claim childStarted: false — hub keeps the stub.
+            if (error instanceof RpcTargetMissingError) {
+                return { type: 'error', message: error.message, code: 'engine_unreachable' }
+            }
+            if (error instanceof RpcTimeoutError) {
+                return { type: 'error', message: error.message, code: 'engine_unresponsive' }
+            }
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
     }
