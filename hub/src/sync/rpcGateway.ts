@@ -247,7 +247,7 @@ export class RpcGateway {
         | {
             type: 'error'
             message: string
-            code?: 'agent_unavailable' | 'outside_workspace_roots'
+            code?: 'agent_unavailable' | 'outside_workspace_roots' | 'engine_unreachable' | 'engine_unresponsive'
             agent?: AgentFlavor
         }
     > {
@@ -314,6 +314,12 @@ export class RpcGateway {
                 })()
             return { type: 'error', message: `Unexpected spawn result: ${details}` }
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return { type: 'error', message: error.message, code: 'engine_unreachable' }
+            }
+            if (error instanceof RpcTimeoutError) {
+                return { type: 'error', message: error.message, code: 'engine_unresponsive' }
+            }
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
     }
