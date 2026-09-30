@@ -31,7 +31,7 @@ import { RPC_METHODS, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMe
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { EngineStillRunningError } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
@@ -453,6 +453,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         try {
             await engine.archiveSession(sessionResult.sessionId)
         } catch (error) {
+            // The runner confirmed the session process is still alive (or its
+            // fate stays unknown): a state conflict the client can act on
+            // (retry once the process exits), not a hub failure.
+            if (error instanceof EngineStillRunningError) {
+                return c.json({
+                    error: error.message,
+                    code: 'engine_still_running'
+                }, 409)
+            }
             // archiveSession already handles a vanished engine socket benignly
             // (markSessionArchivedFromHub); the only delivery failure that
             // escapes it is an ack-deadline blowout, which is a 504, not a 500.
