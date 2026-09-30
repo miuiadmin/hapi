@@ -110,11 +110,11 @@ export type {
 
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed'; rollbackSafe?: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'rpc_target_missing' | 'engine_unresponsive'; rollbackSafe?: boolean }
 
 export type ReopenSessionResult =
     | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' | 'rpc_target_missing' | 'engine_unresponsive' }
     | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
 
 export type LocalResumeTargetResult =
@@ -3485,6 +3485,12 @@ export class SyncEngine {
             )
 
             if (spawnResult.type !== 'success') {
+                // Delivery failures (engine socket gone / ack deadline blown) are
+                // reported as their own codes so callers can distinguish them
+                // from genuine resume failures.
+                const spawnErrorCode = spawnResult.code === 'rpc_target_missing' || spawnResult.code === 'engine_unresponsive'
+                    ? spawnResult.code
+                    : 'resume_failed'
                 if (requiresPiNativeReady) {
                     const stopped = await this.terminateInPlacePiResume(
                         targetMachine.id,
@@ -3496,12 +3502,12 @@ export class SyncEngine {
                         return {
                             type: 'error',
                             message: spawnResult.message,
-                            code: 'resume_failed',
+                            code: spawnErrorCode,
                             rollbackSafe: false,
                         }
                     }
                 }
-                return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
+                return { type: 'error', message: spawnResult.message, code: spawnErrorCode }
             }
 
             if (requiresPiNativeReady && spawnResult.sessionId !== access.sessionId) {
