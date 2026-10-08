@@ -64,6 +64,7 @@ import {
     type RpcUploadFileResponse
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
+import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
@@ -203,6 +204,20 @@ export class SyncEngine {
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /**
+     * Single-flight + last-good caches for session enumerations. The backing
+     * RPCs can queue for tens of seconds behind a busy engine (mid-turn or
+     * reconnecting socket) while clients re-fetch on every session open;
+     * enumerations change rarely, so serve cached values and revalidate.
+     */
+    private readonly slashCommandsEnumeration = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+    private readonly skillsEnumeration = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
@@ -4281,7 +4296,11 @@ export class SyncEngine {
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {
-        return await this.rpcGateway.listSlashCommands(sessionId, agent)
+        return await this.slashCommandsEnumeration.get(
+            `${sessionId}|${agent}`,
+            () => this.rpcGateway.listSlashCommands(sessionId, agent),
+            (result) => result.success === true && Array.isArray(result.commands)
+        )
     }
 
     async listSkills(sessionId: string, flavor?: string): Promise<{
@@ -4289,7 +4308,11 @@ export class SyncEngine {
         skills?: Array<{ name: string; description?: string }>
         error?: string
     }> {
-        return await this.rpcGateway.listSkills(sessionId, flavor)
+        return await this.skillsEnumeration.get(
+            `${sessionId}|${flavor ?? ''}`,
+            () => this.rpcGateway.listSkills(sessionId, flavor),
+            (result) => result.success === true && Array.isArray(result.skills)
+        )
     }
 
     async listAgyModelsForMachine(
