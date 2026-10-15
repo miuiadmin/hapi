@@ -65,55 +65,91 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             this.messageBuffer.addMessage(error.message, 'status')
         })
 
-        await backend.initialize()
-        // Any close-path cancellation ends the ACP session — including the
-        // permission handler's `abort` decision, which cancels through the
-        // backend directly and never enters handleAbort. Track it centrally
-        // so the next message always respawns the session.
-        backend.onSessionClosedByCancel(() => {
-            this.acpSessionEnded = true
+        // Register the catalog RPC before initialization: a client that opens
+        // the model picker while initialize/session/new is still pending
+        // would otherwise hit an unregistered-method rejection, and the
+        // picker has no retry path — it would stay empty until remounted.
+        // The handler parks on readiness and answers once the session exists
+        // and model discovery has settled.
+        let markReady!: (acpSessionId: string) => void
+        let markFailed!: (error: unknown) => void
+        const ready = new Promise<string>((resolve, reject) => {
+            markReady = resolve
+            markFailed = reject
         })
-        const resumeSessionId = this.session.sessionId
-        let acpSessionId: string
-        if (resumeSessionId && backend.supportsSessionResume()) {
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListDshModels, async () => {
+            let acpSessionId: string
             try {
-                acpSessionId = await backend.resumeSession({
-                    sessionId: resumeSessionId,
-                    cwd: this.session.path,
-                    // Same as session/new: the official DSH ACP composition
-                    // rejects non-empty MCP servers.
-                    mcpServers: []
-                })
-                this.messageBuffer.addMessage('DSH session resumed', 'status')
+                acpSessionId = await ready
             } catch (error) {
-                // The on-disk dsh session may be gone (cleaned ~/.dsh, version
-                // migration): start fresh instead of stranding the HAPI session.
                 const message = error instanceof Error ? error.message : String(error)
-                logger.warn('[dsh-acp] session/resume failed; starting a fresh session', { message })
+                return { success: false, error: `DSH session is not available: ${message}` }
+            }
+            const metadata = backend.getSessionModelsMetadata(acpSessionId)
+            if (!metadata) {
+                return { success: false, error: 'DSH model metadata is not available' }
+            }
+            return {
+                success: true,
+                availableModels: metadata.availableModels,
+                currentModelId: this.currentBackendModel ?? metadata.currentModelId
+            }
+        })
+
+        let acpSessionId: string
+        try {
+            await backend.initialize()
+            // Any close-path cancellation ends the ACP session — including the
+            // permission handler's `abort` decision, which cancels through the
+            // backend directly and never enters handleAbort. Track it centrally
+            // so the next message always respawns the session.
+            backend.onSessionClosedByCancel(() => {
+                this.acpSessionEnded = true
+            })
+            const resumeSessionId = this.session.sessionId
+            if (resumeSessionId && backend.supportsSessionResume()) {
+                try {
+                    acpSessionId = await backend.resumeSession({
+                        sessionId: resumeSessionId,
+                        cwd: this.session.path,
+                        // Same as session/new: the official DSH ACP composition
+                        // rejects non-empty MCP servers.
+                        mcpServers: []
+                    })
+                    this.messageBuffer.addMessage('DSH session resumed', 'status')
+                } catch (error) {
+                    // The on-disk dsh session may be gone (cleaned ~/.dsh, version
+                    // migration): start fresh instead of stranding the HAPI session.
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[dsh-acp] session/resume failed; starting a fresh session', { message })
+                    acpSessionId = await backend.newSession({
+                        cwd: this.session.path,
+                        mcpServers: []
+                    })
+                    this.messageBuffer.addMessage('DSH resume failed; started a fresh session', 'status')
+                }
+            } else {
                 acpSessionId = await backend.newSession({
                     cwd: this.session.path,
+                    // The official DSH ACP composition rejects non-empty MCP servers;
+                    // its tools are configured by the DSH server itself.
                     mcpServers: []
                 })
-                this.messageBuffer.addMessage('DSH resume failed; started a fresh session', 'status')
             }
-        } else {
-            acpSessionId = await backend.newSession({
-                cwd: this.session.path,
-                // The official DSH ACP composition rejects non-empty MCP servers;
-                // its tools are configured by the DSH server itself.
-                mcpServers: []
-            })
-        }
-        // Pin dshSessionId before the main loop so a runner restart can resume
-        // (tiann/hapi#913: gate until the metadata write reaches the hub — a
-        // SIGTERM before that strands the session). Persist even when the id
-        // matches the requested resume: an explicit `--resume` on a fresh
-        // HAPI row must still store it, and re-pinning a stored id is an
-        // idempotent metadata merge.
-        this.session.onSessionFound(acpSessionId)
-        const flushed = await this.session.client.flushMetadata()
-        if (!flushed) {
-            logger.warn(`[dsh-acp] dshSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
+            // Pin dshSessionId before the main loop so a runner restart can resume
+            // (tiann/hapi#913: gate until the metadata write reaches the hub — a
+            // SIGTERM before that strands the session). Persist even when the id
+            // matches the requested resume: an explicit `--resume` on a fresh
+            // HAPI row must still store it, and re-pinning a stored id is an
+            // idempotent metadata merge.
+            this.session.onSessionFound(acpSessionId)
+            const flushed = await this.session.client.flushMetadata()
+            if (!flushed) {
+                logger.warn(`[dsh-acp] dshSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
+            }
+        } catch (error) {
+            markFailed(error)
+            throw error
         }
 
         const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
@@ -134,6 +170,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
         }
+        markReady(acpSessionId)
 
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
@@ -150,18 +187,6 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleExitFromUi()
-        })
-
-        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListDshModels, async () => {
-            const metadata = backend.getSessionModelsMetadata(acpSessionId)
-            if (!metadata) {
-                return { success: false, error: 'DSH model metadata is not available' }
-            }
-            return {
-                success: true,
-                availableModels: metadata.availableModels,
-                currentModelId: this.currentBackendModel ?? metadata.currentModelId
-            }
         })
 
         while (!this.shouldExit) {
