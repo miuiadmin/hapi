@@ -1,6 +1,7 @@
 import { hashObject } from '@/utils/deterministicJson'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
+import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
@@ -67,6 +68,10 @@ export async function runDsh(opts: {
     })
     lifecycle.registerProcessHandlers()
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
+    // `hapi resume` hands active sessions over via the HandoffLocal RPC before
+    // dispatching locally; without this registration an active DSH resume fails
+    // with an unregistered-method error instead of archiving the running copy.
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const dshSession = new DshSession({
         api,
