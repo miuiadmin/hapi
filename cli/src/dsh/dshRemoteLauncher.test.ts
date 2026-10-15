@@ -363,10 +363,11 @@ describe('DshRemoteLauncher', () => {
         expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
     })
 
-    it('does not send a queued message to the session while its close is still pending', async () => {
+    it('discards a follow-up queued before the stop when the prompt finishes before the close', async () => {
         // The in-flight prompt can complete while the session/close response
-        // is on the wire; a message queued at that moment must wait for the
-        // abort to finish and then run on the respawned session.
+        // is still on the wire; handleAbort clears the queue synchronously at
+        // the top, so a message queued before the stop is dropped before the
+        // loop can dequeue it — it must never run on the respawned session.
         harness.supportsCancel = false
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
@@ -396,8 +397,12 @@ describe('DshRemoteLauncher', () => {
         queue.close()
         await done
 
-        expect(harness.newSessionCalls).toHaveLength(2)
-        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+        // 'second' was queued before the stop, so the synchronous queue.reset()
+        // in handleAbort discarded it: no respawn (it is lazy, on next message)
+        // and no second prompt.
+        expect(harness.newSessionCalls).toHaveLength(1)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1'])
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
     })
 
     it('defers a queued message when a permission-abort close is still pending', async () => {
