@@ -19,6 +19,19 @@ describe('resolveDshAcpCommand', () => {
         })
     })
 
+    it('maps a config-only override onto the official CLI profile and patch overlay', () => {
+        // The official CLI has no `--config` flag: config overlays go through
+        // `--patch` on top of a profile, and the ACP server still needs
+        // `--profile acp` to boot. `--config` stays a legacy-server escape
+        // hatch behind HAPI_DSH_ACP_COMMAND.
+        expect(resolveDshAcpCommand({
+            HAPI_DSH_ACP_CONFIG: '/tmp/cordis.yml'
+        })).toEqual({
+            command: 'dsh',
+            args: ['--profile', 'acp', '--patch', '/tmp/cordis.yml']
+        })
+    })
+
     it('keeps bare arguments for an explicitly configured server', () => {
         // Custom wrappers must not silently receive the official CLI's
         // `--profile acp` flags; they opt into args via ARGS_JSON or CONFIG.
