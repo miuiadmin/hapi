@@ -17,6 +17,8 @@ export async function runDsh(opts: {
     existingSessionId?: string
     /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
     reservedSessionId?: string
+    /** Native ACP session id from `--resume`; resumed via session/resume. */
+    resumeSessionId?: string
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -71,7 +73,7 @@ export async function runDsh(opts: {
         client: session,
         path: workingDirectory,
         logPath: logger.getLogPath(),
-        sessionId: bootstrap.metadata.dshSessionId ?? null,
+        sessionId: opts.resumeSessionId ?? bootstrap.metadata.dshSessionId ?? null,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy
