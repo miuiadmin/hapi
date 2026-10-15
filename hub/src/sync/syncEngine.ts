@@ -239,7 +239,12 @@ export class SyncEngine {
         sseManager: SSEManager,
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
-        this.sessionCache = new SessionCache(store, this.eventPublisher)
+        this.sessionCache = new SessionCache(store, this.eventPublisher, {
+            // mergeSessionData is the single choke point that deletes rows for
+            // merges — resume-id rotation here and sessionCache's internal
+            // dedup alike — so enumeration cleanup rides on one hook.
+            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
+        })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
@@ -3533,10 +3538,9 @@ export class SyncEngine {
                 const oldSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
                 if (oldSession) {
                     try {
+                        // Enumeration cleanup for the deleted old row fires via
+                        // the onSessionMergedAway hook wired in the constructor.
                         await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
-                        // mergeSessions deletes the old row: its enumeration
-                        // entries die with it.
-                        this.releaseSessionEnumerations(access.sessionId)
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
                         return { type: 'error', message, code: 'resume_failed' }
