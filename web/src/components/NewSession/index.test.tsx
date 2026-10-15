@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
     codexModelsLoading: false,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
+    dshModels: [] as Array<{ modelId: string; name?: string }>,
+    dshModelsLoading: false,
     directoryExists: undefined as boolean | undefined,
     copilotModels: [] as Array<{ modelId: string; name?: string }>,
     copilotModelsLoading: false,
@@ -118,6 +120,20 @@ vi.mock('@/hooks/queries/useAgyModels', () => ({
         isLoading: mocks.agyModelsLoading,
         error: null,
         refetch: vi.fn()
+    })
+}))
+vi.mock('@/hooks/queries/useDshModels', () => ({
+    useDshModelsForMachine: () => ({
+        availableModels: mocks.dshModels,
+        currentModelId: null,
+        isLoading: mocks.dshModelsLoading,
+        error: null
+    }),
+    useDshModelsForSession: () => ({
+        availableModels: mocks.dshModels,
+        currentModelId: null,
+        isLoading: mocks.dshModelsLoading,
+        error: null
     })
 }))
 vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
@@ -746,6 +762,48 @@ describe('NewSession launch preferences', () => {
             agent: 'dsh',
             yolo: undefined,
             permissionMode: undefined
+        }))
+    })
+
+    it('shows machine DSH models and forwards the opaque tuple on create', async () => {
+        savePreferredAgent('dsh')
+        mocks.dshModels = [
+            { modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+            { modelId: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' },
+        ]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model-options')).toHaveTextContent('DeepSeek-V4-Pro')
+        })
+        mocks.nextModelValue = '["deepseek-official","deepseek-v4-pro"]'
+        fireEvent.click(screen.getByTestId('model'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            model: '["deepseek-official","deepseek-v4-pro"]',
+            yolo: undefined
+        }))
+    })
+
+    it('spawns DSH without a model when Default stays selected', async () => {
+        savePreferredAgent('dsh')
+        mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model-options')).toHaveTextContent('DeepSeek-V41-Flash')
+        })
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            model: undefined
         }))
     })
 
