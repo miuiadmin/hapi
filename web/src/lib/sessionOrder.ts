@@ -11,7 +11,14 @@ export function getSessionOrderKey(session: SessionSummary): number {
     return session.createdAt ?? session.updatedAt
 }
 
-/** Descending comparison of the fixed-order key (newest-created first). */
+/** Descending comparison of the fixed-order key (newest-created first).
+ *  Equal keys tie-break on session id so the order is a total order: the
+ *  hub may return tied sessions in activity order, and without a stable
+ *  tie-break those sessions visibly swap after every refetch. */
 export function compareSessionsByOrderKeyDesc(a: SessionSummary, b: SessionSummary): number {
-    return getSessionOrderKey(b) - getSessionOrderKey(a)
+    const keyDelta = getSessionOrderKey(b) - getSessionOrderKey(a)
+    if (keyDelta !== 0) return keyDelta
+    if (a.id < b.id) return -1
+    if (a.id > b.id) return 1
+    return 0
 }

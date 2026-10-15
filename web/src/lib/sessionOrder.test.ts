@@ -50,4 +50,25 @@ describe('compareSessionsByOrderKeyDesc', () => {
         // busy is far more recently updated, but older-created: sorts last.
         expect(compareSessionsByOrderKeyDesc(stale, busy)).toBeLessThan(0)
     })
+
+    it('tie-breaks equal keys on session id, not activity order', () => {
+        const a = makeSummary({ id: 'aaa', createdAt: 2_000, updatedAt: 1 })
+        const b = makeSummary({ id: 'zzz', createdAt: 2_000, updatedAt: 9_999 })
+        // Same creation instant: the comparator must not depend on which
+        // summary was more recently active.
+        expect(compareSessionsByOrderKeyDesc(a, b)).toBeLessThan(0)
+        expect(compareSessionsByOrderKeyDesc(b, a)).toBeGreaterThan(0)
+    })
+
+    it('sorts tied sessions identically regardless of incoming array order', () => {
+        const tied = ['mid', 'aaa', 'zzz'].map((id) => makeSummary({ id, createdAt: 2_000 }))
+        const newest = makeSummary({ id: 'newest', createdAt: 3_000 })
+        const oldest = makeSummary({ id: 'oldest', createdAt: 1_000 })
+        // Simulate two refetches returning the tied sessions in different
+        // orders (e.g. hub activity ordering): sorted output must match.
+        const first = [oldest, ...tied, newest].sort(compareSessionsByOrderKeyDesc)
+        const second = [newest, ...[...tied].reverse(), oldest].sort(compareSessionsByOrderKeyDesc)
+        expect(second.map((s) => s.id)).toEqual(first.map((s) => s.id))
+        expect(first.map((s) => s.id)).toEqual(['newest', 'aaa', 'mid', 'zzz', 'oldest'])
+    })
 })
