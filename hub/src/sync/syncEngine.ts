@@ -3568,6 +3568,9 @@ export class SyncEngine {
                 if (oldSession) {
                     try {
                         await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
+                        // mergeSessions deletes the old row: its enumeration
+                        // entries die with it.
+                        this.releaseSessionEnumerations(access.sessionId)
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
                         return { type: 'error', message, code: 'resume_failed' }
@@ -4068,7 +4071,10 @@ export class SyncEngine {
         }
         if (session?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'error' })
         const remaining = this.sessionCache.getSession(sessionId)
-        if (remaining && !remaining.active) await this.sessionCache.deleteSession(sessionId)
+        if (remaining && !remaining.active) {
+            await this.sessionCache.deleteSession(sessionId)
+            this.releaseSessionEnumerations(sessionId)
+        }
         this.piUnexpectedTempOriginalIds.delete(sessionId)
         await this.writePiResumeAttempt(originalSessionId, namespace, null, true).catch(() => {})
         return true
@@ -4228,7 +4234,10 @@ export class SyncEngine {
         if (child?.active) this.handleSessionEnd({ sid: childSessionId, time: Date.now(), reason: 'error' })
         if (childSessionId !== session.id) {
             const remaining = this.sessionCache.getSession(childSessionId)
-            if (remaining && !remaining.active) await this.sessionCache.deleteSession(childSessionId)
+            if (remaining && !remaining.active) {
+                await this.sessionCache.deleteSession(childSessionId)
+                this.releaseSessionEnumerations(childSessionId)
+            }
         }
         await this.writePiResumeAttempt(session.id, session.namespace, null, true)
         this.piResumeQuarantinedIds.delete(session.id)
