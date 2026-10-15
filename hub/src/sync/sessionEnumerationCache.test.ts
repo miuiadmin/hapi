@@ -145,4 +145,32 @@ describe('SessionEnumerationCache', () => {
         expect(claude).toEqual(okCommands(1))
         expect(codex).toEqual(okCommands(2))
     })
+
+    it('release() drops the cached value: the next get() refetches', async () => {
+        const h = createHarness()
+        await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(1)), isCacheable)
+
+        h.cache.release('s1|claude')
+        // No TTL game needed — the entry is gone, so even an immediate get()
+        // inside the freshness window must hit the RPC again.
+        const second = await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(2)), isCacheable)
+
+        expect(second).toEqual(okCommands(2))
+        expect(h.fetches.length).toBe(2)
+    })
+
+    it('release() during an in-flight fetch does not resurrect the entry', async () => {
+        const h = createHarness()
+        const first = h.cache.get('s1|claude', deferredFetch(h, okCommands(1)), isCacheable)
+
+        h.cache.release('s1|claude')
+        h.fetches[0].resolve()
+        expect(await first).toEqual(okCommands(1))
+
+        // The late success landed on the detached entry: a subsequent get()
+        // starts cold instead of being served the released value.
+        const second = await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(2)), isCacheable)
+        expect(second).toEqual(okCommands(2))
+        expect(h.fetches.length).toBe(2)
+    })
 })
