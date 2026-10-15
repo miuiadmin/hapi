@@ -13,6 +13,8 @@ const {
     runGrokMock,
     runPiMock,
     runAgyMock,
+    runDshMock,
+    runCursorMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -28,6 +30,8 @@ const {
     runGrokMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
+    runDshMock: vi.fn(async () => {}),
+    runCursorMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -53,6 +57,8 @@ vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
 vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
+vi.mock('@/dsh/runDsh', () => ({ runDsh: runDshMock }))
+vi.mock('@/cursor/runCursor', () => ({ runCursor: runCursorMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -84,6 +90,8 @@ describe('resumeCommand', () => {
         runGrokMock.mockClear()
         runPiMock.mockClear()
         runAgyMock.mockClear()
+        runDshMock.mockClear()
+        runCursorMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -118,6 +126,32 @@ describe('resumeCommand', () => {
             modelReasoningEffort: 'xhigh',
             collaborationMode: 'default'
         })
+    })
+
+    it('dispatches a DSH target to runDsh instead of the cursor fall-through', async () => {
+        // Without an explicit branch the dsh flavor fell through to runCursor,
+        // bootstrapping the row with flavor 'cursor' and the ACP id.
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'acp-session-1',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'acp-session-1',
+            startedBy: 'terminal'
+        })
+        expect(runCursorMock).not.toHaveBeenCalled()
     })
 
     it('rejects resuming an active AGY session (turn could start before handoff)', async () => {
