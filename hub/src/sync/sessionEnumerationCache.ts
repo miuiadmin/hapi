@@ -12,9 +12,9 @@
  *   - a cold fetch is capped at fetchTimeoutMs; on timeout/failure the last
  *     good result (if any) is served instead
  *
- * Entries are keyed per session and never invalidated on session end: values
- * are small and bounded by session count, and a stale entry is harmless (the
- * key is simply never queried again).
+ * Entries are keyed per session. The engine releases a session's entries
+ * when it leaves the active set (deleted or archived), so memory is bounded
+ * by the live session count rather than the hub's lifetime.
  */
 
 interface EnumerationEntry {
@@ -33,6 +33,13 @@ export class SessionEnumerationCache {
             now?: () => number
         }
     ) {}
+
+    /** Drop a key's cached state. A fetch still in flight resolves against
+     *  the detached entry object, so a late success cannot resurrect the
+     *  key — the next get() starts cold. */
+    release(key: string): void {
+        this.entries.delete(key)
+    }
 
     async get<T>(
         key: string,

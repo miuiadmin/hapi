@@ -218,6 +218,14 @@ export class SyncEngine {
         ttlMs: 30_000,
         fetchTimeoutMs: 8_000
     })
+
+    /** Drop cached enumeration RPCs for a session leaving the active set
+     *  (deleted or archived). The keys are never queried again; without this
+     *  the per-session entries would accumulate for the hub's lifetime. */
+    private releaseSessionEnumerations(sessionId: string): void {
+        this.slashCommandsEnumeration.release(sessionId)
+        this.skillsEnumeration.release(sessionId)
+    }
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
@@ -1863,6 +1871,7 @@ export class SyncEngine {
             )
             this.emitCliSessionMetadataUpdate(sessionId)
         }
+        this.releaseSessionEnumerations(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
     }
 
@@ -2120,6 +2129,7 @@ export class SyncEngine {
 
     async deleteSession(sessionId: string): Promise<void> {
         await this.sessionCache.deleteSession(sessionId)
+        this.releaseSessionEnumerations(sessionId)
     }
 
     async applySessionConfig(
