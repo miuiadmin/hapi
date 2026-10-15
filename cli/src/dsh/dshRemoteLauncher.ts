@@ -18,6 +18,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController()
     /** Set when abort closed the ACP session (dsh has no cancel capability). */
     private acpSessionEnded = false
+    /** In-flight abort; queued prompts await it so none races the session close. */
+    private abortCompletion: Promise<void> | null = null
 
     constructor(private readonly session: DshSession) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -49,6 +51,13 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         })
 
         await backend.initialize()
+        // Any close-path cancellation ends the ACP session — including the
+        // permission handler's `abort` decision, which cancels through the
+        // backend directly and never enters handleAbort. Track it centrally
+        // so the next message always respawns the session.
+        backend.onSessionClosedByCancel(() => {
+            this.acpSessionEnded = true
+        })
         let acpSessionId = await backend.newSession({
             cwd: this.session.path,
             // The official DSH ACP composition rejects non-empty MCP servers;
@@ -72,6 +81,15 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             if (!batch) {
                 if (this.abortController.signal.aborted && !this.shouldExit) continue
                 break
+            }
+
+            if (this.abortCompletion) {
+                // An abort is closing (or just closed) the ACP session; let it
+                // finish before dequeuing, so this message never targets the
+                // session being closed nor skips the respawn branch.
+                const pending = this.abortCompletion
+                this.abortCompletion = null
+                await pending
             }
 
             if (this.acpSessionEnded) {
@@ -146,14 +164,11 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
-        if (this.backend && this.session.sessionId) {
-            await this.backend.cancelPrompt(this.session.sessionId)
-            if (!this.backend.supportsCancelNotification()) {
-                // cancelPrompt fell back to session/close: the ACP session is
-                // gone, respawn it when the next message arrives.
-                this.acpSessionEnded = true
-            }
-        }
+        // Record the abort synchronously: the in-flight prompt can complete
+        // while the close request is still on the wire, and the main loop
+        // awaits abortCompletion before dequeuing the next message.
+        this.abortCompletion ??= this.closeSessionForAbort()
+        await this.abortCompletion
         await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
         this.session.queue.reset()
@@ -161,6 +176,15 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort()
         this.abortController = new AbortController()
         this.messageBuffer.addMessage('Turn aborted', 'status')
+    }
+
+    private async closeSessionForAbort(): Promise<void> {
+        if (this.backend && this.session.sessionId) {
+            await this.backend.cancelPrompt(this.session.sessionId)
+            // The onSessionClosedByCancel listener owns acpSessionEnded for
+            // every close-path cancellation; nothing to do here on the
+            // session/cancel path, which keeps the session alive.
+        }
     }
 
     private async handleExitFromUi(): Promise<void> {
