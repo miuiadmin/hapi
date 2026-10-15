@@ -98,6 +98,12 @@ export interface TranscriptionCredentialStatus {
         geminiLive: MaskedCredentialStatus
         qwenRealtime: MaskedCredentialStatus
     }
+    /** Optional: older hub versions won't send this. */
+    elevenLabsMaxDurationSeconds?: {
+        value: number
+        source: ProviderCredentialSource
+        editable: boolean
+    }
 }
 
 export interface TranscriptionCredentialsUpdate {
@@ -112,6 +118,8 @@ export interface TranscriptionCredentialsUpdate {
     }
     geminiLive?: string | null
     qwenRealtime?: string | null
+    /** null resets to the hub default (1800s) */
+    elevenLabsMaxDurationSeconds?: number | null
 }
 
 type ApiClientOptions = {
