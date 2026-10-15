@@ -927,6 +927,11 @@ export function NewSession(props: {
         setAgySelectedModel(
             agent === 'agy' && preferred.model !== 'auto' ? preferred.model : null
         )
+        // Restored DSH tuples are validated against the machine catalog by the
+        // effect above (drops selections the catalog no longer advertises).
+        setDshSelectedModel(
+            agent === 'dsh' && preferred.model !== 'auto' ? preferred.model : null
+        )
     }, [agent, legacyYoloAgent, machineId, usesSharedPermissionMode])
 
     useEffect(() => {

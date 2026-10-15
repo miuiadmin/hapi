@@ -63,7 +63,9 @@ export async function runDsh(opts: {
     session.onUserMessage((message, localId) => {
         queue.push(
             formatMessageWithAttachments(message.content.text, message.content.attachments),
-            { model: currentModel ?? undefined },
+            // Keep null explicit: it is the "Default" reset request from the
+            // picker, distinct from undefined (no model preference yet).
+            { model: currentModel },
             localId
         )
     })

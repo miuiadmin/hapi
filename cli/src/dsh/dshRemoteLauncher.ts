@@ -18,6 +18,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
     private currentBackendModel: string | null = null
+    /** Server default captured at session creation, before any override. */
+    private initialBackendModel: string | null = null
 
     constructor(
         private readonly session: DshSession,
@@ -66,13 +68,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.session.sessionId = acpSessionId
 
         const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
+        // Capture the server default BEFORE applying any override: an explicit
+        // "Default" reset later in the session (queued as model: null) switches
+        // back to this value; without it the reset would silently keep the
+        // last explicitly-applied model.
+        this.initialBackendModel = modelOption?.currentValue
+            ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
+            ?? null
         if (this.opts.model && modelOption) {
             this.currentBackendModel = await this.applyModelSwitch(backend, acpSessionId, this.opts.model)
         }
         if (!this.currentBackendModel) {
-            this.currentBackendModel = modelOption?.currentValue
-                ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
-                ?? null
+            this.currentBackendModel = this.initialBackendModel
         }
         this.opts.onConfigDiscovered?.(this.currentBackendModel)
         if (this.currentBackendModel) {
@@ -108,8 +115,34 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 break
             }
 
-            if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
-                const applied = await this.applyModelSwitch(backend, acpSessionId, batch.mode.model)
+            const requestedModel = batch.mode.model
+            if (requestedModel === null) {
+                // Explicit "Default": switch back to the server default captured
+                // at session creation. The web picker resets the session model
+                // to null and the next queued turn carries it here.
+                if (this.initialBackendModel && this.initialBackendModel !== this.currentBackendModel) {
+                    const applied = await this.applyModelSwitch(backend, acpSessionId, this.initialBackendModel)
+                    if (applied) {
+                        batch.mode.model = applied
+                    } else {
+                        batch.mode.model = this.currentBackendModel ?? undefined
+                        this.opts.onModelRollback?.(this.currentBackendModel)
+                    }
+                } else if (!this.initialBackendModel) {
+                    // Nothing captured to go back to — keep the running model and
+                    // report it back so the picker does not claim "Default".
+                    batch.mode.model = this.currentBackendModel ?? undefined
+                    this.opts.onModelRollback?.(this.currentBackendModel)
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Cannot reset the DSH model: the agent did not report a default model.'
+                    })
+                } else {
+                    // Already running the default.
+                    batch.mode.model = this.currentBackendModel ?? undefined
+                }
+            } else if (requestedModel && requestedModel !== this.currentBackendModel) {
+                const applied = await this.applyModelSwitch(backend, acpSessionId, requestedModel)
                 if (applied) {
                     batch.mode.model = applied
                 } else {

@@ -58,9 +58,11 @@ vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 
-function createSession(mode?: DshMode) {
+function createSessionWithBatches(batches: Array<[string, DshMode]>) {
     const queue = new MessageQueue2<DshMode>((m) => JSON.stringify(m))
-    queue.push('first', mode ?? {})
+    for (const [message, mode] of batches) {
+        queue.push(message, mode)
+    }
     queue.close()
 
     return {
@@ -74,6 +76,10 @@ function createSession(mode?: DshMode) {
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
+}
+
+function createSession(mode?: DshMode) {
+    return createSessionWithBatches([['first', mode ?? {}]])
 }
 
 describe('DshRemoteLauncher', () => {
@@ -149,6 +155,64 @@ describe('DshRemoteLauncher', () => {
         }])
         // The prompt still ran after the switch.
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('resets to the server default when Default is requested after a spawn-time override', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const onConfigDiscovered = vi.fn()
+        // Production sequence: spawn with an override, user later picks
+        // "Default" in the picker, next message carries model: null.
+        const session = createSessionWithBatches([['first', { model: null }]])
+        const launcher = new DshRemoteLauncher(session as never, { model: PRO, onConfigDiscovered })
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([PRO, FLASH])
+        expect(onConfigDiscovered).toHaveBeenCalledWith(PRO)
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('resets to the server default when Default is requested after a per-turn switch', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([
+            ['first', { model: PRO }],
+            ['second', { model: null }]
+        ])
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([PRO, FLASH])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('keeps the running model and reports back when Default is requested but no default was discovered', async () => {
+        // No model config option and no metadata: the server never reported a
+        // default to reset to.
+        harness.modelOption = null
+        harness.modelsMetadata = null
+        const onModelRollback = vi.fn()
+        const session = createSessionWithBatches([
+            ['first', { model: PRO }],
+            ['second', { model: null }]
+        ])
+        const launcher = new DshRemoteLauncher(session as never, { onModelRollback })
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls).toEqual([])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Cannot reset the DSH model: the agent did not report a default model.'
+        })
+        // Both prompts still ran.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
     })
 
     it('keeps the previous model and rolls back when a per-turn switch fails', async () => {

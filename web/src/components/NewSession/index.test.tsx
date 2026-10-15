@@ -807,6 +807,40 @@ describe('NewSession launch preferences', () => {
         }))
     })
 
+    it('restores a preferred DSH model that is still advertised and forwards it on create', async () => {
+        savePreferredAgent('dsh')
+        savePreferredLaunchSettings('machine-1', 'dsh', { model: '["deepseek-official","deepseek-flash"]', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('deepseek-flash'))
+
+        // Remount: the remembered tuple must come back from the preferred
+        // launch settings (not just the in-form draft) and survive the
+        // catalog validation effect.
+        view.unmount()
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('deepseek-flash'))
+
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            model: '["deepseek-official","deepseek-flash"]',
+            yolo: undefined
+        }))
+    })
+
+    it('falls back to Default when a preferred DSH model is no longer advertised', async () => {
+        savePreferredAgent('dsh')
+        savePreferredLaunchSettings('machine-1', 'dsh', { model: '["deepseek-official","removed-model"]', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('auto'))
+    })
+
     it('lets Claude create with a chosen permission mode instead of the global YOLO toggle', async () => {
         savePreferredAgent('claude')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'claude-session' })
