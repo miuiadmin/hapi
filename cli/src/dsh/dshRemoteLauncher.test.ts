@@ -27,7 +27,8 @@ const harness = vi.hoisted(() => ({
     // overlap prompt completion with a pending session/close response.
     cancelBlocker: null as null | Promise<void>,
     // When set, newSession() parks on this promise — lets tests abort inside
-    // the respawn window.
+    // the respawn window, or query the catalog RPC while session/new is still
+    // pending.
     newSessionBlocker: null as null | Promise<void>,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
     modelsMetadata: null as {
@@ -35,10 +36,7 @@ const harness = vi.hoisted(() => ({
         currentModelId: string | null
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
-    configOptionError: null as Error | null,
-    // When set, newSession() parks on this promise — lets tests query the
-    // catalog RPC while session/new is still pending.
-    newSessionBlocker: null as null | Promise<void>
+    configOptionError: null as Error | null
 }))
 
 vi.mock('./utils/dshBackend', () => ({
