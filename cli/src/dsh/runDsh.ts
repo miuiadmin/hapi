@@ -20,6 +20,8 @@ export async function runDsh(opts: {
     reservedSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
+    /** Native ACP session id from `--resume`; resumed via session/resume. */
+    resumeSessionId?: string
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -99,7 +101,7 @@ export async function runDsh(opts: {
         path: workingDirectory,
         logPath: logger.getLogPath(),
         model: opts.model,
-        sessionId: bootstrap.metadata.dshSessionId ?? null,
+        sessionId: opts.resumeSessionId ?? bootstrap.metadata.dshSessionId ?? null,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy
