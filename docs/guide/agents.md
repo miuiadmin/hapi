@@ -259,7 +259,10 @@ If a remote session reports authentication failure, run `grok login --device-aut
 default entrypoint is the official `dsh` CLI with `--profile acp` (the ACP profile
 ships with `@deepseek-ai/dsh` since 0.2.0). Configure a different ACP server or a
 source checkout with `HAPI_DSH_ACP_COMMAND`, `HAPI_DSH_ACP_CONFIG`, or the JSON
-argument array `HAPI_DSH_ACP_ARGS_JSON`.
+argument array `HAPI_DSH_ACP_ARGS_JSON`. `HAPI_DSH_ACP_CONFIG` passes a `--config`
+path to the server named by `HAPI_DSH_ACP_COMMAND`; on the default official CLI
+(which has no `--config` flag) it is applied as a `--patch` overlay on top of
+`--profile acp`.
 
 ```bash
 npm install -g @deepseek-ai/dsh@0.2.0-rc.2

@@ -36,7 +36,12 @@ export function resolveDshAcpCommand(env: DshAcpEnvironment = process.env): {
     }
     const config = env.HAPI_DSH_ACP_CONFIG?.trim()
     if (config) {
-        return { command, args: ['--config', config] }
+        // The official CLI has no `--config` flag: it composes config overlays
+        // via `--patch` on top of a profile, so a config-only override still
+        // needs `--profile acp`. Legacy community servers that speak
+        // `--config` must be pinned with HAPI_DSH_ACP_COMMAND.
+        if (override) return { command, args: ['--config', config] }
+        return { command, args: [...DSH_DEFAULT_ACP_ARGS, '--patch', config] }
     }
     // An explicitly configured server keeps bare `[]` args: custom wrappers
     // must not silently receive the official CLI's `--profile acp` flags.
