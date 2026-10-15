@@ -10,11 +10,13 @@ export function parseDshCommandOptions(commandArgs: string[]) {
     if (commandArgs.includes('--yolo')) {
         throw new Error('DeepSeek Harness permission policy is configured by the ACP server')
     }
-    if (options.model || options.effort || options.modelReasoningEffort) {
-        throw new Error('DeepSeek Harness model and effort are configured by the ACP server')
+    if (options.effort || options.modelReasoningEffort) {
+        throw new Error('DeepSeek Harness effort is configured by the ACP server')
     }
     // --resume is accepted: its value is the native ACP session id, resumed
     // via session/resume by the launcher (stored ids ride --existing-session-id).
+    // --model is accepted: an opaque ACP config-option value forwarded at spawn
+    // and switchable in-chat through session config.
     return { ...options, startingMode: 'remote' as const }
 }
 

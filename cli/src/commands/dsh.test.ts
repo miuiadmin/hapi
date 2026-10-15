@@ -12,13 +12,21 @@ describe('parseDshCommandOptions', () => {
         })
     })
 
-    it('rejects model and HAPI permission controls unsupported by DSH ACP, accepts native resume', () => {
-        expect(() => parseDshCommandOptions(['--model', 'deepseek-v4-pro']))
+    it('rejects HAPI permission controls and effort unsupported by DSH ACP, accepts native resume', async () => {
+        expect(() => parseDshCommandOptions(['--effort', 'high']))
             .toThrow('configured by the ACP server')
         expect(() => parseDshCommandOptions(['--yolo']))
             .toThrow('permission policy')
         // --resume carries the native ACP session id (runner-emitted on reopen).
         expect(parseDshCommandOptions(['--resume', 'acp-session-1']))
             .toEqual({ resumeSessionId: 'acp-session-1', startingMode: 'remote' as const })
+    })
+
+    it('accepts a model override applied through the ACP config option', () => {
+        expect(parseDshCommandOptions(['--model', '["deepseek-official","deepseek-v4-pro"]']))
+            .toEqual({
+                model: '["deepseek-official","deepseek-v4-pro"]',
+                startingMode: 'remote' as const
+            })
     })
 })

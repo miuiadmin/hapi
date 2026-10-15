@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { DshMode } from './types'
 
+const FLASH = '["deepseek-official","deepseek-flash"]'
+const PRO = '["deepseek-official","deepseek-v4-pro"]'
+
 const harness = vi.hoisted(() => ({
     backend: null as Record<string, ReturnType<typeof vi.fn>> | null,
     newSessionConfig: null as unknown,
@@ -25,7 +28,14 @@ const harness = vi.hoisted(() => ({
     cancelBlocker: null as null | Promise<void>,
     // When set, newSession() parks on this promise — lets tests abort inside
     // the respawn window.
-    newSessionBlocker: null as null | Promise<void>
+    newSessionBlocker: null as null | Promise<void>,
+    modelOption: null as { id: string; category?: string; currentValue?: string } | null,
+    modelsMetadata: null as {
+        availableModels: Array<{ modelId: string; name?: string }>
+        currentModelId: string | null
+    } | null,
+    setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
+    configOptionError: null as Error | null
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -62,6 +72,13 @@ vi.mock('./utils/dshBackend', () => ({
                 return (config as { sessionId: string }).sessionId
             }),
             supportsCancelNotification: vi.fn(() => harness.supportsCancel),
+            getConfigOptionByCategory: vi.fn(() => harness.modelOption),
+            getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
+            setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
+                harness.setConfigOptionCalls.push({ sessionId, configId, value })
+                if (harness.configOptionError) throw harness.configOptionError
+                return {}
+            }),
             onStderrError: vi.fn(),
             onSessionClosedByCancel: vi.fn((handler: () => void) => {
                 harness.sessionClosedHandler = handler
@@ -115,11 +132,25 @@ function createSession(queue = createQueue(), sessionId: string | null = null) {
             session.sessionId = id
             session.client.updateMetadata((metadata: unknown) => ({ ...(metadata as Record<string, unknown>), dshSessionId: id }))
         }),
+        getPermissionMode: () => 'default' as const,
         onThinkingChange: vi.fn(),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
     return session
+}
+
+function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: string | null = null) {
+    const queue = createQueue()
+    for (const [message, mode] of batches) {
+        queue.push(message, mode)
+    }
+    queue.close()
+    return createSession(queue, sessionId)
+}
+
+function createSessionWithMode(mode?: DshMode) {
+    return createSessionWithBatches([['first', mode ?? {}]])
 }
 
 describe('DshRemoteLauncher', () => {
@@ -138,13 +169,14 @@ describe('DshRemoteLauncher', () => {
         harness.promptBlocker = null
         harness.cancelBlocker = null
         harness.newSessionBlocker = null
+        harness.modelOption = null
+        harness.modelsMetadata = null
+        harness.setConfigOptionCalls = []
+        harness.configOptionError = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
-        const queue = createQueue()
-        queue.push('first', 'dsh')
-        queue.close()
-        const session = createSession(queue)
+        const session = createSessionWithMode()
         const launcher = new DshRemoteLauncher(session as never)
 
         await launcher.launch()
@@ -165,7 +197,7 @@ describe('DshRemoteLauncher', () => {
     it('resumes the stored ACP session instead of creating a fresh one', async () => {
         harness.supportsResume = true
         const queue = createQueue()
-        queue.push('hello again', 'dsh')
+        queue.push('hello again', {})
         queue.close()
         const session = createSession(queue, 'dsh-stored-1')
         const launcher = new DshRemoteLauncher(session as never)
@@ -191,7 +223,7 @@ describe('DshRemoteLauncher', () => {
         // the id even though the resume returns exactly the requested one.
         harness.supportsResume = true
         const queue = createQueue()
-        queue.push('continue', 'dsh')
+        queue.push('continue', {})
         queue.close()
         const session = createSession(queue, 'dsh-explicit-1')
         const launcher = new DshRemoteLauncher(session as never)
@@ -208,7 +240,7 @@ describe('DshRemoteLauncher', () => {
         harness.supportsResume = true
         harness.resumeError = new Error('session not found on disk')
         const queue = createQueue()
-        queue.push('hello', 'dsh')
+        queue.push('hello', {})
         queue.close()
         const session = createSession(queue, 'dsh-stale-1')
         const launcher = new DshRemoteLauncher(session as never)
@@ -226,7 +258,7 @@ describe('DshRemoteLauncher', () => {
 
     it('pins dshSessionId metadata for a fresh session before the main loop', async () => {
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         queue.close()
         const session = createSession(queue)
         const launcher = new DshRemoteLauncher(session as never)
@@ -247,7 +279,7 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSession(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -260,7 +292,7 @@ describe('DshRemoteLauncher', () => {
         releaseFirstPrompt()
         await killPromise
 
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         queue.close()
         await done
 
@@ -279,7 +311,7 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSession(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -290,7 +322,7 @@ describe('DshRemoteLauncher', () => {
         releaseFirstPrompt()
         await killPromise
 
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         queue.close()
         await done
 
@@ -308,7 +340,7 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSession(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -319,7 +351,7 @@ describe('DshRemoteLauncher', () => {
         await (harness.backend?.cancelPrompt as unknown as (sessionId: string) => Promise<void>)('dsh-session-1')
 
         releaseFirstPrompt()
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         queue.close()
         await done
 
@@ -337,7 +369,7 @@ describe('DshRemoteLauncher', () => {
         let releaseClose!: () => void
         harness.cancelBlocker = new Promise((resolve) => { releaseClose = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSession(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -345,7 +377,7 @@ describe('DshRemoteLauncher', () => {
         await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
 
         // A second message is queued before the abort starts.
-        queue.push('second', 'dsh')
+        queue.push('second', {})
 
         // Abort: the close request parks on cancelBlocker.
         const killPromise = launcher.kill()
@@ -376,14 +408,14 @@ describe('DshRemoteLauncher', () => {
         let releaseClose!: () => void
         harness.cancelBlocker = new Promise((resolve) => { releaseClose = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSession(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
         const done = launcher.launch()
         await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
 
-        queue.push('second', 'dsh')
+        queue.push('second', {})
 
         // The permission handler's abort path: start the close (parks on
         // cancelBlocker) and hand the pending promise to the launcher before
@@ -418,7 +450,7 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSession(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -433,7 +465,7 @@ describe('DshRemoteLauncher', () => {
         // The next message enters the respawn branch; park session/new.
         let releaseNewSession!: () => void
         harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         await vi.waitFor(() => expect(harness.newSessionCalls).toHaveLength(2))
 
         // Abort inside the recreation window, then let session/new resolve.
@@ -442,7 +474,7 @@ describe('DshRemoteLauncher', () => {
         releaseNewSession()
 
         // The aborted 'second' must be dropped, not executed.
-        queue.push('third', 'dsh')
+        queue.push('third', {})
         queue.close()
         await done
 
@@ -451,5 +483,155 @@ describe('DshRemoteLauncher', () => {
             [{ type: 'text', text: 'first' }],
             [{ type: 'text', text: 'third' }]
         ])
+    })
+
+    it('discovers the current model from the model config option', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const onConfigDiscovered = vi.fn()
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never, { onConfigDiscovered })
+
+        await launcher.launch()
+
+        // No override → no set_config_option call, only discovery.
+        expect(harness.setConfigOptionCalls).toEqual([])
+        expect(onConfigDiscovered).toHaveBeenCalledWith(FLASH)
+    })
+
+    it('applies a spawn model override through session/set_config_option', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const onConfigDiscovered = vi.fn()
+        const session = createSessionWithMode({ model: PRO })
+        const launcher = new DshRemoteLauncher(session as never, { model: PRO, onConfigDiscovered })
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls).toEqual([{
+            sessionId: 'dsh-session-1',
+            configId: 'model',
+            value: PRO
+        }])
+        expect(onConfigDiscovered).toHaveBeenCalledWith(PRO)
+    })
+
+    it('switches the model per-turn when the queued mode requests a different one', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithMode({ model: PRO })
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls).toEqual([{
+            sessionId: 'dsh-session-1',
+            configId: 'model',
+            value: PRO
+        }])
+        // The prompt still ran after the switch.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('resets to the server default when Default is requested after a spawn-time override', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const onConfigDiscovered = vi.fn()
+        // Production sequence: spawn with an override, user later picks
+        // "Default" in the picker, next message carries model: null.
+        const session = createSessionWithBatches([['first', { model: null }]])
+        const launcher = new DshRemoteLauncher(session as never, { model: PRO, onConfigDiscovered })
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([PRO, FLASH])
+        expect(onConfigDiscovered).toHaveBeenCalledWith(PRO)
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('resets to the server default when Default is requested after a per-turn switch', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([
+            ['first', { model: PRO }],
+            ['second', { model: null }]
+        ])
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([PRO, FLASH])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('keeps the running model and reports back when Default is requested but no default was discovered', async () => {
+        // No model config option and no metadata: the server never reported a
+        // default to reset to.
+        harness.modelOption = null
+        harness.modelsMetadata = null
+        const onModelRollback = vi.fn()
+        const session = createSessionWithBatches([
+            ['first', { model: PRO }],
+            ['second', { model: null }]
+        ])
+        const launcher = new DshRemoteLauncher(session as never, { onModelRollback })
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls).toEqual([])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Cannot reset the DSH model: the agent did not report a default model.'
+        })
+        // Both prompts still ran.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('keeps the previous model and rolls back when a per-turn switch fails', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.configOptionError = new Error('unknown model option')
+        const onModelRollback = vi.fn()
+        const session = createSessionWithMode({ model: PRO })
+        const launcher = new DshRemoteLauncher(session as never, { onModelRollback })
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls).toHaveLength(1)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Failed to switch DSH model: unknown model option'
+        })
+        expect(onModelRollback).toHaveBeenCalledWith(FLASH)
+        // The prompt still ran with the unchanged model.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('serves ListDshModels with the live current model', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.modelsMetadata = {
+            availableModels: [
+                { modelId: FLASH, name: 'DeepSeek-V41-Flash' },
+                { modelId: PRO, name: 'DeepSeek-V4-Pro' }
+            ],
+            currentModelId: FLASH
+        }
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        const registered = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
+            .find((call) => call[0] === 'listDshModels')
+        expect(registered).toBeTruthy()
+        const handler = registered![1] as () => Promise<unknown>
+        await expect(handler()).resolves.toEqual({
+            success: true,
+            availableModels: [
+                { modelId: FLASH, name: 'DeepSeek-V41-Flash' },
+                { modelId: PRO, name: 'DeepSeek-V4-Pro' }
+            ],
+            currentModelId: FLASH
+        })
     })
 })
