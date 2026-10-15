@@ -234,8 +234,8 @@ export class SyncEngine {
      *  (deleted or archived). The keys are never queried again; without this
      *  the per-session entries would accumulate for the hub's lifetime. */
     private releaseSessionEnumerations(sessionId: string): void {
-        this.slashCommandsEnumeration.release(sessionId)
-        this.skillsEnumeration.release(sessionId)
+        this.slashCommandsEnumeration.releaseSession(sessionId)
+        this.skillsEnumeration.releaseSession(sessionId)
     }
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).

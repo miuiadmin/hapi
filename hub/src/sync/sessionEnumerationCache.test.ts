@@ -146,24 +146,31 @@ describe('SessionEnumerationCache', () => {
         expect(codex).toEqual(okCommands(2))
     })
 
-    it('release() drops the cached value: the next get() refetches', async () => {
+    it('releaseSession() drops the session composite keys but not other sessions', async () => {
         const h = createHarness()
         await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(1)), isCacheable)
+        await h.cache.get('s1|codex', immediateFetch(h, () => okCommands(2)), isCacheable)
+        await h.cache.get('s2|claude', immediateFetch(h, () => okCommands(3)), isCacheable)
 
-        h.cache.release('s1|claude')
-        // No TTL game needed — the entry is gone, so even an immediate get()
-        // inside the freshness window must hit the RPC again.
-        const second = await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(2)), isCacheable)
+        h.cache.releaseSession('s1')
+        // No TTL game needed — the entries are gone, so even an immediate
+        // get() inside the freshness window must hit the RPC again — while
+        // the other session's entry survives.
+        const claudeAgain = await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(4)), isCacheable)
+        const codexAgain = await h.cache.get('s1|codex', immediateFetch(h, () => okCommands(5)), isCacheable)
+        const otherSession = await h.cache.get('s2|claude', immediateFetch(h, () => okCommands(6)), isCacheable)
 
-        expect(second).toEqual(okCommands(2))
-        expect(h.fetches.length).toBe(2)
+        expect(claudeAgain).toEqual(okCommands(4))
+        expect(codexAgain).toEqual(okCommands(5))
+        expect(otherSession).toEqual(okCommands(3))
+        expect(h.fetches.length).toBe(5)
     })
 
-    it('release() during an in-flight fetch does not resurrect the entry', async () => {
+    it('releaseSession() during an in-flight fetch does not resurrect the entry', async () => {
         const h = createHarness()
         const first = h.cache.get('s1|claude', deferredFetch(h, okCommands(1)), isCacheable)
 
-        h.cache.release('s1|claude')
+        h.cache.releaseSession('s1')
         h.fetches[0].resolve()
         expect(await first).toEqual(okCommands(1))
 
