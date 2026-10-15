@@ -99,6 +99,7 @@ export async function runDsh(opts: {
         path: workingDirectory,
         logPath: logger.getLogPath(),
         model: opts.model,
+        sessionId: bootstrap.metadata.dshSessionId ?? null,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy

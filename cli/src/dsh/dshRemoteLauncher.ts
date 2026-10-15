@@ -106,6 +106,29 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         let acpSessionId: string
         try {
             await backend.initialize()
+            const resumeSessionId = this.session.sessionId
+            if (resumeSessionId && backend.supportsSessionResume()) {
+                try {
+                    acpSessionId = await backend.resumeSession({
+                        sessionId: resumeSessionId,
+                        cwd: this.session.path,
+                        // Same as session/new: the official DSH ACP composition
+                        // rejects non-empty MCP servers.
+                        mcpServers: []
+                    })
+                    this.messageBuffer.addMessage('DSH session resumed', 'status')
+                } catch (error) {
+                    // The on-disk dsh session may be gone (cleaned ~/.dsh, version
+                    // migration): start fresh instead of stranding the HAPI session.
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[dsh-acp] session/resume failed; starting a fresh session', { message })
+                    acpSessionId = await backend.newSession({
+                        cwd: this.session.path,
+                        mcpServers: []
+                    })
+                    this.messageBuffer.addMessage('DSH resume failed; started a fresh session', 'status')
+                }
+            } else {
             acpSessionId = await backend.newSession({
                 cwd: this.session.path,
                 // The official DSH ACP composition rejects non-empty MCP servers;
@@ -113,6 +136,17 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 mcpServers: []
             })
             this.session.sessionId = acpSessionId
+            }
+            if (acpSessionId !== resumeSessionId) {
+                // Pin dshSessionId before the main loop so a runner restart can
+                // resume (tiann/hapi#913: gate until the metadata write reaches
+                // the hub — a SIGTERM before that strands the session).
+                this.session.onSessionFound(acpSessionId)
+                const flushed = await this.session.client.flushMetadata()
+                if (!flushed) {
+                    logger.warn(`[dsh-acp] dshSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
+                }
+            }
         } catch (error) {
             markFailed(error)
             throw error

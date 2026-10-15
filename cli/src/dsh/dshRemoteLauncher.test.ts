@@ -33,7 +33,10 @@ const harness = vi.hoisted(() => ({
     promptBlocker: null as null | Promise<void>,
     // When set, a close-path cancelPrompt parks on this promise — lets tests
     // overlap prompt completion with a pending session/close response.
-    cancelBlocker: null as null | Promise<void>
+    cancelBlocker: null as null | Promise<void>,
+    supportsResume: false,
+    resumeCalls: [] as unknown[],
+    resumeError: null as Error | null
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -71,6 +74,12 @@ vi.mock('./utils/dshBackend', () => ({
                 return {}
             }),
             supportsCancelNotification: vi.fn(() => harness.supportsCancel),
+            supportsSessionResume: vi.fn(() => harness.supportsResume),
+            resumeSession: vi.fn(async (config: unknown) => {
+                harness.resumeCalls.push(config)
+                if (harness.resumeError) throw harness.resumeError
+                return (config as { sessionId: string }).sessionId
+            }),
             onStderrError: vi.fn(),
             onSessionClosedByCancel: vi.fn((handler: () => void) => {
                 harness.sessionClosedHandler = handler
@@ -116,18 +125,28 @@ function createQueue() {
     return queue
 }
 
-function createSessionWithQueue(queue = createQueue()) {
-    return {
+function createSessionWithQueue(queue = createQueue(), sessionId: string | null = null) {
+    const session = {
         path: '/tmp/dsh-test',
         logPath: '/tmp/dsh-test/hapi.log',
-        client: { rpcHandlerManager: { registerHandler: vi.fn() } },
+        client: {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn((fn: (metadata: unknown) => unknown) => fn({})),
+            flushMetadata: vi.fn(async () => true)
+        },
         queue,
-        sessionId: null as string | null,
-        getPermissionMode: () => 'default' as const,
+        sessionId,
+        // Mirrors AgentSessionBase.onSessionFound: re-pin the id and write
+        // dshSessionId metadata through the client.
+        onSessionFound: vi.fn((id: string) => {
+            session.sessionId = id
+            session.client.updateMetadata((metadata: unknown) => ({ ...(metadata as Record<string, unknown>), dshSessionId: id }))
+        }),
         onThinkingChange: vi.fn(),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
+    return session
 }
 
 
@@ -152,7 +171,9 @@ describe('DshRemoteLauncher', () => {
         harness.permissionAbortClose = null
         harness.promptBlocker = null
         harness.cancelBlocker = null
-        harness.newSessionBlocker = null
+        harness.supportsResume = false
+        harness.resumeCalls = []
+        harness.resumeError = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -646,5 +667,61 @@ describe('DshRemoteLauncher', () => {
             [{ type: 'text', text: 'first' }],
             [{ type: 'text', text: 'third' }]
         ])
+    })
+
+    it('resumes the stored ACP session instead of creating a fresh one', async () => {
+        harness.supportsResume = true
+        const queue = createQueue()
+        queue.push('hello again', {})
+        queue.close()
+        const session = createSessionWithQueue(queue, 'dsh-stored-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.resumeCalls).toEqual([{
+            sessionId: 'dsh-stored-1',
+            cwd: '/tmp/dsh-test',
+            mcpServers: []
+        }])
+        expect(harness.newSessionCalls).toHaveLength(0)
+        expect(harness.promptSessionIds).toEqual(['dsh-stored-1'])
+        // Resumed id unchanged → no metadata re-pin needed.
+        expect(session.onSessionFound).not.toHaveBeenCalled()
+    })
+
+    it('falls back to a fresh session when resume fails and re-pins metadata', async () => {
+        harness.supportsResume = true
+        harness.resumeError = new Error('session not found on disk')
+        const queue = createQueue()
+        queue.push('hello', {})
+        queue.close()
+        const session = createSessionWithQueue(queue, 'dsh-stale-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.resumeCalls).toHaveLength(1)
+        expect(harness.newSessionCalls).toHaveLength(1)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1'])
+        // The fresh id must replace the stale one in metadata.
+        expect(session.onSessionFound).toHaveBeenCalledWith('dsh-session-1')
+        expect(session.client.flushMetadata).toHaveBeenCalled()
+        expect(session.sessionId).toBe('dsh-session-1')
+    })
+
+    it('pins dshSessionId metadata for a fresh session before the main loop', async () => {
+        const queue = createQueue()
+        queue.push('first', {})
+        queue.close()
+        const session = createSessionWithQueue(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(session.onSessionFound).toHaveBeenCalledWith('dsh-session-1')
+        expect(session.client.updateMetadata).toHaveBeenCalledWith(expect.any(Function))
+        expect(session.client.flushMetadata).toHaveBeenCalled()
+        expect(session.sessionId).toBe('dsh-session-1')
     })
 })
