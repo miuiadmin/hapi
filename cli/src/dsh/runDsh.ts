@@ -71,6 +71,7 @@ export async function runDsh(opts: {
         client: session,
         path: workingDirectory,
         logPath: logger.getLogPath(),
+        sessionId: bootstrap.metadata.dshSessionId ?? null,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy
