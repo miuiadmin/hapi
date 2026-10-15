@@ -774,6 +774,21 @@ describe('groupSessionsByDirectory (固定会话顺序 fixed session order)', ()
         expect(groups.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
     })
 
+    it('orders groups with equal latest-creation instants deterministically (fixed)', () => {
+        // Both directories' newest sessions were created in the same instant;
+        // without a key tie-break their order follows the incoming array
+        // order (which the hub may derive from activity) and shuffles on
+        // every refetch.
+        const dirA = makeSession({ id: 'a', createdAt: 2_000, updatedAt: 50_000, active: true, metadata: { path: '/dir-a' } })
+        const dirB = makeSession({ id: 'b', createdAt: 2_000, updatedAt: 1, metadata: { path: '/dir-b' } })
+
+        const oneWay = groupSessionsByDirectory([dirA, dirB], true)
+        const otherWay = groupSessionsByDirectory([dirB, dirA], true)
+
+        expect(oneWay.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
+        expect(otherWay.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
+    })
+
     it('keeps pinned-session groups first when fixed', () => {
         const groups = groupSessionsByDirectory([
             makeSession({ id: 'plain', createdAt: 9_000, metadata: { path: '/dir-plain' } }),

@@ -22,3 +22,15 @@ export function compareSessionsByOrderKeyDesc(a: SessionSummary, b: SessionSumma
     if (a.id > b.id) return 1
     return 0
 }
+
+/** Descending comparison of a numeric order key with a stable secondary key.
+ *  Group-level sorts compare the group's latest creation instant, and two
+ *  groups can share that instant — tie-break on the group's stable key so
+ *  tied groups keep a deterministic order across refetches. */
+export function compareDescWithKeyTiebreak(
+    a: { key: string; order: number },
+    b: { key: string; order: number }
+): number {
+    if (a.order !== b.order) return b.order - a.order
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0
+}

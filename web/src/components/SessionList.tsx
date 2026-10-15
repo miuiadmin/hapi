@@ -35,7 +35,11 @@ import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
 import { useFixedSessionOrder } from '@/hooks/useFixedSessionOrder'
-import { compareSessionsByOrderKeyDesc, getSessionOrderKey } from '@/lib/sessionOrder'
+import {
+    compareDescWithKeyTiebreak,
+    compareSessionsByOrderKeyDesc,
+    getSessionOrderKey
+} from '@/lib/sessionOrder'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
@@ -399,7 +403,10 @@ export function groupSessionsByDirectory(sessions: SessionSummary[], fixedOrder 
                 return a.hasPinnedSession ? -1 : 1
             }
             if (fixedOrder) {
-                return b.latestCreatedAt - a.latestCreatedAt
+                return compareDescWithKeyTiebreak(
+                    { key: a.key, order: a.latestCreatedAt },
+                    { key: b.key, order: b.latestCreatedAt }
+                )
             }
             if (a.hasActiveSession !== b.hasActiveSession) {
                 return a.hasActiveSession ? -1 : 1
@@ -456,7 +463,10 @@ function groupByMachine(
     return [...map.values()].sort((a, b) => {
         if (a.hasPinnedSession !== b.hasPinnedSession) return a.hasPinnedSession ? -1 : 1
         if (fixedOrder) {
-            return b.latestCreatedAt - a.latestCreatedAt
+            return compareDescWithKeyTiebreak(
+                { key: a.machineId ?? UNKNOWN_MACHINE_ID, order: a.latestCreatedAt },
+                { key: b.machineId ?? UNKNOWN_MACHINE_ID, order: b.latestCreatedAt }
+            )
         }
         if (a.hasActiveSession !== b.hasActiveSession) return a.hasActiveSession ? -1 : 1
         return b.latestUpdatedAt - a.latestUpdatedAt
