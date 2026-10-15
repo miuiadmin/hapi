@@ -20,7 +20,8 @@ const harness = vi.hoisted(() => ({
     configOptionError: null as Error | null,
     supportsCancel: true,
     // When set, newSession() parks on this promise — lets tests query the
-    // catalog RPC while session/new is still pending.
+    // catalog RPC while session/new is still pending, or abort inside the
+    // respawn window.
     newSessionBlocker: null as null | Promise<void>,
     // Registered by onSessionClosedByCancel; fired by the cancelPrompt mock
     // on the close path, mirroring the real backend.
@@ -32,10 +33,7 @@ const harness = vi.hoisted(() => ({
     promptBlocker: null as null | Promise<void>,
     // When set, a close-path cancelPrompt parks on this promise — lets tests
     // overlap prompt completion with a pending session/close response.
-    cancelBlocker: null as null | Promise<void>,
-    // When set, newSession() parks on this promise — lets tests abort inside
-    // the respawn window.
-    newSessionBlocker: null as null | Promise<void>
+    cancelBlocker: null as null | Promise<void>
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -159,7 +157,7 @@ describe('DshRemoteLauncher', () => {
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         queue.close()
         const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
@@ -389,7 +387,7 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -402,7 +400,7 @@ describe('DshRemoteLauncher', () => {
         releaseFirstPrompt()
         await killPromise
 
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         queue.close()
         await done
 
@@ -421,7 +419,7 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -432,7 +430,7 @@ describe('DshRemoteLauncher', () => {
         releaseFirstPrompt()
         await killPromise
 
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         queue.close()
         await done
 
@@ -450,7 +448,7 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -461,7 +459,7 @@ describe('DshRemoteLauncher', () => {
         await (harness.backend?.cancelPrompt as unknown as (sessionId: string) => Promise<void>)('dsh-session-1')
 
         releaseFirstPrompt()
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         queue.close()
         await done
 
@@ -469,17 +467,18 @@ describe('DshRemoteLauncher', () => {
         expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
     })
 
-    it('does not send a queued message to the session while its close is still pending', async () => {
+    it('discards a follow-up queued before the stop when the prompt finishes before the close', async () => {
         // The in-flight prompt can complete while the session/close response
-        // is on the wire; a message queued at that moment must wait for the
-        // abort to finish and then run on the respawned session.
+        // is still on the wire; handleAbort clears the queue synchronously at
+        // the top, so a message queued before the stop is dropped before the
+        // loop can dequeue it — it must never run on the respawned session.
         harness.supportsCancel = false
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         let releaseClose!: () => void
         harness.cancelBlocker = new Promise((resolve) => { releaseClose = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
+        queue.push('first', {})
         const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -487,7 +486,7 @@ describe('DshRemoteLauncher', () => {
         await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
 
         // A second message is queued before the abort starts.
-        queue.push('second', 'dsh')
+        queue.push('second', {})
 
         // Abort: the close request parks on cancelBlocker.
         const killPromise = launcher.kill()
@@ -502,8 +501,12 @@ describe('DshRemoteLauncher', () => {
         queue.close()
         await done
 
-        expect(harness.newSessionCalls).toHaveLength(2)
-        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+        // 'second' was queued before the stop, so the synchronous queue.reset()
+        // in handleAbort discarded it: no respawn (it is lazy, on next message)
+        // and no second prompt.
+        expect(harness.newSessionCalls).toHaveLength(1)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1'])
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
     })
 
     it('defers a queued message when a permission-abort close is still pending', async () => {
@@ -518,14 +521,14 @@ describe('DshRemoteLauncher', () => {
         let releaseClose!: () => void
         harness.cancelBlocker = new Promise((resolve) => { releaseClose = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
-        const session = createSession(queue)
+        queue.push('first', {})
+        const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
         const done = launcher.launch()
         await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
 
-        queue.push('second', 'dsh')
+        queue.push('second', {})
 
         // The permission handler's abort path: start the close (parks on
         // cancelBlocker) and hand the pending promise to the launcher before
@@ -560,8 +563,8 @@ describe('DshRemoteLauncher', () => {
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
-        const session = createSession(queue)
+        queue.push('first', {})
+        const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
         const done = launcher.launch()
@@ -575,7 +578,7 @@ describe('DshRemoteLauncher', () => {
         // The next message enters the respawn branch; park session/new.
         let releaseNewSession!: () => void
         harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         await vi.waitFor(() => expect(harness.newSessionCalls).toHaveLength(2))
 
         // Abort inside the recreation window, then let session/new resolve.
@@ -584,7 +587,7 @@ describe('DshRemoteLauncher', () => {
         releaseNewSession()
 
         // The aborted 'second' must be dropped, not executed.
-        queue.push('third', 'dsh')
+        queue.push('third', {})
         queue.close()
         await done
 
@@ -606,8 +609,8 @@ describe('DshRemoteLauncher', () => {
         let releaseClose!: () => void
         harness.cancelBlocker = new Promise((resolve) => { releaseClose = resolve })
         const queue = createQueue()
-        queue.push('first', 'dsh')
-        const session = createSession(queue)
+        queue.push('first', {})
+        const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
         const done = launcher.launch()
@@ -615,7 +618,7 @@ describe('DshRemoteLauncher', () => {
 
         // A follow-up is queued, then a permission abort starts a close that
         // parks on cancelBlocker and hands the pending close to the launcher.
-        queue.push('second', 'dsh')
+        queue.push('second', {})
         const cancellation = (harness.backend?.cancelPrompt as unknown as (sessionId: string) => Promise<void>)('dsh-session-1')
         harness.permissionAbortClose?.(cancellation)
 
@@ -633,7 +636,7 @@ describe('DshRemoteLauncher', () => {
 
         // The aborted 'second' must be dropped; 'third' runs on the
         // respawned session.
-        queue.push('third', 'dsh')
+        queue.push('third', {})
         queue.close()
         await done
 
