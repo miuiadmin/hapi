@@ -1,4 +1,5 @@
 import React from 'react'
+import { RPC_METHODS } from '@hapi/protocol'
 import { logger } from '@/ui/logger'
 import { convertAgentMessage } from '@/agent/messageConverter'
 import type { AgentMessage, PromptContent } from '@/agent/types'
@@ -16,8 +17,17 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createDshBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
+    private currentBackendModel: string | null = null
 
-    constructor(private readonly session: DshSession) {
+    constructor(
+        private readonly session: DshSession,
+        private readonly opts: {
+            /** Spawn-time model override (opaque ACP config-option value). */
+            model?: string
+            onModelRollback?: (model: string | null) => void
+            onConfigDiscovered?: (model: string | null) => void
+        } = {}
+    ) {
         super(process.env.DEBUG ? session.logPath : undefined)
     }
 
@@ -55,6 +65,20 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         })
         this.session.sessionId = acpSessionId
 
+        const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
+        if (this.opts.model && modelOption) {
+            this.currentBackendModel = await this.applyModelSwitch(backend, acpSessionId, this.opts.model)
+        }
+        if (!this.currentBackendModel) {
+            this.currentBackendModel = modelOption?.currentValue
+                ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
+                ?? null
+        }
+        this.opts.onConfigDiscovered?.(this.currentBackendModel)
+        if (this.currentBackendModel) {
+            this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
+        }
+
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
             backend,
@@ -65,11 +89,33 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             onSwitch: () => this.handleExitFromUi()
         })
 
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListDshModels, async () => {
+            const metadata = backend.getSessionModelsMetadata(acpSessionId)
+            if (!metadata) {
+                return { success: false, error: 'DSH model metadata is not available' }
+            }
+            return {
+                success: true,
+                availableModels: metadata.availableModels,
+                currentModelId: this.currentBackendModel ?? metadata.currentModelId
+            }
+        })
+
         while (!this.shouldExit) {
             const batch = await this.session.queue.waitForMessagesAndGetAsString(this.abortController.signal)
             if (!batch) {
                 if (this.abortController.signal.aborted && !this.shouldExit) continue
                 break
+            }
+
+            if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
+                const applied = await this.applyModelSwitch(backend, acpSessionId, batch.mode.model)
+                if (applied) {
+                    batch.mode.model = applied
+                } else {
+                    batch.mode.model = this.currentBackendModel ?? undefined
+                    this.opts.onModelRollback?.(this.currentBackendModel)
+                }
             }
 
             this.session.onThinkingChange(true)
@@ -127,6 +173,44 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 const _exhaustive: never = message
                 return _exhaustive
             }
+        }
+    }
+
+    /**
+     * Switch the DSH model through `session/set_config_option` — dsh does not
+     * implement `session/set_model` (verified against 0.2.0-rc.2: -32601).
+     * Model ids are opaque config-option values (JSON provider+model tuples)
+     * and are sent back verbatim; unknown ids fail loud with -32602.
+     * Returns the applied model, or null when the switch failed (caller keeps
+     * the previous model).
+     */
+    private async applyModelSwitch(
+        backend: ReturnType<typeof createDshBackend>,
+        acpSessionId: string,
+        model: string
+    ): Promise<string | null> {
+        const option = backend.getConfigOptionByCategory(acpSessionId, 'model')
+        if (!option) {
+            logger.warn('[dsh-acp] Cannot switch model: agent exposes no model config option')
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: 'Cannot switch model: the DSH agent exposes no model config option.'
+            })
+            return null
+        }
+        try {
+            await backend.setConfigOption(acpSessionId, option.id, model)
+            this.currentBackendModel = model
+            this.messageBuffer.addMessage(`[MODEL:${model}]`, 'system')
+            return model
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn('[dsh-acp] model switch failed', { message })
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Failed to switch DSH model: ${message}`
+            })
+            return null
         }
     }
 

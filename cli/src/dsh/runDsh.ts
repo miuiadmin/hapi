@@ -3,6 +3,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
+import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
@@ -17,6 +18,8 @@ export async function runDsh(opts: {
     existingSessionId?: string
     /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
     reservedSessionId?: string
+    /** Spawn-time model override (opaque ACP config-option value). */
+    model?: string
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -39,7 +42,8 @@ export async function runDsh(opts: {
             startedBy,
             workingDirectory,
             agentState: initialState,
-            reservedSessionId: opts.reservedSessionId
+            reservedSessionId: opts.reservedSessionId,
+            model: opts.model
         })
     const { api, session } = bootstrap
     setControlledByUser(session, startingMode)
@@ -47,15 +51,35 @@ export async function runDsh(opts: {
     const queue = new MessageQueue2<DshMode>((mode) => hashObject(mode))
     const sessionRef: { current: DshSession | null } = { current: null }
     const launcherRef: { current: DshRemoteLauncher | null } = { current: null }
+    let currentModel: string | null = opts.model ?? null
+
+    const syncSessionMode = () => {
+        const active = sessionRef.current
+        if (!active) return
+        active.setModel(currentModel)
+        active.pushKeepAlive()
+    }
 
     session.onUserMessage((message, localId) => {
         queue.push(
             formatMessageWithAttachments(message.content.text, message.content.attachments),
-            'dsh',
+            { model: currentModel ?? undefined },
             localId
         )
     })
     session.onCancelQueuedMessage((localId) => queue.cancelByLocalId(localId))
+
+    registerSessionConfigRpc({
+        rpcHandlerManager: session.rpcHandlerManager,
+        flavor: 'dsh',
+        modelMode: 'nullable',
+        modelReasoningEffortMode: 'ignore',
+        effortMode: 'ignore',
+        onApply: (config) => {
+            if (config.model !== undefined) currentModel = config.model
+        },
+        onAfterApply: syncSessionMode
+    })
 
     const lifecycle = createRunnerLifecycle({
         session,
@@ -71,11 +95,22 @@ export async function runDsh(opts: {
         client: session,
         path: workingDirectory,
         logPath: logger.getLogPath(),
+        model: opts.model,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy
     })
-    const launcher = new DshRemoteLauncher(dshSession)
+    const launcher = new DshRemoteLauncher(dshSession, {
+        model: opts.model,
+        onModelRollback: (model) => {
+            currentModel = model
+            syncSessionMode()
+        },
+        onConfigDiscovered: (model) => {
+            currentModel = model
+            syncSessionMode()
+        }
+    })
     sessionRef.current = dshSession
     launcherRef.current = launcher
 
