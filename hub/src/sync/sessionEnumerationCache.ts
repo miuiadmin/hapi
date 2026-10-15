@@ -34,11 +34,18 @@ export class SessionEnumerationCache {
         }
     ) {}
 
-    /** Drop a key's cached state. A fetch still in flight resolves against
-     *  the detached entry object, so a late success cannot resurrect the
-     *  key — the next get() starts cold. */
-    release(key: string): void {
-        this.entries.delete(key)
+    /** Drop every entry belonging to the given session. Keys are
+     *  `<sessionId>|<agent>` composites and session ids cannot contain '|',
+     *  so a `sessionId|` prefix match is unambiguous. A fetch still in
+     *  flight resolves against its detached entry object, so a late success
+     *  cannot resurrect a released key — the next get() starts cold. */
+    releaseSession(sessionId: string): void {
+        const prefix = `${sessionId}|`
+        for (const key of [...this.entries.keys()]) {
+            if (key.startsWith(prefix)) {
+                this.entries.delete(key)
+            }
+        }
     }
 
     async get<T>(
