@@ -16,6 +16,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createDshBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
+    /** Set when abort closed the ACP session (dsh has no cancel capability). */
+    private acpSessionEnded = false
 
     constructor(private readonly session: DshSession) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -107,6 +109,19 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 break
             }
 
+            if (this.acpSessionEnded) {
+                // Abort on dsh goes through session/close (no cancel capability),
+                // which ends the ACP session but leaves the process alive —
+                // start a fresh session so the next message keeps flowing.
+                acpSessionId = await backend.newSession({
+                    cwd: this.session.path,
+                    mcpServers: []
+                })
+                this.session.sessionId = acpSessionId
+                this.acpSessionEnded = false
+                this.messageBuffer.addMessage('DSH session restarted after abort', 'status')
+            }
+
             this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
             const prompt: PromptContent[] = [{ type: 'text', text: batch.message }]
@@ -168,6 +183,11 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
+            if (!this.backend.supportsCancelNotification()) {
+                // cancelPrompt fell back to session/close: the ACP session is
+                // gone, respawn it when the next message arrives.
+                this.acpSessionEnded = true
+            }
         }
         await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
