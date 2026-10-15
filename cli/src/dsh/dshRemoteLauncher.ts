@@ -58,14 +58,51 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             this.messageBuffer.addMessage(error.message, 'status')
         })
 
-        await backend.initialize()
-        const acpSessionId = await backend.newSession({
-            cwd: this.session.path,
-            // The official DSH ACP composition rejects non-empty MCP servers;
-            // its tools are configured by the DSH server itself.
-            mcpServers: []
+        // Register the catalog RPC before initialization: a client that opens
+        // the model picker while initialize/session/new is still pending
+        // would otherwise hit an unregistered-method rejection, and the
+        // picker has no retry path — it would stay empty until remounted.
+        // The handler parks on readiness and answers once the session exists
+        // and model discovery has settled.
+        let markReady!: (acpSessionId: string) => void
+        let markFailed!: (error: unknown) => void
+        const ready = new Promise<string>((resolve, reject) => {
+            markReady = resolve
+            markFailed = reject
         })
-        this.session.sessionId = acpSessionId
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListDshModels, async () => {
+            let acpSessionId: string
+            try {
+                acpSessionId = await ready
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                return { success: false, error: `DSH session is not available: ${message}` }
+            }
+            const metadata = backend.getSessionModelsMetadata(acpSessionId)
+            if (!metadata) {
+                return { success: false, error: 'DSH model metadata is not available' }
+            }
+            return {
+                success: true,
+                availableModels: metadata.availableModels,
+                currentModelId: this.currentBackendModel ?? metadata.currentModelId
+            }
+        })
+
+        let acpSessionId: string
+        try {
+            await backend.initialize()
+            acpSessionId = await backend.newSession({
+                cwd: this.session.path,
+                // The official DSH ACP composition rejects non-empty MCP servers;
+                // its tools are configured by the DSH server itself.
+                mcpServers: []
+            })
+            this.session.sessionId = acpSessionId
+        } catch (error) {
+            markFailed(error)
+            throw error
+        }
 
         const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
         // Capture the server default BEFORE applying any override: an explicit
@@ -85,6 +122,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
         }
+        markReady(acpSessionId)
 
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
@@ -94,18 +132,6 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleExitFromUi()
-        })
-
-        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListDshModels, async () => {
-            const metadata = backend.getSessionModelsMetadata(acpSessionId)
-            if (!metadata) {
-                return { success: false, error: 'DSH model metadata is not available' }
-            }
-            return {
-                success: true,
-                availableModels: metadata.availableModels,
-                currentModelId: this.currentBackendModel ?? metadata.currentModelId
-            }
         })
 
         while (!this.shouldExit) {

@@ -10,7 +10,7 @@ import { logger } from '@/ui/logger'
 import type { AgentState } from '@/api/types'
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 import { DshSession } from './session'
-import type { DshMode } from './types'
+import { dshModeForPreference, type DshMode } from './types'
 
 export async function runDsh(opts: {
     startedBy?: 'runner' | 'terminal'
@@ -51,21 +51,22 @@ export async function runDsh(opts: {
     const queue = new MessageQueue2<DshMode>((mode) => hashObject(mode))
     const sessionRef: { current: DshSession | null } = { current: null }
     const launcherRef: { current: DshRemoteLauncher | null } = { current: null }
-    let currentModel: string | null = opts.model ?? null
+    // Three-state preference: undefined = nothing requested yet (ordinary
+    // turns carry no model field), null = the picker's explicit "Default"
+    // reset, string = a concrete model. Only the config RPC ever sets null.
+    let currentModel: string | null | undefined = opts.model
 
     const syncSessionMode = () => {
         const active = sessionRef.current
         if (!active) return
-        active.setModel(currentModel)
+        active.setModel(currentModel ?? null)
         active.pushKeepAlive()
     }
 
     session.onUserMessage((message, localId) => {
         queue.push(
             formatMessageWithAttachments(message.content.text, message.content.attachments),
-            // Keep null explicit: it is the "Default" reset request from the
-            // picker, distinct from undefined (no model preference yet).
-            { model: currentModel },
+            dshModeForPreference(currentModel),
             localId
         )
     })
@@ -105,11 +106,13 @@ export async function runDsh(opts: {
     const launcher = new DshRemoteLauncher(dshSession, {
         model: opts.model,
         onModelRollback: (model) => {
-            currentModel = model
+            currentModel = model ?? undefined
             syncSessionMode()
         },
         onConfigDiscovered: (model) => {
-            currentModel = model
+            // Discovery reporting no model leaves the preference unset — an
+            // ordinary turn must not turn into a "Default" reset request.
+            currentModel = model ?? undefined
             syncSessionMode()
         }
     })

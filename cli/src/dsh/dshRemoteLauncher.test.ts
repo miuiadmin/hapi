@@ -15,7 +15,10 @@ const harness = vi.hoisted(() => ({
         currentModelId: string | null
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
-    configOptionError: null as Error | null
+    configOptionError: null as Error | null,
+    // When set, newSession() parks on this promise — lets tests query the
+    // catalog RPC while session/new is still pending.
+    newSessionBlocker: null as null | Promise<void>
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -24,6 +27,9 @@ vi.mock('./utils/dshBackend', () => ({
             initialize: vi.fn(async () => {}),
             newSession: vi.fn(async (config: unknown) => {
                 harness.newSessionConfig = config
+                if (harness.newSessionBlocker) {
+                    await harness.newSessionBlocker
+                }
                 return 'dsh-session-1'
             }),
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
@@ -91,6 +97,7 @@ describe('DshRemoteLauncher', () => {
         harness.modelsMetadata = null
         harness.setConfigOptionCalls = []
         harness.configOptionError = null
+        harness.newSessionBlocker = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -232,6 +239,58 @@ describe('DshRemoteLauncher', () => {
         expect(onModelRollback).toHaveBeenCalledWith(FLASH)
         // The prompt still ran with the unchanged model.
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('does not treat an ordinary turn without model metadata as a reset request', async () => {
+        // No model option and no metadata: the server never reported a model,
+        // so a preference-less turn (mode {}) must run as an ordinary prompt
+        // without emitting the reset-failure event.
+        harness.modelOption = null
+        harness.modelsMetadata = null
+        const session = createSession()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const resetFailures = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '').includes('Cannot reset'))
+        expect(resetFailures).toEqual([])
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('answers ListDshModels once a delayed session/new completes', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.modelsMetadata = {
+            availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
+            currentModelId: FLASH
+        }
+        // Park session/new: the picker's catalog query arrives while the ACP
+        // session is still being created.
+        let releaseNewSession!: () => void
+        harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
+        const session = createSession()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        const registered = await vi.waitFor(() => {
+            const call = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
+                .find((c) => c[0] === 'listDshModels')
+            expect(call).toBeTruthy()
+            return call!
+        })
+
+        // The handler is registered before initialization; invoking it while
+        // session/new is pending must park on readiness, not fail.
+        const pending = (registered[1] as () => Promise<unknown>)()
+        releaseNewSession()
+        await done
+
+        await expect(pending).resolves.toEqual({
+            success: true,
+            availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
+            currentModelId: FLASH
+        })
     })
 
     it('serves ListDshModels with the live current model', async () => {
