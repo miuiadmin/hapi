@@ -16,6 +16,11 @@ on:
   schedule:
     - cron: '43 6 * * *'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish to (default: latest). Use a pinned tag to publish a stack build without touching the rolling latest.'
+        default: 'latest'
+        required: false
 
 permissions:
   contents: write
@@ -77,25 +82,28 @@ jobs:
 
       - name: version
         id: ver
-        run: echo "v=$(jq -r .version cli/package.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "v=$(jq -r .version cli/package.json)" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ inputs.tag || 'latest' }}" >> "$GITHUB_OUTPUT"
 
-      - name: create rolling latest release
+      - name: create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
+          tag_name: ${{ steps.ver.outputs.tag }}
           name: hapi ${{ steps.ver.outputs.v }} (stripped)
-          target_commitish: main
+          target_commitish: ${{ github.sha }}
           body: |
             Automated build of **hapi ${{ steps.ver.outputs.v }}** with the embedded
             `tunwg` / WireGuard tunnel component stripped.
 
-            Built from upstream `tiann/hapi` @ ${{ github.sha }}.
-            The strip patch is [`patches/strip-tunwg.patch`](https://github.com/${{ github.repository }}/blob/main/patches/strip-tunwg.patch).
+            Built from `${{ github.repository }}` `${{ github.ref_name }}` @ ${{ github.sha }}.
+            The strip patch is [`patches/strip-tunwg.patch`](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/patches/strip-tunwg.patch).
 
             ## Install (macOS / Linux)
             ```bash
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
             ```
+            (installs the rolling `latest` release)
 
             ## Verify
             Each binary is scanner-clean: `grep -aci wireguard hapi-*` → `0`.
@@ -107,5 +115,5 @@ jobs:
             hub, runner, sessions, web UI — are identical to upstream.
           files: |
             artifacts/*
-          make_latest: true
+          make_latest: ${{ steps.ver.outputs.tag == 'latest' && 'true' || 'false' }}
           prerelease: false
