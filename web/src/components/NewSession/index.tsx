@@ -1714,7 +1714,7 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
-                yolo: agent === 'dsh' || usesNativeSelect ? undefined : yoloMode,
+                yolo: usesNativeSelect ? undefined : yoloMode,
                 permissionMode: agent === 'grok'
                     ? grokPermissionMode
                     : usesSharedPermissionMode
