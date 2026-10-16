@@ -8,6 +8,7 @@ import type {
     ClaudePermissionMode,
     CodexPermissionMode,
     CursorPermissionMode,
+    DshPermissionMode,
     GrokPermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
@@ -199,13 +200,15 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
 
     if (target.flavor === 'dsh') {
         const { runDsh } = await import('@/dsh/runDsh')
-        // dsh is remote-only (its command parser forces remote mode) and has
-        // Managed permissions, so no local mode or permission mode to pass.
+        // dsh is remote-only (its command parser forces remote mode); the
+        // stored mode and model flow through the shared ACP launch path.
         await runDsh({
             existingSessionId: base.existingSessionId,
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
-            startedBy: base.startedBy
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as DshPermissionMode | undefined,
+            model: target.model ?? undefined
         })
         return
     }

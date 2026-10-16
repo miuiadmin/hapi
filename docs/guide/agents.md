@@ -52,7 +52,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini and fresh-session-only DSH cannot be resumed. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. Pi, Antigravity, and DSH resume with input still controlled from HAPI rather than the terminal.
 
 ### Mathematical formulas in HAPI Markdown
 
@@ -286,12 +286,13 @@ export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "de
 hapi dsh
 ```
 
-DSH sessions are remote-only and fresh-session-only. HAPI does not inject MCP
-servers or expose model/effort pickers because the official ACP contract leaves
-those surfaces to the DSH composition. Permission policy is controlled
-HAPI-side through the shared ACP permission bridge: pick a launch mode
-(`--permission-mode`, or `--yolo`) and switch mid-session from the web UI;
-one-shot permission requests auto-approve under yolo-style modes and escalate
+DSH sessions are remote-only. HAPI does not inject MCP servers or expose an
+effort picker because the official ACP contract leaves those surfaces to the
+DSH composition; the model picker lists what the ACP server advertises.
+Permission policy is controlled HAPI-side through the shared ACP permission
+bridge: pick a launch mode (`--permission-mode`, or `--yolo`) and switch
+mid-session from the web UI — resuming re-applies the stored mode and model.
+One-shot permission requests auto-approve under yolo-style modes and escalate
 to the standard HAPI permission card otherwise.
 
 ## Other agents
