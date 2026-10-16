@@ -21,6 +21,9 @@ const harness = vi.hoisted(() => ({
     // Captured 4th constructor arg of AcpPermissionHandler: the synchronous
     // pending-close handoff for permission 'abort' decisions.
     permissionAbortClose: null as ((cancellation: Promise<void>) => void) | null,
+    // Captured 3rd constructor arg: the live permission-mode getter consulted
+    // by the ACP permission bridge on every permission request.
+    permissionGetMode: null as (() => string | undefined) | null,
     // When set, prompt() parks on this promise — lets tests abort mid-turn.
     promptBlocker: null as null | Promise<void>,
     // When set, a close-path cancelPrompt parks on this promise — lets tests
@@ -97,9 +100,10 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
         constructor(
             _session: unknown,
             _backend: unknown,
-            _getPermissionMode: unknown,
+            getPermissionMode: () => string | undefined,
             onAbortClose?: (cancellation: Promise<void>) => void
         ) {
+            harness.permissionGetMode = getPermissionMode
             harness.permissionAbortClose = onAbortClose ?? null
         }
         async cancelAll(): Promise<void> {}
@@ -133,7 +137,9 @@ function createSession(queue = createQueue(), sessionId: string | null = null) {
             session.sessionId = id
             session.client.updateMetadata((metadata: unknown) => ({ ...(metadata as Record<string, unknown>), dshSessionId: id }))
         }),
-        getPermissionMode: () => 'default' as const,
+        // Annotated wide so tests can override the method with any mode (or
+        // undefined) — the launcher only reads it through the captured getter.
+        getPermissionMode: (): string | undefined => 'default',
         onThinkingChange: vi.fn(),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
@@ -167,6 +173,7 @@ describe('DshRemoteLauncher', () => {
         harness.supportsCancel = true
         harness.sessionClosedHandler = null
         harness.permissionAbortClose = null
+        harness.permissionGetMode = null
         harness.promptBlocker = null
         harness.cancelBlocker = null
         harness.newSessionBlocker = null
@@ -194,6 +201,43 @@ describe('DshRemoteLauncher', () => {
         })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
         expect(harness.backend?.disconnect).toHaveBeenCalled()
+    })
+
+    it('wires the session permission mode into the ACP permission bridge', async () => {
+        // The bridge must consult the live session mode on every permission
+        // request — without this wiring, yolo cannot auto-approve and every
+        // request escalates to a permission card.
+        const session = createSessionWithMode()
+        session.getPermissionMode = () => 'yolo'
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.permissionGetMode).not.toBeNull()
+        expect(harness.permissionGetMode?.()).toBe('yolo')
+    })
+
+    it('observes runtime mode changes made after launch (SetSessionConfig wiring)', async () => {
+        // The mode picker applies changes via SetSessionConfig →
+        // session.setPermissionMode; the bridge must read through to the
+        // session on each permission request, not a launch-time copy.
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+        session.getPermissionMode = () => 'yolo'
+
+        expect(harness.permissionGetMode?.()).toBe('yolo')
+    })
+
+    it('reports an unset permission mode to the bridge (card escalation)', async () => {
+        const session = createSessionWithMode()
+        session.getPermissionMode = () => undefined
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.permissionGetMode?.()).toBeUndefined()
     })
 
     it('resumes the stored ACP session instead of creating a fresh one', async () => {

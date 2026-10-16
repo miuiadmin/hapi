@@ -3,12 +3,13 @@ import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
-import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
+import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
 import type { AgentState } from '@/api/types'
+import type { DshPermissionMode } from '@hapi/protocol/types'
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 import { DshSession } from './session'
 import { dshModeForPreference, type DshMode } from './types'
@@ -24,6 +25,7 @@ export async function runDsh(opts: {
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
     workingDirectory?: string
+    permissionMode?: DshPermissionMode
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
     const startedBy = opts.startedBy ?? 'terminal'
@@ -83,6 +85,12 @@ export async function runDsh(opts: {
         effortMode: 'ignore',
         onApply: (config) => {
             if (config.model !== undefined) currentModel = config.model
+            // Runtime permission-mode switching (mode picker in the web/mobile
+            // UI); the applied mode is what the ACP permission bridge consults
+            // per request.
+            if (config.permissionMode !== undefined) {
+                sessionRef.current?.setPermissionMode(config.permissionMode)
+            }
         },
         onAfterApply: syncSessionMode
     })
@@ -109,7 +117,8 @@ export async function runDsh(opts: {
         model: opts.model,
         messageQueue: queue,
         onModeChange: () => {},
-        startedBy
+        startedBy,
+        permissionMode: opts.permissionMode
     })
     const launcher = new DshRemoteLauncher(dshSession, {
         model: opts.model,
