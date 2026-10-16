@@ -19,7 +19,7 @@ agent's integration; their supported syntax varies by agent.
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
-| DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓ |
+| DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Antigravity (agy) | `hapi agy` | Persistent headless NDJSON over stdio | — | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
@@ -297,9 +297,11 @@ as unavailable rather than falling back to a fresh shell. HAPI does not inject
 MCP servers. Model selection is available: the DSH composition's model catalog
 is exposed through the session RPC `ListDshModels` and applied per turn with
 ACP `session/set_config_option`. Effort pickers are not exposed because the
-official ACP contract leaves that surface to the DSH composition. Pending
-one-shot permission requests remain answerable in the standard HAPI UI, but
-the ACP composition owns the overall permission policy.
+official ACP contract leaves that surface to the DSH composition. Permission
+policy is controlled HAPI-side through the shared ACP permission bridge: pick
+a launch mode (`--permission-mode`, or `--yolo`) and switch mid-session from
+the web UI; one-shot permission requests auto-approve under yolo-style modes
+and escalate to the standard HAPI permission card otherwise.
 
 HAPI's `$` skill menu for DSH sessions reads the same skill roots DSH's own
 skill filesystem uses: `$DSH_HOME/skills` (`~/.dsh/skills` by default), the
