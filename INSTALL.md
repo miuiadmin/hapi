@@ -41,6 +41,30 @@ HAPI_API_URL=https://hapi.supertoken.lol CLI_API_TOKEN=xxxx \
   curl -fsSL https://raw.githubusercontent.com/miuiadmin/hapi/main/install.sh | bash
 ```
 
+### Pinned releases (stack builds)
+
+`install.sh` always installs the **rolling `latest`** release, which tracks
+upstream `main`. If your machine runs a **pinned stack build** (a custom deploy
+stack with extra commits, e.g. `v14-stack`), do **not** re-run `install.sh` on
+it — that would silently replace the stack build with the rolling one.
+
+Pinned releases are published manually from a stack branch via the `tag` input:
+
+```bash
+gh workflow run build.yml -R miuiadmin/hapi --ref <stack-branch> -f tag=<tag>
+```
+
+On a pinned machine, upgrade by downloading the artifact directly (verify
+against the `checksums.sha256` asset in the same release **before** any
+re-signing — re-signing changes the file hash):
+
+```
+https://github.com/miuiadmin/hapi/releases/download/<tag>/hapi-<platform>
+```
+
+Pinned releases never take the `latest` badge, so the one-click install above
+keeps tracking the rolling build for everyone else.
+
 ---
 
 ## Company network / infosec whitelist

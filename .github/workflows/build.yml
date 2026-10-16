@@ -26,7 +26,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: build
+  # Per-target group: a pinned-stack build (tag != latest) must not queue behind
+  # (or be queued behind by) the rolling daily build.
+  group: build-${{ inputs.tag || 'latest' }}
   cancel-in-progress: false
 
 jobs:
