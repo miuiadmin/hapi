@@ -36,7 +36,9 @@ const harness = vi.hoisted(() => ({
     cancelBlocker: null as null | Promise<void>,
     supportsResume: false,
     resumeCalls: [] as unknown[],
-    resumeError: null as Error | null
+    resumeError: null as Error | null,
+    permissionGetMode: null as (() => string | undefined) | null,
+    sessionPermissionMode: undefined as string | undefined
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -97,9 +99,10 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
         constructor(
             _session: unknown,
             _backend: unknown,
-            _getPermissionMode: unknown,
+            getPermissionMode: () => string | undefined,
             onAbortClose?: (cancellation: Promise<void>) => void
         ) {
+            harness.permissionGetMode = getPermissionMode
             harness.permissionAbortClose = onAbortClose ?? null
         }
         async cancelAll(): Promise<void> {}
@@ -136,6 +139,7 @@ function createSessionWithQueue(queue = createQueue(), sessionId: string | null 
         },
         queue,
         sessionId,
+        getPermissionMode: () => harness.sessionPermissionMode,
         // Mirrors AgentSessionBase.onSessionFound: re-pin the id and write
         // dshSessionId metadata through the client.
         onSessionFound: vi.fn((id: string) => {
@@ -174,6 +178,8 @@ describe('DshRemoteLauncher', () => {
         harness.supportsResume = false
         harness.resumeCalls = []
         harness.resumeError = null
+        harness.permissionGetMode = null
+        harness.sessionPermissionMode = undefined
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -196,6 +202,35 @@ describe('DshRemoteLauncher', () => {
         })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
         expect(harness.backend?.disconnect).toHaveBeenCalled()
+    })
+
+    it('wires the session permission mode into the ACP permission bridge', async () => {
+        // The bridge must consult the live session mode on every permission
+        // request — without this wiring, yolo cannot auto-approve and every
+        // request escalates to a permission card.
+        harness.sessionPermissionMode = 'yolo'
+        const queue = createQueue()
+        queue.push('first', {})
+        queue.close()
+        const session = createSessionWithQueue(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.permissionGetMode).not.toBeNull()
+        expect(harness.permissionGetMode?.()).toBe('yolo')
+    })
+
+    it('reports an unset permission mode to the bridge (card escalation)', async () => {
+        const queue = createQueue()
+        queue.push('first', {})
+        queue.close()
+        const session = createSessionWithQueue(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.permissionGetMode?.()).toBeUndefined()
     })
 
     it('discovers the current model from the model config option', async () => {
