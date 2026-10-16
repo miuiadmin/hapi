@@ -149,9 +149,38 @@ describe('resumeCommand', () => {
             existingSessionId: 'hapi-session-dsh',
             workingDirectory: '/tmp/project',
             resumeSessionId: 'acp-session-1',
-            startedBy: 'terminal'
+            startedBy: 'terminal',
+            permissionMode: 'default'
         })
         expect(runCursorMock).not.toHaveBeenCalled()
+    })
+
+    it('forwards the stored permission mode and model to the resumed DSH session', async () => {
+        // Without forwarding, a yolo DSH session resumed as default silently
+        // downgraded permissions and dropped the stored model.
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'acp-session-1',
+            permissionMode: 'yolo',
+            model: 'deepseek-v4-pro'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'acp-session-1',
+            startedBy: 'terminal',
+            permissionMode: 'yolo',
+            model: 'deepseek-v4-pro'
+        })
     })
 
     it('hands off an active DSH target to the local terminal before dispatching to runDsh', async () => {
@@ -182,7 +211,8 @@ describe('resumeCommand', () => {
             existingSessionId: 'hapi-session-dsh',
             workingDirectory: '/tmp/project',
             resumeSessionId: 'acp-session-1',
-            startedBy: 'terminal'
+            startedBy: 'terminal',
+            permissionMode: 'default'
         })
     })
 

@@ -188,8 +188,10 @@ The official ACP demo is fresh-session-only and does not support native resume,
 model switching, MCP injection, or live tool/reasoning telemetry. HAPI uses the
 standard chat and pending one-shot permission surfaces; permission policy is
 controlled HAPI-side through the shared ACP permission bridge (launch with
-`--permission-mode` or `--yolo`, switch mid-session from the web UI), while
-resume and model controls remain unadvertised for DSH.
+`--permission-mode` or `--yolo`, switch mid-session from the web UI). Sessions
+resume through `hapi resume` with the stored permission mode and model
+re-applied; the model picker lists what the ACP server advertises, while
+effort stays configured ACP-server-side.
 
 ### Required
 
