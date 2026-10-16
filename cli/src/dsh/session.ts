@@ -1,6 +1,7 @@
 import { ApiClient, ApiSessionClient } from '@/lib'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
+import type { PermissionMode } from '@hapi/protocol/types'
 import type { DshMode } from './types'
 
 /** Remote-only HAPI session wrapper for the fresh-session DSH ACP server. */
@@ -19,6 +20,7 @@ export class DshSession extends AgentSessionBase<DshMode> {
         messageQueue: MessageQueue2<DshMode>
         onModeChange: (mode: 'local' | 'remote') => void
         startedBy: 'runner' | 'terminal'
+        permissionMode?: PermissionMode
     }) {
         super({
             api: opts.api,
@@ -38,7 +40,8 @@ export class DshSession extends AgentSessionBase<DshMode> {
             applySessionIdToMetadata: (metadata, sessionId) => ({
                 ...metadata,
                 dshSessionId: sessionId
-            })
+            }),
+            permissionMode: opts.permissionMode
         })
         this.startedBy = opts.startedBy
     }
@@ -46,6 +49,13 @@ export class DshSession extends AgentSessionBase<DshMode> {
     setModel = (model: string | null): void => {
         this.model = model;
     };
+
+    /** Runtime permission-mode updates (SetSessionConfig RPC). Writes the
+     *  inherited field so `getPermissionMode()` — read by the ACP permission
+     *  bridge on every permission request — sees the change immediately. */
+    setPermissionMode = (mode: PermissionMode): void => {
+        this.permissionMode = mode
+    }
 
     sendAgentMessage = (message: unknown): void => {
         this.client.sendAgentMessage(message)
