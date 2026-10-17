@@ -160,13 +160,15 @@ describe('disablePeerTools hub setting wire shapes', () => {
         const parsed = HubSettingsResponseSchema.safeParse({
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
+            autoTitlePerTurn: false,
             disablePeerTools: true
         })
         expect(parsed.success).toBe(true)
         if (parsed.success) expect(parsed.data.disablePeerTools).toBe(true)
         expect(HubSettingsResponseSchema.safeParse({
             sessionSummaryContract: false,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            autoTitlePerTurn: false
         }).success).toBe(false)
     })
 

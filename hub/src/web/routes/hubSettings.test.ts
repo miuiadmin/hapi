@@ -99,14 +99,16 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(await put.json()).toEqual({
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
-            autoTitlePerTurn: true
+            autoTitlePerTurn: true,
+            disablePeerTools: false
         })
 
         const get = await app.request('/api/hub-settings')
         expect(await get.json()).toEqual({
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
-            autoTitlePerTurn: true
+            autoTitlePerTurn: true,
+            disablePeerTools: false
         })
 
         const off = await app.request('/api/hub-settings', {
@@ -118,7 +120,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(await off.json()).toEqual({
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
-            autoTitlePerTurn: false
+            autoTitlePerTurn: false,
+            disablePeerTools: false
         })
     })
 
@@ -245,6 +248,7 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(await put.json()).toEqual({
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
+            autoTitlePerTurn: false,
             disablePeerTools: true
         })
 
@@ -252,6 +256,7 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(await get.json()).toEqual({
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
+            autoTitlePerTurn: false,
             disablePeerTools: true
         })
     })
