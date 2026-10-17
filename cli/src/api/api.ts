@@ -2,6 +2,7 @@ import axios from 'axios'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
 import { applyHubAutoTitlePerTurn } from '@/modules/common/titleInstruction'
+import { applyHubPeerToolsDisabled } from '@/modules/common/peerTools'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
@@ -95,6 +96,9 @@ export class ApiClient {
         if (typeof parsed.data.autoTitlePerTurn === 'boolean') {
             applyHubAutoTitlePerTurn(parsed.data.autoTitlePerTurn)
         }
+        if (typeof parsed.data.disablePeerTools === 'boolean') {
+            applyHubPeerToolsDisabled(parsed.data.disablePeerTools)
+        }
 
         const raw = parsed.data.session
 
@@ -153,6 +157,9 @@ export class ApiClient {
         }
         if (typeof parsed.data.autoTitlePerTurn === 'boolean') {
             applyHubAutoTitlePerTurn(parsed.data.autoTitlePerTurn)
+        }
+        if (typeof parsed.data.disablePeerTools === 'boolean') {
+            applyHubPeerToolsDisabled(parsed.data.disablePeerTools)
         }
 
         const raw = parsed.data.session
