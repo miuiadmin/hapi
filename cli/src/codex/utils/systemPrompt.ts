@@ -18,7 +18,8 @@ import { buildPerTurnTitleParagraph, isAutoTitlePerTurnEnabled } from '@/modules
  * Note: Codex exposes MCP tools under the `functions.` namespace,
  * so the tool is called as `functions.hapi__change_title`.
  */
-export const TITLE_INSTRUCTION = trimIdent(`
+function buildCodexTitleInstruction(env: NodeJS.ProcessEnv): string {
+    return trimIdent(`
     Use the title tool sparingly. For a new chat, call it once after the user's initial request is clear, and set a concise task title.
     Prefer calling functions.hapi__change_title.
     If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
@@ -27,25 +28,35 @@ export const TITLE_INSTRUCTION = trimIdent(`
     ${DISPLAY_IMAGE_PROMPT_CODEX}
     ${DISPLAY_VIDEO_PROMPT_CODEX}
     ${DISPLAY_MEDIA_PROMPT_CODEX}
-    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
+    ${isPeerToolsDisabled(env) ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'functions.hapi__inspect_peer',
         pingTool: 'functions.hapi__ping_peer',
         listPeersTool: 'functions.hapi__list_peers',
     })}
 `);
+}
+
+/**
+ * Import-time snapshot resolved from process.env only; does not reflect the
+ * hub toggle applied at session bootstrap. Kept for existing tests — use
+ * getCodexSystemPrompt(env) in production paths.
+ *
+ * @deprecated use getCodexSystemPrompt(env)
+ */
+export const TITLE_INSTRUCTION = buildCodexTitleInstruction(process.env)
 
 /**
  * Per-turn variant: swaps the sparing block for the shared rewrite steer
  * (keeps the Codex alias hint) while display/citation blocks stay put.
  */
-function buildPerTurnTitleInstruction(): string {
+function buildPerTurnTitleInstruction(env: NodeJS.ProcessEnv): string {
     return trimIdent(`
     ${buildPerTurnTitleParagraph('functions.hapi__change_title')}
     If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
     ${DISPLAY_IMAGE_PROMPT_CODEX}
     ${DISPLAY_VIDEO_PROMPT_CODEX}
     ${DISPLAY_MEDIA_PROMPT_CODEX}
-    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
+    ${isPeerToolsDisabled(env) ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'functions.hapi__inspect_peer',
         pingTool: 'functions.hapi__ping_peer',
         listPeersTool: 'functions.hapi__list_peers',
@@ -55,15 +66,17 @@ function buildPerTurnTitleInstruction(): string {
 
 /**
  * The system prompt to inject via developer_instructions in local mode.
- * Session-summary contract and the per-turn title steer are resolved at call
- * time (hub toggle / env).
+ * Session-summary contract, the per-turn title steer, and the peer steer are
+ * resolved at call time (hub toggles / env).
  */
 export function getCodexSystemPrompt(env: NodeJS.ProcessEnv = process.env): string {
     const base = isAutoTitlePerTurnEnabled(env)
-        ? buildPerTurnTitleInstruction()
-        : TITLE_INSTRUCTION;
+        ? buildPerTurnTitleInstruction(env)
+        : buildCodexTitleInstruction(env);
     return withSessionSummaryInstruction(base, env);
 }
 
-/** Alias kept for existing call sites / tests that expect a string constant name. */
+/**
+ * @deprecated Import-time snapshot; use getCodexSystemPrompt(env).
+ */
 export const codexSystemPrompt = TITLE_INSTRUCTION

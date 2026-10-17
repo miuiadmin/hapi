@@ -14,7 +14,9 @@ const TITLE_SPARING_LINE =
     'Use the title tool sparingly. For a new chat, call the tool "mcp__hapi__change_title" once after the user\'s initial request is clear, and set a concise task title. Do not rename the chat for routine progress, substeps, implementation details, or a slightly better wording. Rename only when the user\'s primary objective changes substantially and the existing title would be misleading.';
 
 /**
- * Base system prompt shared across all configurations
+ * Base system prompt shared across all configurations. The peer steer is
+ * resolved at call time so the hub toggle applied at session bootstrap
+ * (after module import) is honored.
  */
 function buildBaseSystemPrompt(env: NodeJS.ProcessEnv): string {
     const titleSteer = isAutoTitlePerTurnEnabled(env)
@@ -25,7 +27,7 @@ function buildBaseSystemPrompt(env: NodeJS.ProcessEnv): string {
     ${DISPLAY_IMAGE_PROMPT_CLAUDE}
     ${DISPLAY_VIDEO_PROMPT_CLAUDE}
     ${DISPLAY_MEDIA_PROMPT_CLAUDE}
-    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
+    ${isPeerToolsDisabled(env) ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'mcp__hapi__inspect_peer',
         pingTool: 'mcp__hapi__ping_peer',
         listPeersTool: 'mcp__hapi__list_peers',
@@ -48,9 +50,9 @@ const CO_AUTHORED_CREDITS = (() => trimIdent(`
 
 /**
  * Resolve the Claude append-system-prompt text.
- * Co-Authored-By is read once from Claude settings; session-summary contract
- * and the per-turn title steer are resolved at call time so hub toggles /
- * env apply after session bootstrap.
+ * Co-Authored-By is read once from Claude settings; session-summary
+ * contract, the per-turn title steer, and the peer steer are resolved at
+ * call time so hub toggles / env apply after session bootstrap.
  */
 export function getSystemPrompt(env: NodeJS.ProcessEnv = process.env): string {
     const includeCoAuthored = shouldIncludeCoAuthoredBy();
