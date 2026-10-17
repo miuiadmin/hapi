@@ -10,6 +10,7 @@ import {
 import { getConfiguration } from '../../configuration'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { readAutoTitlePerTurnEnabled } from '../../config/autoTitlePerTurn'
+import { readDisablePeerToolsEnabled } from '../../config/disablePeerTools'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
@@ -145,7 +146,10 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
                 getConfiguration().dataDir
             )
             const autoTitlePerTurn = await readAutoTitlePerTurnEnabled(getConfiguration().dataDir)
-            return c.json({ session, sessionSummaryContract, autoTitlePerTurn })
+            const disablePeerTools = await readDisablePeerToolsEnabled(
+                getConfiguration().dataDir
+            )
+            return c.json({ session, sessionSummaryContract, autoTitlePerTurn, disablePeerTools })
         } catch (error) {
             if (error instanceof SessionIdentityConflictError) {
                 return c.json({ error: error.message }, 409)
@@ -270,7 +274,10 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             getConfiguration().dataDir
         )
         const autoTitlePerTurn = await readAutoTitlePerTurnEnabled(getConfiguration().dataDir)
-        return c.json({ session: resolved.session, sessionSummaryContract, autoTitlePerTurn })
+        const disablePeerTools = await readDisablePeerToolsEnabled(
+            getConfiguration().dataDir
+        )
+        return c.json({ session: resolved.session, sessionSummaryContract, autoTitlePerTurn, disablePeerTools })
     })
 
     app.get('/sessions/:id/messages', (c) => {

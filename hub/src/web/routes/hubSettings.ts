@@ -15,7 +15,8 @@ function toHubSettings(settings: Settings): HubSettingsResponse {
     return {
         sessionSummaryContract: settings.sessionSummaryContract === true,
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
-        autoTitlePerTurn: settings.autoTitlePerTurn === true
+        autoTitlePerTurn: settings.autoTitlePerTurn === true,
+        disablePeerTools: settings.disablePeerTools === true
     }
 }
 
@@ -49,6 +50,9 @@ export function createHubSettingsRoutes(dataDir: string, store: Store): Hono<Web
             }
             if (parsed.data.autoTitlePerTurn !== undefined) {
                 settings.autoTitlePerTurn = parsed.data.autoTitlePerTurn
+            }
+            if (parsed.data.disablePeerTools !== undefined) {
+                settings.disablePeerTools = parsed.data.disablePeerTools
             }
             return {
                 settings,
