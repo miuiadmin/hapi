@@ -176,4 +176,20 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
     })
 
+
+    it('hides peer tools under HAPI_DISABLE_PEER_TOOLS even when listed in --tools', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        try {
+            await runHappyMcpStdioBridge([
+                '--url',
+                'http://127.0.0.1:43006',
+                '--tools',
+                'change_title,list_peers,ping_peer,inspect_peer'
+            ])
+
+            expect([...harness.tools.keys()]).toEqual(['change_title'])
+        } finally {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        }
+    })
 })
