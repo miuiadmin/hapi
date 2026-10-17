@@ -24,8 +24,8 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setAppBadgeEnabled: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, autoTitlePerTurn: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, autoTitlePerTurn: false })
+const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, autoTitlePerTurn: false, disablePeerTools: false })
+const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, autoTitlePerTurn: false, disablePeerTools: false })
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -221,8 +221,8 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, autoTitlePerTurn: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, autoTitlePerTurn: false })
+        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, autoTitlePerTurn: false, disablePeerTools: false })
+        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, autoTitlePerTurn: false, disablePeerTools: false })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -258,10 +258,11 @@ describe('responsive settings pages', () => {
     })
 
     it('explains and keeps summary generation separate from chat display', async () => {
-        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; autoTitlePerTurn?: boolean }) => ({
+        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; autoTitlePerTurn?: boolean; disablePeerTools?: boolean }) => ({
             sessionSummaryContract: patch.sessionSummaryContract ?? false,
             sessionSummaryInChat: patch.sessionSummaryInChat ?? false,
             autoTitlePerTurn: patch.autoTitlePerTurn ?? false,
+            disablePeerTools: patch.disablePeerTools ?? false,
         }))
 
         renderPage(<SettingsGeneralPage />)
@@ -295,6 +296,26 @@ describe('responsive settings pages', () => {
         fireEvent.click(toggle)
         await waitFor(() => {
             expect(updateHubSettings).toHaveBeenCalledWith({ autoTitlePerTurn: true })
+        })
+    })
+
+    it('toggles the hub-wide peer-tools opt-out from the general page', async () => {
+        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; autoTitlePerTurn?: boolean; disablePeerTools?: boolean }) => ({
+            sessionSummaryContract: patch.sessionSummaryContract ?? false,
+            sessionSummaryInChat: patch.sessionSummaryInChat ?? false,
+            autoTitlePerTurn: patch.autoTitlePerTurn ?? false,
+            disablePeerTools: patch.disablePeerTools ?? false,
+        }))
+
+        renderPage(<SettingsGeneralPage />)
+
+        expect(await screen.findByRole('heading', { name: 'Peer session tools' })).toBeInTheDocument()
+        expect(screen.getByText('Control whether agents can browse or contact other sessions on this hub.')).toBeInTheDocument()
+        const toggle = await screen.findByRole('checkbox', { name: 'Disable peer session tools' })
+        expect(toggle).not.toBeChecked()
+        fireEvent.click(toggle)
+        await waitFor(() => {
+            expect(updateHubSettings).toHaveBeenCalledWith({ disablePeerTools: true })
         })
     })
 

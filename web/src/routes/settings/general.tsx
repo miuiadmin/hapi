@@ -41,7 +41,7 @@ export default function SettingsGeneralPage() {
     })
 
     const hubSettingsMutation = useMutation({
-        mutationFn: async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; autoTitlePerTurn?: boolean }) => {
+        mutationFn: async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; autoTitlePerTurn?: boolean; disablePeerTools?: boolean }) => {
             if (!api) throw new Error('API unavailable')
             return await api.updateHubSettings(patch)
         },
@@ -98,6 +98,24 @@ export default function SettingsGeneralPage() {
                             hubSettingsMutation.mutate({ autoTitlePerTurn: checked })
                         }}
                     />
+                </SettingsSection>
+            ) : null}
+            {isOwner ? (
+                <SettingsSection
+                    title={t('settings.general.peerTools.title')}
+                    description={t('settings.general.peerTools.description')}
+                >
+                    {hubSettingsQuery.data ? (
+                        <SettingsSwitch
+                            label={t('settings.general.disablePeerTools')}
+                            description={t('settings.general.disablePeerTools.desc')}
+                            checked={hubSettingsQuery.data.disablePeerTools}
+                            onChange={(checked) => {
+                                if (hubSettingsMutation.isPending) return
+                                hubSettingsMutation.mutate({ disablePeerTools: checked })
+                            }}
+                        />
+                    ) : null}
                 </SettingsSection>
             ) : null}
             <SettingsSection title={t('settings.companion.title')}>
