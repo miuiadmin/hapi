@@ -170,6 +170,40 @@ function triggerIncomingUserMessage(
     })
 }
 
+describe('ApiSessionClient peer-tools snapshot (#2056)', () => {
+    it('captures the create-time preference from the bootstrap row', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', { ...createSession(), peerToolsDisabled: true })
+        expect(client.peerToolsDisabled).toBe(true)
+        client.close()
+    })
+
+    it('stays undefined when an older hub does not send the preference', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession())
+        expect(client.peerToolsDisabled).toBeUndefined()
+        client.close()
+    })
+
+    it('adopts the snapshot when a pending session lazy-materializes', async () => {
+        socketHarness.sockets.length = 0
+        const materialize = vi.fn(async () => createSession({ namespace: 'default' }))
+        const client = new ApiSessionClient('token', createSession(), { materialize })
+        client.sendUserMessage('hello')
+        expect(await client.materialize()).toBe(true)
+        expect(client.peerToolsDisabled).toBeUndefined()
+        client.close()
+
+        socketHarness.sockets.length = 0
+        const materializeDisabled = vi.fn(async () => ({ ...createSession({ namespace: 'default' }), peerToolsDisabled: true }))
+        const adopted = new ApiSessionClient('token', createSession(), { materialize: materializeDisabled })
+        adopted.sendUserMessage('hello')
+        expect(await adopted.materialize()).toBe(true)
+        expect(adopted.peerToolsDisabled).toBe(true)
+        adopted.close()
+    })
+})
+
 describe('ApiSessionClient lazy materialization', () => {
     it('does not connect or materialize without a real user message', async () => {
         socketHarness.sockets.length = 0
