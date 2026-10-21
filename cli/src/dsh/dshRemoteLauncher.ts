@@ -233,17 +233,41 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 
             if (this.acpSessionEnded) {
                 // Abort on dsh goes through session/close (no cancel capability),
-                // which ends the ACP session but leaves the process alive —
-                // start a fresh session so the next message keeps flowing.
+                // which ends the ACP session but leaves the process alive — and
+                // the closed session stays durable on disk, so resume it for the
+                // next message: an abort must not cost the conversation history
+                // (verified against dsh 0.2.x: session/close → session/resume
+                // keeps every prior turn). Only when the stored id no longer
+                // resumes (cleaned ~/.dsh, version migration) start fresh.
                 // Snapshot the abort generation: an abort landing while the
                 // replacement session is being created targets the old session
                 // id and must also discard the already-dequeued batch (the user
                 // saw 'Session aborted').
                 const generationBeforeRespawn = this.abortGeneration
-                acpSessionId = await backend.newSession({
-                    cwd: this.session.path,
-                    mcpServers: []
-                })
+                let resumed = false
+                if (this.session.sessionId && backend.supportsSessionResume()) {
+                    try {
+                        acpSessionId = await backend.resumeSession({
+                            sessionId: this.session.sessionId,
+                            cwd: this.session.path,
+                            // Same as session/new: the official DSH ACP
+                            // composition rejects non-empty MCP servers.
+                            mcpServers: []
+                        })
+                        resumed = true
+                    } catch (error) {
+                        // Mirror the startup path: a stale on-disk session must
+                        // not strand the HAPI session.
+                        const message = error instanceof Error ? error.message : String(error)
+                        logger.warn('[dsh-acp] session/resume after abort failed; starting a fresh session', { message })
+                    }
+                }
+                if (!resumed) {
+                    acpSessionId = await backend.newSession({
+                        cwd: this.session.path,
+                        mcpServers: []
+                    })
+                }
                 // Re-pin through onSessionFound: the respawn replaces the stored
                 // dshSessionId, so a runner restart resumes the live session.
                 this.session.onSessionFound(acpSessionId)
@@ -256,7 +280,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     continue
                 }
                 this.acpSessionEnded = false
-                this.messageBuffer.addMessage('DSH session restarted after abort', 'status')
+                this.messageBuffer.addMessage(resumed ? 'DSH session resumed after abort' : 'DSH session restarted after abort', 'status')
             }
 
             const requestedModel = batch.mode.model
@@ -393,8 +417,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 
     private async handleAbort(): Promise<void> {
         // Bump first, synchronously: the respawn branch compares generations
-        // around its `await backend.newSession(...)` to detect aborts that
-        // land inside that window.
+        // around its resume/new-session `await`s to detect aborts that land
+        // inside that window.
         this.abortGeneration += 1
         // Tear the queue down synchronously, BEFORE awaiting the close: the
         // in-flight prompt can complete while the close request is still on

@@ -14,6 +14,9 @@ const harness = vi.hoisted(() => ({
     supportsResume: false,
     resumeCalls: [] as unknown[],
     resumeError: null as Error | null,
+    // When set, resumeSession() parks on this promise — lets tests abort
+    // inside the post-abort respawn window.
+    resumeBlocker: null as null | Promise<void>,
     supportsCancel: true,
     // Registered by onSessionClosedByCancel; fired by the cancelPrompt mock
     // on the close path, mirroring the real backend.
@@ -72,6 +75,9 @@ vi.mock('./utils/dshBackend', () => ({
             supportsSessionResume: vi.fn(() => harness.supportsResume),
             resumeSession: vi.fn(async (config: unknown) => {
                 harness.resumeCalls.push(config)
+                if (harness.resumeBlocker) {
+                    await harness.resumeBlocker
+                }
                 if (harness.resumeError) throw harness.resumeError
                 return (config as { sessionId: string }).sessionId
             }),
@@ -170,6 +176,7 @@ describe('DshRemoteLauncher', () => {
         harness.supportsResume = false
         harness.resumeCalls = []
         harness.resumeError = null
+        harness.resumeBlocker = null
         harness.supportsCancel = true
         harness.sessionClosedHandler = null
         harness.permissionAbortClose = null
@@ -320,7 +327,8 @@ describe('DshRemoteLauncher', () => {
     it('respawns the ACP session for the next message after a close-based abort', async () => {
         // dsh advertises close/list/resume without cancel: abort falls back to
         // session/close, which ends the ACP session but leaves the process
-        // alive. The launcher must open a fresh session before the next prompt.
+        // alive. Servers without the resume capability (or a stale stored id,
+        // covered below) must open a fresh session before the next prompt.
         harness.supportsCancel = false
         let releaseFirstPrompt!: () => void
         harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
@@ -349,6 +357,127 @@ describe('DshRemoteLauncher', () => {
         expect(harness.prompts).toEqual([
             [{ type: 'text', text: 'first' }],
             [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('resumes the aborted ACP session so the next message keeps its history', async () => {
+        // dsh sessions are durable on disk: session/close ends the ACP session
+        // but the transcript survives, and session/resume reloads it with every
+        // prior turn (verified against dsh 0.2.x). The post-abort respawn must
+        // resume the closed id instead of opening a blank session — otherwise
+        // a pause mid-run silently forgets the whole conversation.
+        harness.supportsCancel = false
+        harness.supportsResume = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        const killPromise = launcher.kill()
+        expect(harness.backend?.cancelPrompt).toHaveBeenCalledWith('dsh-session-1')
+        releaseFirstPrompt()
+        await killPromise
+
+        queue.push('second', {})
+        queue.close()
+        await done
+
+        // The closed session is resumed by id — no second session/new.
+        expect(harness.resumeCalls).toEqual([{
+            sessionId: 'dsh-session-1',
+            cwd: '/tmp/dsh-test',
+            mcpServers: []
+        }])
+        expect(harness.newSessionCalls).toHaveLength(1)
+        // Both turns run on the SAME session: the conversation history carries
+        // across the abort.
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-1'])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('falls back to a fresh session after an abort when the resume fails', async () => {
+        // The closed session may no longer be on disk (cleaned ~/.dsh, version
+        // migration): the respawn must fall back to session/new instead of
+        // stranding the HAPI session.
+        harness.supportsCancel = false
+        harness.supportsResume = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        const killPromise = launcher.kill()
+        releaseFirstPrompt()
+        await killPromise
+
+        // The on-disk session vanishes between the abort and the next message.
+        harness.resumeError = new Error('session not found on disk')
+        queue.push('second', {})
+        queue.close()
+        await done
+
+        expect(harness.resumeCalls).toHaveLength(1)
+        expect(harness.newSessionCalls).toHaveLength(2)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+        // The fresh id replaces the unresumable one in metadata.
+        expect(session.onSessionFound).toHaveBeenCalledWith('dsh-session-2')
+        expect(session.sessionId).toBe('dsh-session-2')
+    })
+
+    it('drops the dequeued message when an abort lands while the closed session is being resumed', async () => {
+        // An abort inside the post-abort resume window targets the already
+        // closed session id; the generation check must discard the dequeued
+        // batch and re-enter the respawn branch for the next message.
+        harness.supportsCancel = false
+        harness.supportsResume = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        const killPromise = launcher.kill()
+        releaseFirstPrompt()
+        await killPromise
+
+        // The next message enters the respawn branch; park session/resume.
+        let releaseResume!: () => void
+        harness.resumeBlocker = new Promise((resolve) => { releaseResume = resolve })
+        queue.push('second', {})
+        await vi.waitFor(() => expect(harness.resumeCalls).toHaveLength(1))
+
+        // Abort inside the resume window, then let session/resume resolve.
+        const secondKill = launcher.kill()
+        await secondKill
+        releaseResume()
+
+        // The aborted 'second' must be dropped, not executed; 'third' resumes
+        // the still-stored id cleanly.
+        queue.push('third', {})
+        queue.close()
+        await done
+
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-1'])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'third' }]
         ])
     })
 

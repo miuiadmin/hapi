@@ -293,7 +293,10 @@ hapi dsh
 
 DSH sessions are remote-only. HAPI resumes DSH sessions through their native
 ACP session ids (`session/resume`); sessions without a native id report resume
-as unavailable rather than falling back to a fresh shell. HAPI does not inject
+as unavailable rather than falling back to a fresh shell. Aborting a running
+turn (pause) closes the ACP session — the next message resumes the same durable
+session, so the conversation history survives the pause (a fresh session is
+only opened when the stored id no longer resumes). HAPI does not inject
 MCP servers or expose an effort picker because the official ACP contract
 leaves those surfaces to the DSH composition; the model picker lists what the
 ACP server advertises. Permission policy is controlled HAPI-side through the
