@@ -1,0 +1,37 @@
+diff --git a/hub/scripts/download-tunwg.ts b/hub/scripts/download-tunwg.ts
+index 655ebeb..66e5995 100644
+--- a/hub/scripts/download-tunwg.ts
++++ b/hub/scripts/download-tunwg.ts
+@@ -21,21 +21,22 @@ const TUNWG_RELEASES: Record<string, string> = {
+ 
+ const LICENSE_URL = 'https://raw.githubusercontent.com/tiann/tunwg/refs/heads/main/LICENSE';
+ 
+-async function downloadFile(url: string, destPath: string): Promise<void> {
+-    console.log(`Downloading ${url}...`);
++// STRIPPED BUILD: real tunwg binary removed (see patches/strip-tunwg.patch).
++// hapi embeds tunwg (github.com/tiann/tunwg, a WireGuard userspace tunnel) for its
++// optional `hapi hub --relay` public-relay feature — unused when self-hosting a hub.
++// The embedded binary is also what makes scanners flag "wireguard". This replaces the
++// downloaded tunwg with a tiny neutral placeholder so the exe's file-asset imports
++// still resolve, with no wireguard code/trademark and no build-time network fetch.
++const STRIPPED_PLACEHOLDER = Buffer.from('removed\n');
+ 
+-    const response = await fetch(url, { redirect: 'follow' });
+-    if (!response.ok) {
+-        throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
+-    }
++async function downloadFile(url: string, destPath: string): Promise<void> {
++    console.log(`[STRIPPED] placeholder for ${url} -> ${destPath}`);
+ 
+-    const buffer = await response.arrayBuffer();
+ 	const dirName = dirname(destPath);
+-	console.log(`  ->mkdirDir ${dirName}`);
+     mkdirSync(dirName, { recursive: true });
+-    writeFileSync(destPath, Buffer.from(buffer));
++    writeFileSync(destPath, STRIPPED_PLACEHOLDER);
+ 
+-    console.log(`  -> ${destPath} (${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
++    console.log(`  -> ${destPath} (${STRIPPED_PLACEHOLDER.byteLength} bytes, dummy)`);
+ }
+ 
+ async function main(): Promise<void> {
