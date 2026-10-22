@@ -111,7 +111,6 @@ jobs:
       run:
         working-directory: android
     env:
-      HAPI_UPLOAD_KEYSTORE: ${{ runner.temp }}/hapi-upload.keystore
       HAPI_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.HAPI_UPLOAD_KEYSTORE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
@@ -130,7 +129,9 @@ jobs:
           test -n "$UPLOAD_KEYSTORE_BASE64"
           test -n "$HAPI_UPLOAD_KEYSTORE_PASSWORD"
           umask 077
-          printf '%s' "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$HAPI_UPLOAD_KEYSTORE"
+          keystore="$RUNNER_TEMP/hapi-upload.keystore"
+          printf '%s' "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          printf '%s\n' "HAPI_UPLOAD_KEYSTORE=$keystore" >> "$GITHUB_ENV"
       - name: version
         id: aver
         run: |
