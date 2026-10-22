@@ -1,6 +1,13 @@
 # Build hapi with the embedded tunwg/WireGuard tunnel component stripped, for all
 # platforms, and publish to a rolling "latest" release.
 #
+# Branch model (2026-10-23): `stack` is this fork's default branch — upstream
+# main merged with our customizations (sync-upstream.yml merges daily). ALL
+# releases build from it: the rolling `latest` (this workflow's push/daily
+# triggers) IS the fork's distribution line, not a pristine upstream mirror;
+# pinned stack tags come from manual dispatches with a `tag` input. The frozen
+# `main` branch is legacy and no longer built.
+#
 # Why: hapi embeds tunwg (github.com/tiann/tunwg, a WireGuard userspace tunnel) for
 # its optional public-relay feature. That binary makes network scanners flag the word
 # "wireguard", which some corporate infosec policies prohibit. Self-hosted-hub setups
@@ -25,7 +32,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [stack]
   schedule:
     - cron: '43 6 * * *'
   workflow_dispatch:
@@ -162,8 +169,15 @@ jobs:
         run: |
           set -e
           mkdir -p "$GITHUB_WORKSPACE/stage"
-          cp app/build/outputs/apk/release/*.apk \
-            "$GITHUB_WORKSPACE/stage/hapi-android-${{ steps.aver.outputs.v }}-${{ steps.aver.outputs.vc }}.apk"
+          tag="${{ inputs.tag || 'latest' }}"
+          if [ "$tag" = "latest" ]; then
+            # Rolling asset: fixed name so each build replaces it instead of
+            # piling up dated files; the embedded versionCode still increases.
+            name="hapi-android-latest.apk"
+          else
+            name="hapi-android-${{ steps.aver.outputs.v }}-${{ steps.aver.outputs.vc }}.apk"
+          fi
+          cp app/build/outputs/apk/release/*.apk "$GITHUB_WORKSPACE/stage/$name"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-android

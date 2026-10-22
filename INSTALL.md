@@ -74,9 +74,12 @@ but contains no WireGuard code or trademark.
 
 ## Rebuild
 
-Builds happen automatically on every push to `main` and daily (tracking upstream)
-via `.github/workflows/build.yml`, publishing a rolling `latest` release. The
-`sync-upstream.yml` workflow merges `tiann/hapi` daily so this fork stays current.
+All releases — the rolling `latest` and pinned stack tags — build from the
+fork's default branch `stack`: upstream main merged with this fork's
+customizations. Builds run on every push to `stack` and daily via
+`.github/workflows/build.yml`; `sync-upstream.yml` merges `tiann/hapi` main
+into `stack` daily so the line stays current. Each release also ships a
+signed Android APK (Firebase-free: all session features, no FCM push).
 
 Manual local build:
 ```bash
