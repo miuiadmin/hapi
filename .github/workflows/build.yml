@@ -8,6 +8,19 @@
 #
 # Safety net: the verify step greps every produced exe for "wireguard" and fails the
 # build if any hit is found — so if a future hapi version re-introduces it, we notice.
+#
+# Android: alongside the CLI binaries, each release also ships a signed native
+# Android client APK. It is built Firebase-free (no google-services.json → the
+# google-services plugin is skipped by design; all session features work, FCM
+# push is unavailable) and signed with this fork's own upload keystore, held in
+# repo secrets — the same HAPI_UPLOAD_KEYSTORE* hooks upstream's official build
+# uses, minus the hapiOfficialBuild Firebase validation. Persistent signing
+# identity matters: a stable key keeps the install/upgrade path intact across
+# releases (a fresh key per build would force uninstall/reinstall).
+#
+# versionCode is yyyymmddNN (date * 100 + run attempt): monotonic across days
+# and same-day re-runs, and stays within the Android Int32 limit. versionName
+# tracks the CLI/hub release train from cli/package.json.
 name: build
 
 on:
@@ -30,8 +43,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  binaries:
     runs-on: ubuntu-latest
+    outputs:
+      v: ${{ steps.ver.outputs.v }}
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,22 +79,19 @@ jobs:
       - name: stage artifacts
         run: |
           set -e
-          mkdir -p artifacts
+          mkdir -p "$GITHUB_WORKSPACE/stage"
           cd cli/dist-exe
           for d in bun-*/; do
             plat="${d%/}"
             short="${plat#bun-}"        # darwin-arm64, linux-x64, win32-x64, ...
             if [ -f "${d}hapi" ]; then
-              cp "${d}hapi" "$GITHUB_WORKSPACE/artifacts/hapi-${short}"
+              cp "${d}hapi" "$GITHUB_WORKSPACE/stage/hapi-${short}"
             fi
             if [ -f "${d}hapi.exe" ]; then
-              cp "${d}hapi.exe" "$GITHUB_WORKSPACE/artifacts/hapi-${short}.exe"
+              cp "${d}hapi.exe" "$GITHUB_WORKSPACE/stage/hapi-${short}.exe"
             fi
           done
-          cd "$GITHUB_WORKSPACE/artifacts"
-          chmod +x hapi-* 2>/dev/null || true
-          sha256sum hapi-* | sed 's#  #  #' > checksums.sha256
-          ls -la
+          chmod +x "$GITHUB_WORKSPACE/stage"/hapi-* 2>/dev/null || true
 
       - name: version
         id: ver
@@ -86,14 +99,99 @@ jobs:
           echo "v=$(jq -r .version cli/package.json)" >> "$GITHUB_OUTPUT"
           echo "tag=${{ inputs.tag || 'latest' }}" >> "$GITHUB_OUTPUT"
 
-      - name: create release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: hapi ${{ steps.ver.outputs.v }} (stripped)
+          name: dist-binaries
+          if-no-files-found: error
+          path: stage/
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    env:
+      HAPI_UPLOAD_KEYSTORE: ${{ runner.temp }}/hapi-upload.keystore
+      HAPI_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.HAPI_UPLOAD_KEYSTORE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Android SDK is preinstalled on GitHub ubuntu runners (licenses
+      # accepted); AGP auto-installs any missing platform/build-tools.
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install fork upload keystore
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.HAPI_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$UPLOAD_KEYSTORE_BASE64"
+          test -n "$HAPI_UPLOAD_KEYSTORE_PASSWORD"
+          umask 077
+          printf '%s' "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$HAPI_UPLOAD_KEYSTORE"
+      - name: version
+        id: aver
+        run: |
+          v="$(jq -r .version ../cli/package.json)"
+          vc="$(date +%Y%m%d)$(printf '%02d' "${{ github.run_attempt }}")"
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          echo "vc=$vc" >> "$GITHUB_OUTPUT"
+          echo "versionCode=$vc versionName=$v"
+      - name: Test and build signed release APK
+        run: |
+          ./gradlew \
+            -PhapiVersionCode="${{ steps.aver.outputs.vc }}" \
+            -PhapiVersionName="${{ steps.aver.outputs.v }}" \
+            :core:protocol:test :core:data:testDebugUnitTest :app:testDebugUnitTest \
+            :app:assembleRelease
+      - name: Verify APK signed with the fork key
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -type f)"
+          case "$apk" in
+            *unsigned*) echo "::error::unsigned APK produced: $apk"; exit 1 ;;
+          esac
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          test -n "$apksigner"
+          "$apksigner" verify --print-certs "$apk" | tee certs.txt
+          grep -q 'CN=hapi upload' certs.txt || { echo '::error::APK not signed with the fork upload key'; exit 1; }
+      - name: stage APK
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/stage"
+          cp app/build/outputs/apk/release/*.apk \
+            "$GITHUB_WORKSPACE/stage/hapi-android-${{ steps.aver.outputs.v }}-${{ steps.aver.outputs.vc }}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-android
+          if-no-files-found: error
+          path: stage/
+
+  release:
+    needs: [binaries, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+      - name: stage and checksum
+        run: |
+          set -e
+          mkdir -p stage
+          cp all/dist-binaries/* all/dist-android/* stage/
+          chmod +x stage/hapi-* 2>/dev/null || true
+          cd stage
+          sha256sum hapi-* > checksums.sha256
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.binaries.outputs.tag }}
+          name: hapi ${{ needs.binaries.outputs.v }} (stripped)
           target_commitish: ${{ github.sha }}
           body: |
-            Automated build of **hapi ${{ steps.ver.outputs.v }}** with the embedded
+            Automated build of **hapi ${{ needs.binaries.outputs.v }}** with the embedded
             `tunwg` / WireGuard tunnel component stripped.
 
             Built from `${{ github.repository }}` `${{ github.ref_name }}` @ ${{ github.sha }}.
@@ -105,6 +203,13 @@ jobs:
             ```
             (installs the rolling `latest` release)
 
+            ## Android
+            `hapi-android-*.apk` — native Android client (Android 8.0+), built from the
+            same commit and signed with this fork's upload key. Firebase-free build: all
+            session features work; FCM push is unavailable. Pair with your hub via the
+            web **Settings → Companion pairing** QR, a `hapicompanion://bind` link, or
+            manual hub URL + access token (HTTPS required).
+
             ## Verify
             Each binary is scanner-clean: `grep -aci wireguard hapi-*` → `0`.
             See `checksums.sha256`.
@@ -112,8 +217,9 @@ jobs:
             ## What's removed
             Only the embedded `tunwg` binary (used solely by the optional
             `hapi hub --relay` public-relay feature). All other features — self-hosted
-            hub, runner, sessions, web UI — are identical to upstream.
+            hub, runner, sessions, web UI — are identical to upstream. The Android APK
+            never embedded tunwg and is built unmodified.
           files: |
-            artifacts/*
-          make_latest: ${{ steps.ver.outputs.tag == 'latest' && 'true' || 'false' }}
+            stage/*
+          make_latest: ${{ needs.binaries.outputs.tag == 'latest' && 'true' || 'false' }}
           prerelease: false
