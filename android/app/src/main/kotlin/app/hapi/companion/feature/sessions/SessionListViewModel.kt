@@ -55,6 +55,8 @@ data class MachineFilterUi(
     val label: String,
     val sessionCount: Int,
     val unnamed: Boolean = false,
+    /** Runner-reported CPU/RAM, null when absent or the machine is unknown. */
+    val health: MachineHealthUi.Presentation? = null,
 )
 
 /** One rendered list section — pinned first, running buckets when the pin-in-progress view is on, rest last. */
@@ -407,6 +409,7 @@ class SessionListViewModel(
         }
 
         // Derive choices before filtering so the selection cannot hide alternatives.
+        val machinesById = machines.associateBy { it.id }
         val filters = sessions
             .groupBy { it.metadata?.machineId ?: UNKNOWN_MACHINE_ID }
             .map { (id, group) ->
@@ -417,6 +420,7 @@ class SessionListViewModel(
                     } ?: shortIds.getValue(id),
                     sessionCount = group.size,
                     unnamed = id !in names,
+                    health = MachineHealthUi.present(machinesById[id]?.health),
                 )
             }
             .sortedWith(compareBy<MachineFilterUi> {
