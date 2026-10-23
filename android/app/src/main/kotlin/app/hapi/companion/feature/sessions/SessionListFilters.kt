@@ -92,6 +92,19 @@ object SessionListFilters {
             .filter { shouldShowSessionInSidebar(it, selectedSessionId) }
 
     /**
+     * Active-only lens (`filterActiveSessionsOnly`): hide inactive sessions;
+     * the open session stays visible. Applied to the prepared list BEFORE
+     * search, like the reference — the search box narrows further and never
+     * resurrects a hidden row.
+     */
+    fun filterActiveSessionsOnly(
+        sessions: List<SessionSummary>,
+        selectedSessionId: String?,
+    ): List<SessionSummary> = sessions.filter { session ->
+        session.active || session.id == selectedSessionId
+    }
+
+    /**
      * Transient unread lens (`filterUnreadSessionsOnly`): hide sessions the
      * operator has already seen. The open session stays visible. Not "needs
      * attention" — just unread. Plain watermark comparison, exactly like the

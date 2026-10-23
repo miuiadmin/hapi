@@ -57,8 +57,18 @@ data class MachineFilterUi(
     val unnamed: Boolean = false,
 )
 
+/** One rendered list section — pinned first, running buckets when the pin-in-progress view is on, rest last. */
+enum class SessionSectionKind { PINNED, RUNNING, PENDING, ACTIVE, IDLE, RECENT }
+
+data class SessionSectionUi(
+    val kind: SessionSectionKind,
+    val rows: List<SessionRowUi>,
+)
+
 data class SessionListUiState(
     val rows: List<SessionRowUi>,
+    /** Sections the screen renders (same rows as [rows], regrouped). */
+    val sections: List<SessionSectionUi> = emptyList(),
     /** Choices for the filter sheet, derived from all sessions. */
     val machineFilters: List<MachineFilterUi>,
     /** `null` = All. Always one of [machineFilters] ids (stale picks fall back). */
@@ -72,6 +82,10 @@ data class SessionListUiState(
     val searchQuery: String = "",
     /** Transient unread lens (web parity: not a persisted preference). */
     val showUnreadOnly: Boolean = false,
+    /** Transient active-only lens (web: persisted display pref; P2 wires persistence). */
+    val showActiveOnly: Boolean = false,
+    /** Transient pin-in-progress sections toggle (web: persisted display pref, default off). */
+    val pinInProgress: Boolean = false,
     /** Unread sessions on this hub (drives the mark-all-read affordance). */
     val unreadCount: Int = 0,
 ) {
@@ -104,6 +118,8 @@ class SessionListViewModel(
     private val searchQuery = MutableStateFlow("")
     private val selectedSessionId = MutableStateFlow<String?>(null)
     private val showUnreadOnly = MutableStateFlow(false)
+    private val showActiveOnly = MutableStateFlow(false)
+    private val pinInProgress = MutableStateFlow(false)
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
@@ -158,8 +174,10 @@ class SessionListViewModel(
         combine(isRefreshing, isOffline, hasRefreshedOnce) { refreshing, offline, loaded ->
             Triple(refreshing, offline, loaded)
         },
-        showUnreadOnly,
-    ) { (sessions, machines, lastSeen), (filter, query, selected), (refreshing, offline, refreshedOnce), unreadOnly ->
+        combine(showUnreadOnly, showActiveOnly, pinInProgress) { unreadOnly, activeOnly, pinning ->
+            Triple(unreadOnly, activeOnly, pinning)
+        },
+    ) { (sessions, machines, lastSeen), (filter, query, selected), (refreshing, offline, refreshedOnce), (unreadOnly, activeOnly, pinning) ->
         buildUiState(
             sessions = sessions,
             machines = machines,
@@ -171,6 +189,8 @@ class SessionListViewModel(
             isOffline = offline,
             hasLoaded = refreshedOnce || sessions.isNotEmpty(),
             showUnreadOnly = unreadOnly,
+            showActiveOnly = activeOnly,
+            pinInProgress = pinning,
         )
     }.stateIn(
         scope = scope,
@@ -246,6 +266,16 @@ class SessionListViewModel(
     /** Unread-lens toggle; transient — resets with the process like the web's. */
     fun setUnreadOnly(enabled: Boolean) {
         showUnreadOnly.value = enabled
+    }
+
+    /** Active-only lens toggle; transient until the P2 Display settings screen persists it. */
+    fun setActiveOnly(enabled: Boolean) {
+        showActiveOnly.value = enabled
+    }
+
+    /** Pin-in-progress sections toggle (`pinInProgressSessions`); transient until P2 persists it. */
+    fun setPinInProgress(enabled: Boolean) {
+        pinInProgress.value = enabled
     }
 
     /** Row action: park the watermark behind the current activity and pin the mark. */
@@ -357,6 +387,8 @@ class SessionListViewModel(
         isOffline: Boolean,
         hasLoaded: Boolean,
         showUnreadOnly: Boolean,
+        showActiveOnly: Boolean = false,
+        pinInProgress: Boolean = false,
     ): SessionListUiState {
         val lastSeen = lastSeenState.lastSeen
         val manualUnread = lastSeenState.manualUnread
@@ -409,17 +441,25 @@ class SessionListViewModel(
             SessionListFilters.prepareSidebarSessions(visible, selectedSessionId),
         )
 
+        // Active-only lens, on the prepared list BEFORE search like the
+        // reference — the search box only narrows further.
+        val activeLensed = if (!showActiveOnly) {
+            prepared
+        } else {
+            SessionListFilters.filterActiveSessionsOnly(prepared, selectedSessionId)
+        }
+
         // Text search: relevance ranking over the already-prepared corpus,
         // pins kept contiguous ahead of ordinary rows.
         val searched = if (searchQuery.isBlank()) {
-            prepared
+            activeLensed
         } else {
             val machineLabels = filters.associate { it.id to it.label }
-            val index = SessionListSearch.buildSessionSearchScoreIndex(prepared, searchQuery) { machineId ->
+            val index = SessionListSearch.buildSessionSearchScoreIndex(activeLensed, searchQuery) { machineId ->
                 machineLabels[machineId ?: UNKNOWN_MACHINE_ID] ?: ""
             }
             SessionListSearch.sortSessionsBySearchRelevancePreservingPins(
-                prepared.filter { it.id in index.matchedIds },
+                activeLensed.filter { it.id in index.matchedIds },
                 index,
             )
         }
@@ -460,15 +500,45 @@ class SessionListViewModel(
 
         return SessionListUiState(
             rows = rows,
+            sections = buildSessionSections(rows, pinInProgress),
             machineFilters = filters,
             activeMachineFilter = activeFilter,
             searchQuery = searchQuery,
             showUnreadOnly = showUnreadOnly,
+            showActiveOnly = showActiveOnly,
+            pinInProgress = pinInProgress,
             unreadCount = LastSeenStore.unreadSessionCount(sessions, lastSeen, manualUnread),
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
         )
+    }
+
+    /**
+     * Group the rendered rows into screen sections. Off: the plain pinned
+     * prefix + rest (the sort contract puts pins on top). On: the reference's
+     * pin-in-progress view — connected unpinned rows float into the running
+     * buckets, disconnected rows stay in the plain body.
+     */
+    private fun buildSessionSections(rows: List<SessionRowUi>, pinInProgress: Boolean): List<SessionSectionUi> {
+        if (!pinInProgress) {
+            val pinnedCount = rows.takeWhile {
+                it.summary.globalPinned == true || it.summary.pinned == true
+            }.size
+            return buildList {
+                if (pinnedCount > 0) add(SessionSectionUi(SessionSectionKind.PINNED, rows.take(pinnedCount)))
+                add(SessionSectionUi(SessionSectionKind.RECENT, rows.drop(pinnedCount)))
+            }
+        }
+        val buckets = SessionBuckets.bucketSessionRows(rows)
+        return buildList {
+            if (buckets.pinned.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PINNED, buckets.pinned))
+            if (buckets.working.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.RUNNING, buckets.working))
+            if (buckets.pending.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PENDING, buckets.pending))
+            if (buckets.active.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.ACTIVE, buckets.active))
+            if (buckets.idle.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.IDLE, buckets.idle))
+            if (buckets.rest.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.RECENT, buckets.rest))
+        }
     }
 
     companion object {
