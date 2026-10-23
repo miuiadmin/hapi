@@ -1,6 +1,6 @@
 import {
     getSettingsFile,
-    readSettingsOrThrow,
+    readSettingsOrThrowCached,
     updateSettings,
     type Settings
 } from './settings'
@@ -16,7 +16,7 @@ export function isDisablePeerToolsSettingEnabled(settings: Settings): boolean {
 }
 
 export async function readDisablePeerToolsEnabled(dataDir: string): Promise<boolean> {
-    const settings = await readSettingsOrThrow(getSettingsFile(dataDir))
+    const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
     return isDisablePeerToolsSettingEnabled(settings)
 }
 
