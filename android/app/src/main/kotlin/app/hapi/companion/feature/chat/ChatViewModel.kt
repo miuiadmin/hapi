@@ -464,6 +464,16 @@ class ChatViewModel(
     private val slashFetch = MutableStateFlow<SlashFetch>(SlashFetch.Idle)
     private val sessionOpPending = MutableStateFlow(false)
 
+    /**
+     * Send-failure reopen card (slice 6d): a send failed because the session
+     * was inactive AND the auto-resume failed — the card offers Reopen until
+     * the session reflects active again (web `chat.sendError.sessionInactive`
+     * + action). [reopenPendingState] is dedicated (not [sessionOpPending])
+     * because rename/delete share that flag and would cross-talk.
+     */
+    private val sendReopenFailure = MutableStateFlow(false)
+    private val reopenPendingState = MutableStateFlow(false)
+
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
 
     /** One-shot effects: renavigation on supersede, snackbar notices. */
@@ -537,6 +547,23 @@ class ChatViewModel(
             }
         }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Send-failure reopen card above the composer: visible only while the last
+     * send failed inactive and the session is still inactive (web
+     * `router.tsx` gating); a hub reopen flipping `active` hides it on its own.
+     */
+    val reopenCard: StateFlow<SendFailureReopenCard> = combine(
+        sendReopenFailure,
+        sessionStore.sessionDetail(sessionId),
+        reopenPendingState,
+    ) { failedInactive, detail, pending ->
+        SendFailureReopenCardLogic.derive(
+            lastSendFailedInactive = failedInactive,
+            sessionActive = detail?.active == true,
+            reopenPending = pending,
+        )
+    }.stateIn(scope, SharingStarted.Eagerly, SendFailureReopenCard(visible = false, reopenPending = false))
 
     /** Plan availability updates independently of the transcript pipeline. */
     val codexPlanActions: StateFlow<CodexPlanActions> = combine(
@@ -1114,6 +1141,10 @@ class ChatViewModel(
         }
         sendInFlight.value = true
         try {
+            // A fresh attempt (first send or retry) retires the send-failure
+            // reopen card; a repeat inactive failure re-raises it in
+            // [resumeAndRetry].
+            sendReopenFailure.value = false
             val store = awaitWindowStore()
             if (isRetry) {
                 store.updateStatus(localId, MessageStatus.Sending)
@@ -1173,6 +1204,9 @@ class ChatViewModel(
             throw cancellation
         } catch (error: Exception) {
             store.updateStatus(localId, MessageStatus.Failed)
+            // Snackbar detail + the persistent reopen card (web surfaces both:
+            // the inline error and its session-inactive action).
+            sendReopenFailure.value = true
             _events.tryEmit(ChatEvent.Notice(ChatNotice.ResumeFailed))
             return
         }
@@ -1268,9 +1302,14 @@ class ChatViewModel(
      */
     fun reopenSession() {
         if (!sessionOpPending.compareAndSet(expect = false, update = true)) return
+        reopenPendingState.value = true
         scope.launch {
             try {
                 val response = sessionStore.reopenSession(sessionId)
+                // Belt-and-braces: the detail flip to active hides the card via
+                // derive() anyway; an explicit clear keeps stale flags from
+                // resurfacing the card if the session later goes inactive again.
+                sendReopenFailure.value = false
                 if (response.sessionId != sessionId) {
                     messageWindows.seed(sessionId, response.sessionId)
                     drafts?.let { runCatching { it.move(sessionId, response.sessionId) } }
@@ -1282,6 +1321,7 @@ class ChatViewModel(
                 _events.tryEmit(ChatEvent.Notice(ChatNotice.ReopenFailed(formatReopenError(error))))
             } finally {
                 sessionOpPending.value = false
+                reopenPendingState.value = false
             }
         }
     }
@@ -1865,13 +1905,15 @@ class ChatViewModel(
             }
             // Re-attach the window row's client-side status after normalizing
             // the bare wire (web parity: `normalize.ts` copies `message.status`
-            // onto the normalized row). Without this, failed sends never render
-            // as failed and tap-to-retry can't trigger. Memo-safe: status
-            // changes always allocate a new row instance (B-M2c contract).
+            // and the live-only `steered` marker onto the normalized user row).
+            // Without this, failed sends never render as failed and tap-to-retry
+            // can't trigger. Memo-safe: status and steered changes always
+            // allocate a new row instance (B-M2c contract).
             val bare = normalizeDecryptedMessage(message.wire)
             val rowStatus = message.status
-            val next = if (bare is NormalizedMessage.User && rowStatus != null) {
-                bare.copy(status = rowStatus.wire)
+            val rowSteered = message.steered
+            val next = if (bare is NormalizedMessage.User && (rowStatus != null || rowSteered)) {
+                bare.copy(status = rowStatus?.wire, steered = rowSteered)
             } else {
                 bare
             }
