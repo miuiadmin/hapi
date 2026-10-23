@@ -1,5 +1,10 @@
 package app.hapi.companion.feature.sessions
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -15,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -73,13 +79,16 @@ import app.hapi.protocol.wire.TodoProgress
  *
  * Inventory (mirrors the web sidebar semantics):
  * - offline banner over snapshot data, search box (relevance-ranked, port of
- *   the web sidebar search), unread lens chip + mark-all-read (hub-wide
- *   count, confirm dialog), machine filter chips (≥ 2 machines),
- *   pull-to-refresh, empty state + no-search-results + no-unread states;
+ *   the web sidebar search), lens chips — unread-only, active-only, and the
+ *   pin-in-progress sections toggle — plus mark-all-read (hub-wide count,
+ *   confirm dialog), machine filter chips (≥ 2 machines), pull-to-refresh,
+ *   empty state + no-search-results + no-unread + no-active states;
  * - duplicate agent-session views are collapsed and fresh "new session"
  *   stubs hidden (ViewModel pipeline, web sidebar parity);
- * - pinned section first (the sort already puts globalPinned/pinned rows on
- *   top; a header + divider make the boundary visible);
+ * - sections: pinned first; with pin-in-progress on, connected unpinned rows
+ *   float into Running (thinking/background tasks, pulsing) / Pending
+ *   (pulsing) / Active / Idle-keepalive buckets above the plain Sessions
+ *   body (disconnected rows stay dimmed there);
  * - per row: flavor brand icon + title, spinner while a turn is in flight,
  *   summary line, `project · worktree · machine` meta line (machine only
  *   when it disambiguates), relative `updatedAt`, pending-request badge,
@@ -159,10 +168,14 @@ fun SessionListScreen(
                 onQueryChange = viewModel::setSearchQuery,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             )
-            UnreadFilterRow(
+            SessionLensRow(
                 showUnreadOnly = state.showUnreadOnly,
+                showActiveOnly = state.showActiveOnly,
+                pinInProgress = state.pinInProgress,
                 unreadCount = state.unreadCount,
-                onToggle = { viewModel.setUnreadOnly(!state.showUnreadOnly) },
+                onToggleUnread = { viewModel.setUnreadOnly(!state.showUnreadOnly) },
+                onToggleActive = { viewModel.setActiveOnly(!state.showActiveOnly) },
+                onTogglePinInProgress = { viewModel.setPinInProgress(!state.pinInProgress) },
                 onMarkAllRead = { markAllReadOpen = true },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             )
@@ -184,11 +197,12 @@ fun SessionListScreen(
                     when {
                         state.isSearching -> SearchEmptyState(query = state.searchQuery)
                         state.showUnreadOnly -> UnreadEmptyState()
+                        state.showActiveOnly -> ActiveEmptyState()
                         else -> EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
                     }
                 } else {
                     SessionRows(
-                        rows = state.rows,
+                        sections = state.sections,
                         onOpen = { sessionId ->
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
@@ -283,31 +297,40 @@ fun SessionListScreen(
 
 @Composable
 private fun SessionRows(
-    rows: List<SessionRowUi>,
+    sections: List<SessionSectionUi>,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
 ) {
-    // The sort contract puts globalPinned/pinned rows first; the boundary
-    // index is where the pinned section ends.
-    val pinnedCount = rows.takeWhile {
-        it.summary.globalPinned == true || it.summary.pinned == true
-    }.size
-
     LazyColumn(modifier = Modifier.fillMaxSize()) {
-        if (pinnedCount > 0) {
-            item(key = "header-pinned") { SectionHeader(stringResource(R.string.sessions_section_pinned)) }
-        }
-        items(rows.take(pinnedCount), key = { it.id }) { row ->
-            SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
-        }
-        if (pinnedCount in 1 until rows.size) {
-            item(key = "divider-pinned") {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                SectionHeader(stringResource(R.string.sessions_section_sessions))
+        sections.forEachIndexed { index, section ->
+            when (section.kind) {
+                SessionSectionKind.PINNED -> item(key = "header-pinned") {
+                    SectionHeader(stringResource(R.string.sessions_section_pinned))
+                }
+                SessionSectionKind.RUNNING -> item(key = "header-running") {
+                    BucketSectionHeader(R.string.sessions_section_running, color = RunningGreen, pulse = true)
+                }
+                SessionSectionKind.PENDING -> item(key = "header-pending") {
+                    BucketSectionHeader(R.string.sessions_section_pending, color = PendingAmber, pulse = true)
+                }
+                SessionSectionKind.ACTIVE -> item(key = "header-active") {
+                    BucketSectionHeader(R.string.sessions_section_active, color = null, pulse = false)
+                }
+                SessionSectionKind.IDLE -> item(key = "header-idle") {
+                    BucketSectionHeader(R.string.sessions_section_idle, color = null, pulse = false)
+                }
+                // The plain body keeps the old look: unlabeled when it is the
+                // only section, divider + header once something sits above it.
+                SessionSectionKind.RECENT -> if (index > 0) item(key = "divider-recent") {
+                    Column {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        SectionHeader(stringResource(R.string.sessions_section_sessions))
+                    }
+                }
             }
-        }
-        items(rows.drop(pinnedCount), key = { it.id }) { row ->
-            SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
+            items(section.rows, key = { it.id }) { row ->
+                SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
+            }
         }
     }
 }
@@ -320,6 +343,47 @@ private fun SectionHeader(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
     )
+}
+
+/** Bucket accent colors — the row spinner's green, an amber for pending (web: success/warning badges). */
+private val RunningGreen = Color(0xFF34C759)
+private val PendingAmber = Color(0xFFFF9F0A)
+
+/**
+ * Running-bucket header: a status dot — pulsing for live states (working /
+ * pending), steady for quiet ones (active / idle) — plus the label in the
+ * bucket's accent color (web: `RUNNING_BUCKETS` pulse/colorClass).
+ */
+@Composable
+private fun BucketSectionHeader(labelRes: Int, color: Color?, pulse: Boolean) {
+    val dotColor = color ?: MaterialTheme.colorScheme.onSurfaceVariant
+    val alpha = if (pulse) {
+        val transition = rememberInfiniteTransition(label = "bucket-pulse")
+        transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+            label = "bucket-pulse-alpha",
+        ).value
+    } else {
+        1f
+    }
+    Row(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .background(dotColor.copy(alpha = alpha), CircleShape),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelMedium,
+            color = dotColor,
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -554,29 +618,56 @@ private fun SearchEmptyState(query: String) {
 }
 
 /**
- * Unread affordances (web toolbar parity): the transient unread-only lens
- * chip and — only while something is unread — the mark-all-read button with
- * the hub-wide count.
+ * Lens chips + mark-all-read (web toolbar parity): the transient unread-only
+ * and active-only lenses, the pin-in-progress sections toggle, and — only
+ * while something is unread — the mark-all-read button with the hub-wide
+ * count. Horizontally scrollable: three chips + button overflows narrow
+ * screens.
  */
 @Composable
-private fun UnreadFilterRow(
+private fun SessionLensRow(
     showUnreadOnly: Boolean,
+    showActiveOnly: Boolean,
+    pinInProgress: Boolean,
     unreadCount: Int,
-    onToggle: () -> Unit,
+    onToggleUnread: () -> Unit,
+    onToggleActive: () -> Unit,
+    onTogglePinInProgress: () -> Unit,
     onMarkAllRead: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        FilterChip(
-            selected = showUnreadOnly,
-            onClick = onToggle,
-            label = { Text(stringResource(R.string.sessions_unread_filter)) },
-        )
+    LazyRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        item {
+            FilterChip(
+                selected = showUnreadOnly,
+                onClick = onToggleUnread,
+                label = { Text(stringResource(R.string.sessions_unread_filter)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = showActiveOnly,
+                onClick = onToggleActive,
+                label = { Text(stringResource(R.string.sessions_active_filter)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = pinInProgress,
+                onClick = onTogglePinInProgress,
+                label = { Text(stringResource(R.string.sessions_pin_in_progress)) },
+            )
+        }
         if (unreadCount > 0) {
-            TextButton(
-                onClick = onMarkAllRead,
-                modifier = Modifier.padding(start = 8.dp),
-            ) { Text(stringResource(R.string.sessions_mark_all_read, unreadCount)) }
+            item {
+                TextButton(onClick = onMarkAllRead) {
+                    Text(stringResource(R.string.sessions_mark_all_read, unreadCount))
+                }
+            }
         }
     }
 }
@@ -599,6 +690,30 @@ private fun UnreadEmptyState() {
         Spacer(modifier = Modifier.size(8.dp))
         Text(
             text = stringResource(R.string.sessions_unread_empty_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Lens on but nothing is active — distinct from the plain empty list. */
+@Composable
+private fun ActiveEmptyState() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_active_empty_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_active_empty_hint),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -743,11 +858,23 @@ private fun SessionRowsPreview() {
     HapiTheme {
         Surface {
             SessionRows(
-                rows = listOf(
-                    previewRow("s1", "Pinned build fix", pinned = true),
-                    previewRow("s2", "Session list UI", active = true, thinking = true, unread = true, todo = TodoProgress(3, 5)),
-                    previewRow("s3", "Fixture sweep", active = true, pending = 2),
-                    previewRow("s4", "Old research"),
+                sections = listOf(
+                    SessionSectionUi(
+                        SessionSectionKind.PINNED,
+                        listOf(previewRow("s1", "Pinned build fix", pinned = true)),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.RUNNING,
+                        listOf(previewRow("s2", "Session list UI", active = true, thinking = true, unread = true, todo = TodoProgress(3, 5))),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.PENDING,
+                        listOf(previewRow("s3", "Fixture sweep", active = true, pending = 2)),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.RECENT,
+                        listOf(previewRow("s4", "Old research")),
+                    ),
                 ),
                 onOpen = {},
                 onLongPress = {},
