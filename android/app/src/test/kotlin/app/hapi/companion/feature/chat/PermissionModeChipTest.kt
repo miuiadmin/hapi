@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.chat
 
 import app.hapi.protocol.catalog.PermissionMode
+import app.hapi.protocol.catalog.PermissionModes
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -31,10 +32,18 @@ class PermissionModeChipTest {
         assertNull(PermissionModeChipRule.displayMode("read-only", "claude"))
     }
 
-    @Test fun piAndDshOfferNoModesSoTheChipNeverShows() {
+    @Test fun piOffersNoModesAndDshMirrorsTheCatalog() {
+        // Pi has no runtime permission switching in any tree.
         assertNull(PermissionModeChipRule.displayMode("acceptEdits", "pi"))
         assertNull(PermissionModeChipRule.displayMode("default", "pi"))
-        assertNull(PermissionModeChipRule.displayMode("yolo", "dsh"))
+        // The chip mirrors whatever the flavor catalog offers, and dsh's
+        // offered list may gain modes (a codex-style set) — derive the
+        // expectation from the catalog instead of hardcoding "no modes".
+        val dshOffersYolo = PermissionModes.forFlavor("dsh").contains(PermissionMode.Yolo)
+        assertEquals(
+            PermissionMode.Yolo.takeIf { dshOffersYolo },
+            PermissionModeChipRule.displayMode("yolo", "dsh"),
+        )
     }
 
     @Test fun unknownWireIdAndNullModeHide() {
