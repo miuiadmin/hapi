@@ -919,6 +919,8 @@ private class SettingsViewModelHolder(
             }
         },
         fetchHealth = { hubGraph.session.api.health() },
+        fetchHubSettings = { hubGraph.session.api.getHubSettings() },
+        putHubSettings = { hubGraph.session.api.updateHubSettings(it) },
         scope = scope,
         probeHealth = probeHealth,
     )
