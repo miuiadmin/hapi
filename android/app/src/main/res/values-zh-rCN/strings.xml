@@ -97,6 +97,8 @@
     <string name="new_session_permission_mode">权限模式</string>
     <string name="new_session_permission_managed">由代理管理</string>
     <string name="new_session_permission_managed_desc">此代理自行管理权限，YOLO 模式不适用。</string>
+    <string name="new_session_grok_auto_unavailable">不可用</string>
+    <string name="new_session_grok_auto_unavailable_desc">Grok 尚未为此账号或 CLI 版本启用自动权限模式。</string>
     <string name="new_session_yolo">YOLO 模式</string>
     <string name="new_session_yolo_title">跳过审批和沙箱</string>
     <string name="new_session_yolo_desc">启动时使用危险的代理标志。</string>
@@ -370,6 +372,7 @@
     <string name="chat_perm_add_note">添加备注…</string>
     <string name="chat_perm_none_of_the_above">以上都不是</string>
     <string name="chat_perm_other_note_optional">可在备注中补充说明（可选）。</string>
+    <string name="chat_perm_open_signin_failed">无法打开登录页面。请检查是否安装浏览器后重试。</string>
 
     <!-- External links (B-M2d) -->
     <string name="chat_link_open_title">打开此链接？</string>
