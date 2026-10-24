@@ -36,7 +36,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
-import app.hapi.companion.feature.files.FolderGlyph
+import app.hapi.companion.ui.components.FolderGlyph
 
 /** Reusable presentation for [RemoteDirectoryBrowserController]. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
