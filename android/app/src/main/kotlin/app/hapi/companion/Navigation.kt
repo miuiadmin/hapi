@@ -442,7 +442,12 @@ fun HapiNavigation() {
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
-                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                    factory = viewModelFactory {
+                        ChatViewModelHolder(
+                            hubGraph, sessionId, appContext,
+                            graph.dictationProviderId, graph.dictationLanguage,
+                        )
+                    },
                 )
             }
             FilesScreen(
