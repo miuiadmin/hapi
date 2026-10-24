@@ -64,6 +64,9 @@ fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifie
     // newly recognized plan, but retain explicit folding across input updates.
     var expanded by rememberSaveable(block.id, planProposal) { mutableStateOf(planProposal) }
 
+    // Flat tint by design — web renders shadow-none cards; the "card" feel
+    // comes from surfaceContainerLow standing out against the background, so
+    // no elevation and no border here (composer card uses the same recipe).
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
