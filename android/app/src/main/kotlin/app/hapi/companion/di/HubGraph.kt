@@ -1,8 +1,10 @@
 package app.hapi.companion.di
 
 import android.content.Context
+import app.hapi.companion.feature.chat.composer.AttachmentDrafts
 import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.chat.composer.RecentSkills
+import app.hapi.companion.feature.chat.composer.ComposerDraftSnapshots
 import app.hapi.data.HubSession
 import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.CredentialStore
@@ -169,6 +171,19 @@ class HubGraph(
 
     /** `$`-menu recency ranking (process-wide DataStore, shared across hubs). */
     val recentSkills: RecentSkills = DataStoreRecentSkills(context.recentSkillsDataStore)
+    /**
+     * Per-session composer attachment drafts (references, not blobs), keyed
+     * under this hub — same process-wide DataStore, own max-50 ring (drafts v2).
+     */
+    val attachmentDrafts: AttachmentDrafts =
+        DataStoreAttachmentDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
+
+    /**
+     * In-memory live composer snapshots (text + attachment references),
+     * max-50 ring, shared across screens within this process (drafts v2,
+     * web `liveSnapshots` twin).
+     */
+    val composerDraftSnapshots: ComposerDraftSnapshots = ComposerDraftSnapshots()
 
     override fun close() {
         networkMonitor.close()
