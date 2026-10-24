@@ -3,9 +3,12 @@ package app.hapi.companion.feature.newsession
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryBrowserController
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryPath
 import app.hapi.companion.feature.newsession.NewSessionLogic.buildSpawnRequest
+import app.hapi.companion.feature.newsession.NewSessionLogic.launchPreferenceFrom
 import app.hapi.companion.feature.newsession.NewSessionLogic.parentQuery
 import app.hapi.companion.feature.newsession.NewSessionLogic.pushRecent
+import app.hapi.companion.feature.newsession.NewSessionLogic.resolvePreferredLaunchSettings
 import app.hapi.companion.feature.newsession.NewSessionLogic.usesNativePermissionSelect
+import app.hapi.companion.feature.newsession.NewSessionLogic.usesSharedPermissionModeState
 import app.hapi.companion.feature.newsession.NewSessionLogic.worktreeNameError
 import app.hapi.data.api.ApiError
 import app.hapi.data.store.MachineListStore
@@ -212,6 +215,12 @@ class NewSessionViewModel(
     private var spawnInFlight = false
     private var directoryRequestVersion = 0L
 
+    /**
+     * A restored draft outranks the remembered launch defaults until the
+     * user switches agent or machine (web `preserveRestoredDraftRef`).
+     */
+    private var draftRestored = false
+
     /** Parent-listing cache: retyping within the same parent re-filters locally. */
     private var cachedListing: Pair<Pair<String, String>, List<MachineDirectoryEntry>>? = null
 
@@ -220,10 +229,12 @@ class NewSessionViewModel(
             prefsData.value = runCatching { prefs.readPrefs() }.getOrDefault(NewSessionPrefsData())
             val draft = runCatching { prefs.readDraft() }.getOrNull()?.let(NewSessionLogic::sanitizeDraft)
             var initial = draft ?: NewSessionForm()
+            draftRestored = draft != null
             if (initialMachineId != null) {
                 if (draft?.machineId != null && draft.machineId != initialMachineId) {
                     // Draft belongs to another machine (web `newSessionDraftMatchesMachine`).
                     initial = NewSessionForm(machineId = initialMachineId)
+                    draftRestored = false
                     runCatching { prefs.clearDraft() }
                 } else {
                     initial = initial.copy(machineId = initialMachineId)
@@ -329,6 +340,7 @@ class NewSessionViewModel(
 
     fun setMachine(machineId: String) {
         if (machineId == form.value.machineId) return
+        draftRestored = false
         applyMachineSelection(machineId, resetDirectory = true)
     }
 
@@ -361,7 +373,10 @@ class NewSessionViewModel(
     fun setAgent(agent: String) {
         if (agent == form.value.agent) return
         // Web parity: switching agents resets every agent-dependent field
-        // (yolo is a cross-flavor preference and survives).
+        // (yolo is a cross-flavor preference and survives), then the
+        // remembered launch defaults for the new (machine, agent) dimension
+        // prefill the reset fields.
+        draftRestored = false
         form.update {
             it.copy(
                 agent = agent,
@@ -374,6 +389,7 @@ class NewSessionViewModel(
                 copilotAgentMode = "interactive",
             )
         }
+        applyPreferredLaunchSettings(form.value.machineId, agent)
         refreshCodexModelsIfNeeded()
         refreshGrokAutoSupportIfNeeded()
     }
@@ -469,7 +485,7 @@ class NewSessionViewModel(
                 val request = buildSpawnRequest(current, codexFastTierVisible(current))
                 val result = gateway.spawn(machineId, request)
                 if (result.type == "success" && result.sessionId != null) {
-                    persistOnSuccess(machineId, directory)
+                    persistOnSuccess(machineId, directory, current)
                     _spawned.tryEmit(result.sessionId!!)
                 } else {
                     spawnError.value = when (result.code) {
@@ -510,6 +526,34 @@ class NewSessionViewModel(
 
     private fun recentPathsFor(machineId: String?): List<String> =
         machineId?.let { prefsData.value.recentPaths[it] }.orEmpty()
+
+    /**
+     * Launch-preference restore (web restore effect on agent/machineId
+     * change): refills the agent-dependent defaults from the remembered
+     * `(machine, agent)` entry — or the sentinels when nothing is stored.
+     * The codex model/effort are validated again once the live catalog
+     * settles ([reconcileCodexSelections]); grok keeps its form field out of
+     * the remembered settings entirely.
+     */
+    private fun applyPreferredLaunchSettings(machineId: String?, agent: String) {
+        if (machineId == null) return
+        val resolved = resolvePreferredLaunchSettings(
+            agent,
+            prefsData.value.launchSettings[machineId]?.get(agent),
+        )
+        form.update { current ->
+            current.copy(
+                model = resolved.model,
+                effort = resolved.effort,
+                modelReasoningEffort = resolved.modelReasoningEffort,
+                permissionMode = if (usesSharedPermissionModeState(agent)) {
+                    resolved.permissionMode ?: "default"
+                } else {
+                    current.permissionMode
+                },
+            )
+        }
+    }
 
     private fun resolveDefaultDirectory(machineId: String, fallback: String) {
         defaultDirectoryJob?.cancel()
@@ -557,6 +601,10 @@ class NewSessionViewModel(
                 },
             )
         }
+        // Remembered launch defaults follow the machine dimension too (web
+        // restore effect re-runs on machineId change) — unless a restored
+        // draft still owns the form.
+        if (!draftRestored) applyPreferredLaunchSettings(machineId, form.value.agent)
         if (resetDirectory) resolveDefaultDirectory(machineId, fallback)
         refreshAgentAvailability(force = true)
         refreshCodexModelsIfNeeded()
@@ -796,11 +844,18 @@ class NewSessionViewModel(
     private fun worktreeNameBlocks(current: NewSessionForm): Boolean =
         current.sessionType == SESSION_TYPE_WORKTREE && worktreeNameError(current.worktreeName) != null
 
-    private suspend fun persistOnSuccess(machineId: String, directory: String) {
+    private suspend fun persistOnSuccess(machineId: String, directory: String, created: NewSessionForm) {
         val updated = prefsData.value.let { stored ->
             stored.copy(
                 lastMachineId = machineId,
                 recentPaths = stored.recentPaths + (machineId to pushRecent(stored.recentPaths[machineId].orEmpty(), directory)),
+                // Remember this (machine, agent) dimension's launch defaults
+                // for the next prefill (web `savePreferredLaunchSettings` on
+                // every create-success path).
+                launchSettings = stored.launchSettings + (
+                    machineId to ((stored.launchSettings[machineId] ?: emptyMap()) +
+                        (created.agent to launchPreferenceFrom(created)))
+                    ),
             )
         }
         prefsData.value = updated

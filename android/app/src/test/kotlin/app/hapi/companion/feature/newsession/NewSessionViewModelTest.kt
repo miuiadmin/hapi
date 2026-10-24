@@ -419,6 +419,112 @@ class NewSessionLogicTest {
         assertEquals(listOf("default", "read-only", "yolo"), app.hapi.protocol.catalog.PermissionModes.forLaunch("codex").map { it.wireId })
         assertEquals("safe-yolo", NewSessionLogic.sanitizeDraft(NewSessionForm(agent = "kimi", permissionMode = "safe-yolo")).permissionMode)
     }
+
+    @Test
+    fun `launch preference capture maps the form and gates permissionMode on shared-mode flavors`() {
+        // Claude is a shared-mode flavor: the picked mode is remembered.
+        assertEquals(
+            PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(agent = "claude", model = "opus", effort = "high", permissionMode = "plan"),
+            ),
+        )
+        // Grok renders the same native select but is NOT remembered.
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(agent = "grok", model = "auto", permissionMode = "plan"),
+            ),
+        )
+        // YOLO-toggle flavors (cursor) never carry a remembered mode either.
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(agent = "cursor", yolo = true, permissionMode = "plan"),
+            ),
+        )
+        // Codex remembers its model/reasoning pair.
+        assertEquals(
+            PreferredLaunchSettings(model = "gpt-5.2-codex", modelReasoningEffort = "high", permissionMode = "read-only"),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(
+                    agent = "codex",
+                    model = "gpt-5.2-codex",
+                    modelReasoningEffort = "high",
+                    permissionMode = "read-only",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `resolve preferred launch settings validates static lists and coerces stale values`() {
+        // Nothing stored → sentinels (shared-mode flavors resolve 'default').
+        assertEquals(
+            PreferredLaunchSettings(permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings("claude", null),
+        )
+
+        // Claude: valid static ids survive; stale ids fall back to sentinels.
+        assertEquals(
+            PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "claude",
+                PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+            ),
+        )
+        assertEquals(
+            PreferredLaunchSettings(permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "claude",
+                PreferredLaunchSettings(model = "removed-model", effort = "ultra", permissionMode = "bogus"),
+            ),
+        )
+
+        // Codex: the model comes from a dynamic machine catalog, so it passes
+        // through untouched (the settled-catalog reconciliation re-validates);
+        // a permission mode outside the launch list coerces to default.
+        assertEquals(
+            PreferredLaunchSettings(model = "gpt-5.2-codex", modelReasoningEffort = "high", permissionMode = "read-only"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "codex",
+                PreferredLaunchSettings(model = "gpt-5.2-codex", modelReasoningEffort = "high", permissionMode = "read-only"),
+            ),
+        )
+        assertEquals(
+            PreferredLaunchSettings(model = "gpt-5.2-codex", permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "codex",
+                PreferredLaunchSettings(model = "gpt-5.2-codex", permissionMode = "safe-yolo"),
+            ),
+        )
+
+        // Opencode's reasoning effort drops `xhigh` (web parity); opencode is a
+        // shared-mode flavor, so its mode resolves to the default.
+        assertEquals(
+            PreferredLaunchSettings(modelReasoningEffort = "default", permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "opencode",
+                PreferredLaunchSettings(modelReasoningEffort = "xhigh"),
+            ),
+        )
+
+        // Grok / cursor never resolve a remembered mode, even if one leaked in.
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "grok",
+                PreferredLaunchSettings(permissionMode = "plan"),
+            ),
+        )
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "cursor",
+                PreferredLaunchSettings(permissionMode = "yolo"),
+            ),
+        )
+    }
 }
 
 // ---------------------------------------------------------- view model flow --
@@ -1035,5 +1141,158 @@ class NewSessionViewModelTest {
         val toggle = vm.uiState.value.permission
         assertTrue(toggle is PermissionUi.YoloToggle)
         assertEquals("Yolo", (toggle as PermissionUi.YoloToggle).nativeModeLabel)
+    }
+
+    @Test
+    fun `spawn success remembers launch settings for the machine and agent dimension`() = runTest {
+        val gateway = FakeGateway()
+        val prefs = FakePrefs()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+
+        vm.setModel("opus")
+        vm.setEffort("high")
+        vm.setPermissionMode("plan")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        vm.create()
+        advanceUntilIdle()
+
+        assertEquals(
+            mapOf(
+                "m1" to mapOf(
+                    "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                ),
+            ),
+            prefs.stored.launchSettings,
+        )
+    }
+
+    @Test
+    fun `remembered launch settings prefill a fresh form`() = runTest {
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                launchSettings = mapOf(
+                    "m1" to mapOf(
+                        "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                    ),
+                ),
+            ),
+        )
+        val vm = buildViewModel(FakeGateway(), FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+
+        val form = vm.uiState.value.form
+        assertEquals("m1", form.machineId)
+        assertEquals("opus", form.model)
+        assertEquals("high", form.effort)
+        assertEquals("plan", form.permissionMode)
+    }
+
+    @Test
+    fun `switching machine or agent re-applies each dimension's remembered defaults`() = runTest {
+        val gateway = FakeGateway().apply {
+            // Catalog contains the remembered codex model, so the settled
+            // catalog keeps it (an empty catalog would reconcile to auto).
+            codexResult = CodexModelsResponse(
+                success = true,
+                models = listOf(
+                    CodexModelSummary(
+                        id = "gpt-5.2-codex",
+                        displayName = "GPT-5.2 Codex",
+                        isDefault = true,
+                        supportedReasoningEfforts = listOf("low", "medium", "high"),
+                        serviceTiers = listOf("standard"),
+                    ),
+                ),
+            )
+        }
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                launchSettings = mapOf(
+                    "m1" to mapOf(
+                        "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                        "codex" to PreferredLaunchSettings(
+                            model = "gpt-5.2-codex",
+                            modelReasoningEffort = "high",
+                            permissionMode = "read-only",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"), machine("m2"))), prefs)
+        advanceUntilIdle()
+
+        // Fresh form, m1 preselected → the m1×claude defaults prefill.
+        assertEquals("opus", vm.uiState.value.form.model)
+        assertEquals("high", vm.uiState.value.form.effort)
+        assertEquals("plan", vm.uiState.value.form.permissionMode)
+
+        // Agent dimension: codex on m1 recalls its own model/effort/mode.
+        vm.setAgent("codex")
+        advanceUntilIdle()
+        val codexForm = vm.uiState.value.form
+        assertEquals("gpt-5.2-codex", codexForm.model)
+        assertEquals("high", codexForm.modelReasoningEffort)
+        assertEquals("read-only", codexForm.permissionMode)
+        assertEquals("auto", codexForm.effort)
+
+        // Machine dimension: m2 has nothing remembered → sentinels.
+        vm.setMachine("m2")
+        advanceUntilIdle()
+        val m2Form = vm.uiState.value.form
+        assertEquals("auto", m2Form.model)
+        assertEquals("default", m2Form.modelReasoningEffort)
+        assertEquals("default", m2Form.permissionMode)
+
+        // Switching back to m1 recalls the m1×codex defaults again.
+        vm.setMachine("m1")
+        advanceUntilIdle()
+        assertEquals("gpt-5.2-codex", vm.uiState.value.form.model)
+        assertEquals("read-only", vm.uiState.value.form.permissionMode)
+
+        // Grok is a native-select flavor but never remembers a mode: even a
+        // leaked stored entry leaves the reset default in place.
+        vm.setAgent("grok")
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.model)
+        assertEquals("default", vm.uiState.value.form.permissionMode)
+    }
+
+    @Test
+    fun `restored draft wins over remembered launch settings until the user switches`() = runTest {
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                launchSettings = mapOf(
+                    "m1" to mapOf(
+                        "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                    ),
+                ),
+            ),
+            draft = NewSessionForm(
+                machineId = "m1",
+                directory = "/wip",
+                agent = "claude",
+                model = "sonnet",
+                effort = "low",
+                permissionMode = "acceptEdits",
+            ),
+        )
+        val vm = buildViewModel(FakeGateway(), FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+
+        // The draft's in-progress selections are not clobbered by prefs.
+        val form = vm.uiState.value.form
+        assertEquals("sonnet", form.model)
+        assertEquals("low", form.effort)
+        assertEquals("acceptEdits", form.permissionMode)
+
+        // First user agent switch drops the draft protection → sentinels
+        // (nothing remembered for m1×grok), not the draft's stale values.
+        vm.setAgent("grok")
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.model)
+        assertEquals("default", vm.uiState.value.form.permissionMode)
     }
 }
