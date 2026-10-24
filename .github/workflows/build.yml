@@ -25,7 +25,10 @@
 # identity matters: a stable key keeps the install/upgrade path intact across
 # releases (a fresh key per build would force uninstall/reinstall).
 #
-# versionCode is yyyymmddNN (date * 100 + run attempt): monotonic across days
+# versionCode is yyyymmddNN (date * 100 + run_number%100): monotonic across days
+# and across same-day reruns (run_attempt is 1 on every fresh run, so two tagged
+# builds on one UTC day collided — v18/v19 both got 2026102401). run_number is
+# repo-monotonic; %100 wraps only beyond 100 runs/day.
 # and same-day re-runs, and stays within the Android Int32 limit. versionName
 # tracks the CLI/hub release train from cli/package.json.
 name: build
@@ -143,7 +146,7 @@ jobs:
         id: aver
         run: |
           v="$(jq -r .version ../cli/package.json)"
-          vc="$(date +%Y%m%d)$(printf '%02d' "${{ github.run_attempt }}")"
+          vc="$(date +%Y%m%d)$(printf '%02d' $(( ${{ github.run_number }} % 100 )))"
           echo "v=$v" >> "$GITHUB_OUTPUT"
           echo "vc=$vc" >> "$GITHUB_OUTPUT"
           echo "versionCode=$vc versionName=$v"
