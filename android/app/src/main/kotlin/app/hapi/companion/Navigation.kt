@@ -804,6 +804,7 @@ private class SessionListViewModelHolder : ViewModel() {
             lastSeenStore = hubGraph.lastSeenStore,
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
+            cursorChatStoreProbe = hubGraph.session.api::getCursorChatStoreStatus,
         ).also { model = it }
     }
 

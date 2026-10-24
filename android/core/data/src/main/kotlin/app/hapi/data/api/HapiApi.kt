@@ -6,6 +6,7 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.CursorChatStoreStatus
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
@@ -341,6 +342,10 @@ class HapiApi internal constructor(
             url("api", "sessions", sessionId, "resume").build(),
             ResumeSessionRequest(permissionMode).toJsonBody(),
         )
+
+    /** `GET /api/sessions/:id/cursor-chat-store` — Cursor reopen-gate probe (see [ChatSessionApi]). */
+    override suspend fun getCursorChatStoreStatus(sessionId: String): CursorChatStoreStatus =
+        request("GET", url("api", "sessions", sessionId, "cursor-chat-store").build())
 
     /** `POST /api/sessions/:id/reopen` — same superseding-id caveat as resume; 422 when metadata is incomplete. */
     suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
