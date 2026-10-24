@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,19 +43,23 @@ import androidx.core.os.LocaleListCompat
 import app.hapi.companion.BuildConfig
 import app.hapi.companion.R
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
+import app.hapi.protocol.wire.TranscriptionProviderInfo
 import app.hapi.protocol.wire.UpdateHubSettingsRequest
 
 /**
  * Settings home (B-M4e scaffold): Appearance (theme mode + Material You),
- * Language, the owner-only hub switches (web Settings → General parity:
- * session summaries, per-turn title rewrite and peer-session tools where the
- * hub speaks the fork extension), the owner-only Usage/Storage entries, and
- * About (app/protocol versions + hub health).
+ * Language, Dictation (provider + language when the hub offers standard
+ * transcription), the Machines entry, the owner-only hub switches (web
+ * Settings → General parity: session summaries, per-turn title rewrite and
+ * peer-session tools where the hub speaks the fork extension), the owner-only
+ * Usage/Storage entries, and About (app/protocol versions + hub health).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
+    dictation: DictationSettingsViewModel,
+    onOpenMachines: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenStorage: () -> Unit,
     onBack: () -> Unit,
@@ -65,9 +70,14 @@ fun SettingsScreen(
     val hubInfo by viewModel.hubInfo.collectAsState()
     val hubSettings by viewModel.hubSettings.collectAsState()
     val hubSettingsSaveError by viewModel.hubSettingsSaveError.collectAsState()
+    val dictationState by dictation.state.collectAsState()
+
+    LaunchedEffect(dictation) { dictation.start() }
 
     var showThemeDialog by rememberSaveable { mutableStateOf(false) }
     var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
+    var showDictationProviderDialog by rememberSaveable { mutableStateOf(false) }
+    var showDictationLanguageDialog by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -195,6 +205,34 @@ fun SettingsScreen(
                 }
             }
 
+            // Hidden until the hub confirms a standard-capable provider — the
+            // chat mic button follows the same availability rule.
+            if (dictationState.loaded && dictationState.providers.isNotEmpty()) {
+                SettingsSection(title = stringResource(R.string.settings_section_dictation)) {
+                    SettingsRow(
+                        label = stringResource(R.string.settings_dictation_provider),
+                        value = dictationState.providers
+                            .firstOrNull { it.id == dictationState.resolvedProviderId }
+                            ?.label,
+                        onClick = { showDictationProviderDialog = true },
+                    )
+                    SettingsDivider()
+                    SettingsRow(
+                        label = stringResource(R.string.settings_dictation_language),
+                        value = dictationLanguageValue(dictationState.language),
+                        onClick = { showDictationLanguageDialog = true },
+                    )
+                }
+            }
+
+            SettingsSection(title = stringResource(R.string.settings_machines)) {
+                SettingsRow(
+                    label = stringResource(R.string.settings_machines),
+                    description = stringResource(R.string.settings_machines_summary),
+                    onClick = onOpenMachines,
+                )
+            }
+
             if (isOwner) {
                 SettingsSection(title = stringResource(R.string.settings_section_insights)) {
                     SettingsRow(
@@ -268,6 +306,29 @@ fun SettingsScreen(
                 )
             },
             onDismiss = { showLanguageDialog = false },
+        )
+    }
+
+    if (showDictationProviderDialog) {
+        DictationProviderDialog(
+            providers = dictationState.providers,
+            selectedId = dictationState.resolvedProviderId,
+            onSelect = { providerId ->
+                showDictationProviderDialog = false
+                dictation.setProvider(providerId)
+            },
+            onDismiss = { showDictationProviderDialog = false },
+        )
+    }
+
+    if (showDictationLanguageDialog) {
+        DictationLanguageDialog(
+            selectedCode = dictationState.language,
+            onSelect = { code ->
+                showDictationLanguageDialog = false
+                dictation.setLanguage(code)
+            },
+            onDismiss = { showDictationLanguageDialog = false },
         )
     }
 }
@@ -438,6 +499,71 @@ private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
         )
     }
 }
+
+/** Transcription provider picker — the hub's standard-capable entries only. */
+@Composable
+private fun DictationProviderDialog(
+    providers: List<TranscriptionProviderInfo>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_dictation_provider)) },
+        text = {
+            Column {
+                providers.forEach { provider ->
+                    RadioRow(
+                        label = provider.label,
+                        selected = provider.id == selectedId,
+                        onClick = { onSelect(provider.id) },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_cancel)) }
+        },
+    )
+}
+
+/** Dictation language picker: localized Auto-detect row + native-name rows. */
+@Composable
+private fun DictationLanguageDialog(
+    selectedCode: String?,
+    onSelect: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_dictation_language)) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                RadioRow(
+                    label = stringResource(R.string.settings_dictation_language_auto),
+                    selected = selectedCode == null,
+                    onClick = { onSelect(null) },
+                )
+                DICTATION_LANGUAGES.forEach { language ->
+                    RadioRow(
+                        label = language.label,
+                        selected = language.code == selectedCode,
+                        onClick = { onSelect(language.code) },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_cancel)) }
+        },
+    )
+}
+
+/** Language row value: catalog label, or Auto-detect for null. */
+@Composable
+private fun dictationLanguageValue(code: String?): String =
+    findDictationLanguage(code)?.label ?: stringResource(R.string.settings_dictation_language_auto)
 
 private fun themeModeLabelRes(mode: ThemeMode): Int = when (mode) {
     ThemeMode.SYSTEM -> R.string.settings_theme_system
