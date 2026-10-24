@@ -28,6 +28,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
@@ -101,6 +102,7 @@ fun SessionListScreen(
     sessionExport: SessionExportSupport? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val cursorGate by viewModel.cursorReopenGate.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
@@ -187,7 +189,12 @@ fun SessionListScreen(
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
                         },
-                        onLongPress = { sheetRow = it },
+                        onLongPress = {
+                            // Seed the Cursor reopen gate before the sheet
+                            // opens (web probes on menu open).
+                            viewModel.beginCursorReopenProbe(it.summary)
+                            sheetRow = it
+                        },
                     )
                 }
             }
@@ -212,6 +219,15 @@ fun SessionListScreen(
     }
 
     sheetRow?.let { row ->
+        // Gate only the probed row's Reopen entry (web: one menu at a time).
+        val gateUi = cursorGate.takeIf { it.sessionId == row.id }?.gate
+        val reopenDisabledReason = when (gateUi?.disabledReason) {
+            CursorReopenGateReason.Missing -> stringResource(R.string.sessions_reopen_cursor_missing)
+            CursorReopenGateReason.Checking -> stringResource(R.string.sessions_reopen_cursor_checking)
+            null -> null
+        }
+        val reopenHint =
+            if (gateUi?.probeUnverified == true) stringResource(R.string.sessions_reopen_cursor_unverified) else null
         SessionActionsSheet(
             row = row,
             onDismiss = { sheetRow = null },
@@ -235,6 +251,8 @@ fun SessionListScreen(
                 viewModel.reopenSession(row.id)
                 sheetRow = null
             },
+            reopenDisabledReason = reopenDisabledReason,
+            reopenHint = reopenHint,
             onDelete = {
                 deleteRow = row
                 sheetRow = null
@@ -551,6 +569,10 @@ private fun SessionActionsSheet(
     onReopen: () -> Unit,
     onDelete: () -> Unit,
     onExport: () -> Unit = {},
+    /** Cursor reopen gate reason (missing/checking) — disables the entry. */
+    reopenDisabledReason: String? = null,
+    /** Cursor probe-unverified hint — entry stays enabled with a caveat. */
+    reopenHint: String? = null,
 ) {
     val summary = row.summary
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -574,7 +596,12 @@ private fun SessionActionsSheet(
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
         SheetAction(stringResource(R.string.sessions_action_export), onClick = onExport)
         if (!summary.active) {
-            SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
+            SheetAction(
+                text = stringResource(R.string.sessions_action_reopen),
+                enabled = reopenDisabledReason == null,
+                supportingText = reopenDisabledReason ?: reopenHint,
+                onClick = onReopen,
+            )
         }
         SheetAction(stringResource(R.string.sessions_action_archive), destructive = true, onClick = onArchive)
         SheetAction(stringResource(R.string.sessions_action_delete), destructive = true, onClick = onDelete)
@@ -583,7 +610,13 @@ private fun SessionActionsSheet(
 }
 
 @Composable
-private fun SheetAction(text: String, destructive: Boolean = false, onClick: () -> Unit) {
+private fun SheetAction(
+    text: String,
+    destructive: Boolean = false,
+    enabled: Boolean = true,
+    supportingText: String? = null,
+    onClick: () -> Unit,
+) {
     ListItem(
         headlineContent = {
             Text(
@@ -591,7 +624,24 @@ private fun SheetAction(text: String, destructive: Boolean = false, onClick: () 
                 color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
             )
         },
-        modifier = Modifier.clickable(onClick = onClick),
+        supportingContent = supportingText?.let { hint ->
+            {
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        colors = if (enabled) {
+            ListItemDefaults.colors()
+        } else {
+            ListItemDefaults.colors(
+                headlineColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
     )
 }
 
