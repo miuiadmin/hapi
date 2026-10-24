@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.DiffView
+import app.hapi.companion.ui.components.DownloadGlyph
 import app.hapi.companion.ui.components.ZoomableImage
 import app.hapi.companion.ui.components.ZoomableImageContent
 import app.hapi.companion.ui.components.ZoomableImageViewerDialog
