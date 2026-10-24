@@ -1,7 +1,15 @@
 package app.hapi.companion.feature.newsession
 
-/** A `(wire value, display label)` pair for the option pickers. */
-data class OptionItem(val value: String, val label: String)
+/**
+ * A `(wire value, display label)` pair for the option pickers. [enabled] =
+ * false renders the row but blocks selection (grok Auto while the machine
+ * lacks Auto-permission support — web marks the `<option>` disabled).
+ */
+data class OptionItem(
+    val value: String,
+    val label: String,
+    val enabled: Boolean = true,
+)
 
 /**
  * Static option catalogs for the create form — data ports of
