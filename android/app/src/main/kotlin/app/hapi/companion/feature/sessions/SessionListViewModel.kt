@@ -6,6 +6,7 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
+import java.time.ZoneId
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -66,6 +67,15 @@ data class SessionListUiState(
     val hasLoaded: Boolean,
     /** Last refresh failed — show the offline banner over snapshot data. */
     val isOffline: Boolean,
+    /** Transient date-range lens (web `customStart`/`customEnd` `useState`); null = off, never persisted. */
+    val dateRange: SessionDateRange? = null,
+    /**
+     * Local epoch-days that carry any session activity — the picker's
+     * activity hint, derived before any list filtering (web
+     * `sessionActivityDates`, which keeps marking all days while a filter is
+     * active).
+     */
+    val dateActivityEpochDays: Set<Long> = emptySet(),
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
 }
@@ -90,11 +100,16 @@ class SessionListViewModel(
     private val scope: CoroutineScope,
     /** Last-seen baseline scope, e.g. the hub origin. */
     private val hubKey: String = "default",
+    /** Clock zone for the date-range lens; injectable so JVM tests are host-timezone-independent. */
+    private val zone: ZoneId = ZoneId.systemDefault(),
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
+
+    /** Transient date-range lens; null = no date filtering (web: unpersisted `useState`). */
+    private val dateRange = MutableStateFlow<SessionDateRange?>(null)
 
     private val _errors = MutableSharedFlow<SessionListError>(extraBufferCapacity = 8)
 
@@ -141,18 +156,19 @@ class SessionListViewModel(
         machineStore.machines,
         lastSeenStore.state,
         machineFilter,
-        combine(isRefreshing, isOffline, hasRefreshedOnce) { refreshing, offline, loaded ->
-            Triple(refreshing, offline, loaded)
+        combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange) { refreshing, offline, refreshedOnce, range ->
+            ChromeState(refreshing, offline, refreshedOnce, range)
         },
-    ) { sessions, machines, lastSeen, filter, (refreshing, offline, refreshedOnce) ->
+    ) { sessions, machines, lastSeen, filter, chrome ->
         buildUiState(
             sessions = sessions,
             machines = machines,
             lastSeen = lastSeen.lastSeen,
             filter = filter,
-            isRefreshing = refreshing,
-            isOffline = offline,
-            hasLoaded = refreshedOnce || sessions.isNotEmpty(),
+            isRefreshing = chrome.refreshing,
+            isOffline = chrome.offline,
+            hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
+            dateRange = chrome.dateRange,
         )
     }.stateIn(
         scope = scope,
@@ -218,6 +234,24 @@ class SessionListViewModel(
 
     fun setMachineFilter(machineId: String?) {
         machineFilter.value = machineId
+    }
+
+    /**
+     * Sets the transient date-range lens. The two picks are normalized into
+     * `[start, end]` — the web picker sorts its two clicks the same way. Not
+     * persisted: a fresh ViewModel (process death, hub switch) starts clear,
+     * matching the web's unpersisted `useState`.
+     */
+    fun setDateRange(startEpochDay: Long, endEpochDay: Long) {
+        dateRange.value = SessionDateRange(
+            startEpochDay = minOf(startEpochDay, endEpochDay),
+            endEpochDay = maxOf(startEpochDay, endEpochDay),
+        )
+    }
+
+    /** Clears the date-range lens (web: the picker footer `Clear` link). */
+    fun clearDateRange() {
+        dateRange.value = null
     }
 
     /** Call when navigating into a session: stamps the last-seen watermark. */
@@ -314,6 +348,7 @@ class SessionListViewModel(
         isRefreshing: Boolean,
         isOffline: Boolean,
         hasLoaded: Boolean,
+        dateRange: SessionDateRange? = null,
     ): SessionListUiState {
         val names = machines.mapNotNull { machine ->
             val metadata = machine.metadata ?: return@mapNotNull null
@@ -350,10 +385,24 @@ class SessionListViewModel(
         val activeFilter = filter
             ?.takeIf { filters.size >= 2 && filters.any { chip -> chip.id == it } }
 
-        val visible = if (activeFilter == null) {
+        // Web pipeline order (`SessionList.tsx`): the activity-day set and the
+        // date-range lens both apply BEFORE the machine scope, and both derive
+        // from the unfiltered list — the picker keeps marking days that the
+        // date range or the machine filter would hide, and the machine chips
+        // keep their full counts.
+        val activityDays = sessions
+            .map { SessionDateRangeFilter.activityEpochDay(it.updatedAt, zone) }
+            .toSet()
+        val timeScoped = if (dateRange == null) {
             sessions
         } else {
-            sessions.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
+            sessions.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, zone) }
+        }
+
+        val visible = if (activeFilter == null) {
+            timeScoped
+        } else {
+            timeScoped.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
         }
 
         // With one machine — or a machine filter active — every visible row
@@ -384,8 +433,18 @@ class SessionListViewModel(
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
+            dateRange = dateRange,
+            dateActivityEpochDays = activityDays,
         )
     }
+
+    /** Aggregated non-session inputs so [combine] stays within its typed arity. */
+    private data class ChromeState(
+        val refreshing: Boolean,
+        val offline: Boolean,
+        val refreshedOnce: Boolean,
+        val dateRange: SessionDateRange?,
+    )
 
     companion object {
         /** `getSessionTitle` (`web/src/lib/sessionTitle.ts`). */

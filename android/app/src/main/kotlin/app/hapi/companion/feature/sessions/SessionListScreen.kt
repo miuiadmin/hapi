@@ -69,7 +69,7 @@ import app.hapi.protocol.wire.TodoProgress
  *
  * Inventory (mirrors the web sidebar semantics):
  * - offline banner over snapshot data, machine filter chips (≥ 2 machines),
- *   pull-to-refresh, empty state;
+ *   activity date-range summary row + clear, pull-to-refresh, empty state;
  * - pinned section first (the sort already puts globalPinned/pinned rows on
  *   top; a header + divider make the boundary visible);
  * - per row: flavor brand icon + title, spinner while a turn is in flight,
@@ -151,6 +151,20 @@ fun SessionListScreen(
                     TextButton(onClick = { viewModel.setMachineFilter(null) }) { Text(stringResource(R.string.sessions_clear_filter)) }
                 }
             }
+            state.dateRange?.let { range ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        stringResource(
+                            R.string.sessions_time_filter_summary,
+                            formatEpochDayLocalized(range.startEpochDay),
+                            formatEpochDayLocalized(range.endEpochDay),
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::clearDateRange) { Text(stringResource(R.string.sessions_clear_filter)) }
+                }
+            }
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = viewModel::refresh,
@@ -159,7 +173,7 @@ fun SessionListScreen(
                     .weight(1f),
             ) {
                 if (state.rows.isEmpty()) {
-                    EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                    EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline, hasDateFilter = state.dateRange != null)
                 } else {
                     SessionRows(
                         rows = state.rows,
@@ -464,7 +478,7 @@ private fun OfflineBanner() {
 }
 
 @Composable
-private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
+private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Boolean = false) {
     // verticalScroll keeps the pull-to-refresh gesture available even though
     // there is nothing to scroll.
     Column(
@@ -480,6 +494,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
                 when {
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_title
                     isOffline -> R.string.sessions_empty_offline_title
+                    hasDateFilter -> R.string.sessions_time_filter_empty_title
                     else -> R.string.sessions_empty_title
                 },
             ),
@@ -491,6 +506,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
                 when {
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_hint
                     isOffline -> R.string.sessions_empty_offline_hint
+                    hasDateFilter -> R.string.sessions_time_filter_empty_hint
                     else -> R.string.sessions_empty_hint
                 },
             ),

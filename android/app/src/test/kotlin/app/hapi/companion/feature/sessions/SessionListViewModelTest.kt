@@ -11,6 +11,7 @@ import app.hapi.protocol.wire.SummaryText
 import app.hapi.protocol.wire.SyncEvent
 import app.hapi.protocol.wire.WorktreeMetadata
 import app.hapi.protocol.wire.sortSessionSummaries
+import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -155,6 +156,7 @@ private fun machine(id: String, host: String, displayName: String? = null): Mach
 private fun TestScope.buildViewModel(
     sessions: FakeSessionStore = FakeSessionStore(),
     machines: FakeMachineStore = FakeMachineStore(),
+    zone: ZoneId = ZoneId.of("UTC"),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -162,6 +164,7 @@ private fun TestScope.buildViewModel(
         lastSeenStore = LastSeenStore(backgroundScope),
         scope = backgroundScope,
         hubKey = "hub-test",
+        zone = zone,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -440,5 +443,77 @@ class SessionListViewModelTest {
         val error = seen
         assertTrue(error is SessionListError.ReopenFailed)
         assertEquals("Cannot reopen (missing: cursorSessionId)", error.message)
+    }
+
+    // -------------------------------------------------- date-range lens --
+
+    /** Epoch days: 2026-10-05 = 20731 (see SessionDateRangeFilterTest's ladder). */
+    private val day = 20_731L
+    private val dayMillis get() = day * 86_400_000L
+
+    @Test
+    fun `date range scopes rows to the selected activity window and clears back`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("in-range", updatedAt = dayMillis + 3_600_000L),
+            summary("day-before", updatedAt = dayMillis - 86_400_000L),
+            summary("day-after", updatedAt = dayMillis + 86_400_000L),
+        )
+        viewModel.uiState.first { it.rows.size == 3 }
+
+        viewModel.setDateRange(day, day)
+        val scoped = viewModel.uiState.first { it.rows.size == 1 }
+        assertEquals(listOf("in-range"), scoped.rows.map { it.id })
+        assertEquals(SessionDateRange(day, day), scoped.dateRange)
+
+        viewModel.clearDateRange()
+        val cleared = viewModel.uiState.first { it.dateRange == null }
+        assertEquals(3, cleared.rows.size)
+    }
+
+    @Test
+    fun `setDateRange normalizes reversed picks like the web picker's two clicks`() = runTest {
+        val (viewModel, _, _) = buildViewModel()
+        viewModel.setDateRange(day + 2, day)
+        assertEquals(SessionDateRange(day, day + 2), viewModel.uiState.first { it.dateRange != null }.dateRange)
+    }
+
+    @Test
+    fun `date range combines with machine filter and machine choices stay unfiltered`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("m1-old", machineId = "m1", updatedAt = 20_000L * 86_400_000L),
+            summary("m1-new", machineId = "m1", updatedAt = dayMillis),
+            summary("m2-new", machineId = "m2", updatedAt = dayMillis),
+        )
+        viewModel.uiState.first { it.rows.size == 3 }
+
+        viewModel.setDateRange(day, day)
+        viewModel.setMachineFilter("m1")
+        val state = viewModel.uiState.first { it.activeMachineFilter == "m1" && it.rows.size == 1 }
+        assertEquals(listOf("m1-new"), state.rows.map { it.id })
+        // Choices derive from the unfiltered list (web: machineFilters from allSessions).
+        assertEquals(listOf("m1", "m2"), state.machineFilters.map { it.id })
+        assertEquals(1, state.machineFilters.first { it.id == "m2" }.sessionCount)
+    }
+
+    @Test
+    fun `activity days derive before date and machine filtering`() = runTest {
+        // 2026-10-05T20:00Z = day 20731 in UTC but day 20732 in Shanghai.
+        val (viewModel, sessions, _) = buildViewModel(zone = ZoneId.of("Asia/Shanghai"))
+        sessions.set(
+            summary("utc-day", updatedAt = dayMillis),
+            summary("shanghai-next-day", updatedAt = 1_791_230_400_000L),
+            summary("old", updatedAt = 20_600L * 86_400_000L),
+        )
+        viewModel.uiState.first { it.rows.size == 3 }
+
+        viewModel.setDateRange(day, day)
+        val state = viewModel.uiState.first { it.dateRange != null }
+        // Only the UTC-midnight session survives the Shanghai-window filter…
+        assertEquals(listOf("utc-day"), state.rows.map { it.id })
+        // …but the activity set still marks every pre-filter day (web
+        // sessionActivityDates keeps full-activity marking while filtering).
+        assertEquals(setOf(20_600L, day, day + 1), state.dateActivityEpochDays)
     }
 }
