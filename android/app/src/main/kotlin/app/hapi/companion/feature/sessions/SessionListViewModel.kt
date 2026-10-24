@@ -5,9 +5,11 @@ import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
+import app.hapi.protocol.wire.CursorChatStoreStatus
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.sortSessionSummaries
+import java.time.ZoneId
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -101,6 +103,15 @@ data class SessionListUiState(
     val unreadCount: Int = 0,
     /** Hub advertises the AI title-suggestion endpoint (health capability). */
     val titleSuggestionAvailable: Boolean = false,
+    /** Transient date-range lens (web `customStart`/`customEnd` `useState`); null = off, never persisted. */
+    val dateRange: SessionDateRange? = null,
+    /**
+     * Local epoch-days that carry any session activity — the picker's
+     * activity hint, derived before any list filtering (web
+     * `sessionActivityDates`, which keeps marking all days while a filter is
+     * active).
+     */
+    val dateActivityEpochDays: Set<Long> = emptySet(),
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
     val isSearching: Boolean get() = searchQuery.isNotBlank()
@@ -138,6 +149,19 @@ class SessionListViewModel(
     private val displayPrefs: SessionDisplayPrefs? = null,
     /** Group-collapse overrides; null keeps them in-memory (tests). */
     private val groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
+    /** Clock zone for the date-range lens; injectable so JVM tests are host-timezone-independent. */
+    private val zone: ZoneId = ZoneId.systemDefault(),
+    /**
+     * Cursor chat-store probe (`GET /api/sessions/:id/cursor-chat-store`).
+     * Fail-loud default: an unwired probe throws, which the gate catches as
+     * "unknown" → soft-allow reopen + unverified hint (tiann/hapi#1084).
+     * Navigation wires it to the hub API.
+     */
+    private val cursorChatStoreProbe: suspend (String) -> CursorChatStoreStatus = {
+        error("cursor chat-store probe not wired")
+    },
+    /** Wall clock for the probe staleness window; injectable for JVM tests. */
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
@@ -150,6 +174,9 @@ class SessionListViewModel(
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
+
+    /** Transient date-range lens; null = no date filtering (web: unpersisted `useState`). */
+    private val dateRange = MutableStateFlow<SessionDateRange?>(null)
 
     private val _errors = MutableSharedFlow<SessionListError>(extraBufferCapacity = 8)
 
@@ -164,6 +191,100 @@ class SessionListViewModel(
     /** Hub capability `titleSuggestion` (drives the rename dialog's Suggest button). */
     private val _titleSuggestionAvailable = MutableStateFlow(false)
     val titleSuggestionAvailable: StateFlow<Boolean> = _titleSuggestionAvailable.asStateFlow()
+    // ------------------------------------------- Cursor chat-store gate (C) --
+
+    /** One row's probe lifecycle: `onDisk == null && !failed` = in flight. */
+    private data class CursorProbeEntry(
+        val sessionId: String,
+        val onDisk: Boolean? = null,
+        val failed: Boolean = false,
+        val startedAtMs: Long,
+    )
+
+    private val mutableCursorProbe = MutableStateFlow<CursorProbeEntry?>(null)
+
+    /** Cursor reopen gate for the row whose actions sheet is open (null = none). */
+    data class CursorReopenGateUi(
+        val sessionId: String?,
+        val gate: CursorReopenGate,
+    )
+
+    /**
+     * List-level Cursor reopen gate — web `SessionList.tsx` probes on menu
+     * open (`useCursorChatStoreStatus`, staleTime 5s) and gates the row menu
+     * via `resolveCursorReopenGate`. Applicability is re-derived from the
+     * live list, so a session that activates (or vanishes) clears the gate
+     * even while its sheet is open.
+     */
+    val cursorReopenGate: StateFlow<CursorReopenGateUi> = combine(
+        mutableCursorProbe,
+        sessionStore.sessions,
+    ) { entry, sessions ->
+        if (entry == null) return@combine CursorReopenGateUi(null, CursorReopenGate(null, false))
+        val summary = sessions.firstOrNull { it.id == entry.sessionId }
+        val applicable = summary != null && isCursorChatStoreProbeApplicable(
+            active = summary.active,
+            flavor = summary.metadata?.flavor,
+            cursorSessionId = summary.metadata?.agentSessionId,
+            path = summary.metadata?.path,
+        )
+        CursorReopenGateUi(
+            sessionId = entry.sessionId,
+            gate = resolveCursorReopenGate(
+                applicable = applicable,
+                onDisk = entry.onDisk,
+                probeFailed = entry.failed,
+                isLoading = entry.onDisk == null && !entry.failed,
+            ),
+        )
+    }.stateIn(
+        scope,
+        SharingStarted.Eagerly,
+        CursorReopenGateUi(null, CursorReopenGate(null, false)),
+    )
+
+    /**
+     * Long-press hook: seed the gate for the row about to open its sheet.
+     * Non-applicable rows clear it; a fresh probe starts unless one settled
+     * within the 5s staleness window (web `staleTime: 5_000`).
+     */
+    fun beginCursorReopenProbe(summary: SessionSummary) {
+        val applicable = isCursorChatStoreProbeApplicable(
+            active = summary.active,
+            flavor = summary.metadata?.flavor,
+            cursorSessionId = summary.metadata?.agentSessionId,
+            path = summary.metadata?.path,
+        )
+        if (!applicable) {
+            mutableCursorProbe.value = null
+            return
+        }
+        val existing = mutableCursorProbe.value
+        if (existing != null && existing.sessionId == summary.id &&
+            now() - existing.startedAtMs < CURSOR_PROBE_STALE_MS
+        ) {
+            return
+        }
+        val startedAtMs = now()
+        mutableCursorProbe.value = CursorProbeEntry(sessionId = summary.id, startedAtMs = startedAtMs)
+        scope.launch {
+            val settled = try {
+                CursorProbeEntry(
+                    sessionId = summary.id,
+                    onDisk = cursorChatStoreProbe(summary.id).onDisk,
+                    startedAtMs = startedAtMs,
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                CursorProbeEntry(sessionId = summary.id, failed = true, startedAtMs = startedAtMs)
+            }
+            mutableCursorProbe.compareAndSet(
+                CursorProbeEntry(sessionId = summary.id, startedAtMs = startedAtMs),
+                settled,
+            )
+        }
+    }
 
     private var refreshJob: Job? = null
 
@@ -218,8 +339,11 @@ class SessionListViewModel(
         combine(machineFilter, searchQuery, selectedSessionId, collapseOverrides) { filter, query, selected, overrides ->
             SelectionSnapshot(filter, query, selected, overrides)
         },
-        combine(isRefreshing, isOffline, hasRefreshedOnce) { refreshing, offline, loaded ->
-            Triple(refreshing, offline, loaded)
+        // Chrome quad carries the transient date-range lens alongside the
+        // refresh/offline flags (batch13 C: web reads the unpersisted
+        // `customStart`/`customEnd` state directly into the list build).
+        combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange) { refreshing, offline, loaded, range ->
+            ChromeState(refreshing, offline, loaded, range)
         },
         combine(showUnreadOnly, showActiveOnly) { unreadOnly, activeOnly ->
             unreadOnly to activeOnly
@@ -227,7 +351,7 @@ class SessionListViewModel(
         combine(pinInProgress, grouped, _titleSuggestionAvailable) { pinning, groupedMode, titleSuggestion ->
             Triple(pinning, groupedMode, titleSuggestion)
         },
-    ) { (sessions, machines, lastSeen), selection, (refreshing, offline, refreshedOnce), (unreadOnly, activeOnly), (pinning, grouped, titleSuggestion) ->
+    ) { (sessions, machines, lastSeen), selection, chrome, (unreadOnly, activeOnly), (pinning, grouped, titleSuggestion) ->
         buildUiState(
             sessions = sessions,
             machines = machines,
@@ -236,14 +360,15 @@ class SessionListViewModel(
             searchQuery = selection.query,
             selectedSessionId = selection.selected,
             collapseOverrides = selection.overrides,
-            isRefreshing = refreshing,
-            isOffline = offline,
-            hasLoaded = refreshedOnce || sessions.isNotEmpty(),
+            isRefreshing = chrome.refreshing,
+            isOffline = chrome.offline,
+            hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
             showUnreadOnly = unreadOnly,
             showActiveOnly = activeOnly,
             pinInProgress = pinning,
             grouped = grouped,
             titleSuggestionAvailable = titleSuggestion,
+            dateRange = chrome.dateRange,
         )
     }.stateIn(
         scope = scope,
@@ -371,6 +496,24 @@ class SessionListViewModel(
     /** Toolbar action: stamp every session on this hub as seen. */
     fun markAllSessionsRead() {
         lastSeenStore.markAllSeen(sessionStore.sessions.value)
+}
+
+    /**
+     * Sets the transient date-range lens. The two picks are normalized into
+     * `[start, end]` — the web picker sorts its two clicks the same way. Not
+     * persisted: a fresh ViewModel (process death, hub switch) starts clear,
+     * matching the web's unpersisted `useState`.
+     */
+    fun setDateRange(startEpochDay: Long, endEpochDay: Long) {
+        dateRange.value = SessionDateRange(
+            startEpochDay = minOf(startEpochDay, endEpochDay),
+            endEpochDay = maxOf(startEpochDay, endEpochDay),
+        )
+    }
+
+    /** Clears the date-range lens (web: the picker footer `Clear` link). */
+    fun clearDateRange() {
+        dateRange.value = null
     }
 
     /** Call when navigating into a session: stamps the last-seen watermark. */
@@ -498,6 +641,7 @@ class SessionListViewModel(
         pinInProgress: Boolean = false,
         grouped: Boolean = SessionDisplayPrefs.DEFAULT_GROUPED,
         titleSuggestionAvailable: Boolean = false,
+        dateRange: SessionDateRange? = null,
     ): SessionListUiState {
         val lastSeen = lastSeenState.lastSeen
         val manualUnread = lastSeenState.manualUnread
@@ -538,10 +682,24 @@ class SessionListViewModel(
         val activeFilter = filter
             ?.takeIf { filters.size >= 2 && filters.any { chip -> chip.id == it } }
 
-        val visible = if (activeFilter == null) {
+        // Web pipeline order (`SessionList.tsx`): the activity-day set and the
+        // date-range lens both apply BEFORE the machine scope, and both derive
+        // from the unfiltered list — the picker keeps marking days that the
+        // date range or the machine filter would hide, and the machine chips
+        // keep their full counts.
+        val activityDays = sessions
+            .map { SessionDateRangeFilter.activityEpochDay(it.updatedAt, zone) }
+            .toSet()
+        val timeScoped = if (dateRange == null) {
             sessions
         } else {
-            sessions.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
+            sessions.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, zone) }
+        }
+
+        val visible = if (activeFilter == null) {
+            timeScoped
+        } else {
+            timeScoped.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
         }
 
         // Sidebar list body, matching the web list: collapse duplicate
@@ -636,6 +794,8 @@ class SessionListViewModel(
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
+            dateRange = dateRange,
+            dateActivityEpochDays = activityDays,
         )
     }
 
@@ -756,6 +916,14 @@ class SessionListViewModel(
         }
     }
 
+    /** Aggregated non-session inputs so [combine] stays within its typed arity. */
+    private data class ChromeState(
+        val refreshing: Boolean,
+        val offline: Boolean,
+        val refreshedOnce: Boolean,
+        val dateRange: SessionDateRange?,
+    )
+
     companion object {
         /**
          * Web collapse default (`SessionList.tsx` `isGroupCollapsed` tail): a
@@ -782,6 +950,9 @@ class SessionListViewModel(
             if (override != null) return override
             return defaultGroupCollapsed(rows, selectedSessionId)
         }
+
+        /** Web `useCursorChatStoreStatus` staleness window — re-probe after this. */
+        const val CURSOR_PROBE_STALE_MS: Long = 5_000
 
         /** `getSessionTitle` (`web/src/lib/sessionTitle.ts`). */
         fun sessionTitle(summary: SessionSummary): String {

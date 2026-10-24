@@ -78,7 +78,10 @@ import app.hapi.companion.feature.chat.composer.DictationState
 import app.hapi.companion.feature.chat.composer.QueuedMessagesBar
 import app.hapi.companion.feature.chat.composer.parkDraftEligible
 import app.hapi.companion.feature.sessions.DeleteSessionDialog
+import app.hapi.companion.feature.sessions.CursorReopenGateReason
 import app.hapi.companion.feature.sessions.RenameSessionDialog
+import app.hapi.companion.feature.sessions.SessionExportDialog
+import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
@@ -114,6 +117,8 @@ internal fun ChatScreen(
     onOpenSession: (String) -> Unit = {},
     /** null ⇒ no scratchlist top-bar entry (tests / previews). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ no export entry in the overflow menu (tests / previews). */
+    sessionExport: SessionExportSupport? = null,
     transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
@@ -130,10 +135,23 @@ internal fun ChatScreen(
     // Feeds the delete dialog's scratchlist count hint (web
     // `useScratchlistCount`, shared by the same store state).
     val scratchlistCount by viewModel.scratchlistCount.collectAsState()
+    val cursorReopenGate by viewModel.cursorReopenGate.collectAsState()
+    val cursorMigrationBanner by viewModel.cursorMigrationBanner.collectAsState()
+    // Web `resolveCursorReopenGate` text mapping: the definitive-missing and
+    // checking reasons disable the affordances; a probe error keeps them
+    // enabled with the unverified hint (#1084).
+    val reopenDisabledReason = when (cursorReopenGate.disabledReason) {
+        CursorReopenGateReason.Missing -> stringResource(R.string.sessions_reopen_cursor_missing)
+        CursorReopenGateReason.Checking -> stringResource(R.string.sessions_reopen_cursor_checking)
+        null -> null
+    }
+    val reopenHint =
+        if (cursorReopenGate.probeUnverified) stringResource(R.string.sessions_reopen_cursor_unverified) else null
     val toolbarHeight = maxOf(64.dp, with(LocalDensity.current) { 24.sp.toDp() + 16.sp.toDp() } + 16.dp)
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
+    var exportDialogOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -344,7 +362,14 @@ internal fun ChatScreen(
                     SessionOverflowMenu(
                         active = state.header.active,
                         onRename = { renameDialogOpen = true },
+                        onExport = if (sessionExport != null) {
+                            { exportDialogOpen = true }
+                        } else {
+                            null
+                        },
                         onReopen = viewModel::reopenSession,
+                        reopenDisabledReason = reopenDisabledReason,
+                        reopenHint = reopenHint,
                         onDelete = { deleteDialogOpen = true },
                     )
                 },
@@ -365,10 +390,17 @@ internal fun ChatScreen(
                     if (!state.header.active && !state.isInitialLoading && !state.loadFailed) {
                         // Mutually exclusive: the send-failure card replaces the
                         // plain inactive bar (both offer Reopen — never both).
+                        // The card path is gated in the ViewModel
+                        // (resumeAndRetry refuses a blocked resume), so only
+                        // the bar needs the cursor-gate presentation.
                         if (reopenCard.visible) {
                             SendFailureReopenCard(card = reopenCard, onReopen = viewModel::reopenSession)
                         } else {
-                            InactiveSessionBar(onReopen = viewModel::reopenSession)
+                            InactiveSessionBar(
+                                canResume = state.inactiveCanResume,
+                                reopenDisabledReason = reopenDisabledReason,
+                                onReopen = viewModel::reopenSession,
+                            )
                         }
                     }
                     QueuedMessagesBar(
@@ -430,6 +462,10 @@ internal fun ChatScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
+                // Web mounts the banner between header and thread
+                // (`SessionChat.tsx`) — metadata-driven via SSE, visible even
+                // while the transcript is still loading (#873).
+                cursorMigrationBanner?.let { CursorMigrationBanner(state = it) }
                 Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isInitialLoading -> InitialLoading()
@@ -502,6 +538,20 @@ internal fun ChatScreen(
             onDismiss = { deleteDialogOpen = false },
         )
     }
+    if (exportDialogOpen && sessionExport != null) {
+        SessionExportDialog(
+            sessionId = viewModel.sessionId,
+            support = sessionExport,
+            onDismiss = { exportDialogOpen = false },
+            onSaved = { filename ->
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.session_export_saved, filename),
+                    )
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -516,6 +566,12 @@ private fun SessionOverflowMenu(
     onRename: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
+    /** null ⇒ hidden (no export support / tests). */
+    onExport: (() -> Unit)? = null,
+    /** Cursor reopen gate reason (missing/checking) — disables the item. */
+    reopenDisabledReason: String? = null,
+    /** Cursor probe-unverified hint — item stays enabled with a caveat. */
+    reopenHint: String? = null,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
@@ -530,9 +586,30 @@ private fun SessionOverflowMenu(
                 onRename()
             },
         )
+        if (onExport != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.sessions_action_export)) },
+                onClick = {
+                    open = false
+                    onExport()
+                },
+            )
+        }
         if (!active) {
             DropdownMenuItem(
-                text = { Text(stringResource(R.string.sessions_action_reopen)) },
+                text = {
+                    Column {
+                        Text(stringResource(R.string.sessions_action_reopen))
+                        (reopenDisabledReason ?: reopenHint)?.let { hint ->
+                            Text(
+                                text = hint,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                },
+                enabled = reopenDisabledReason == null,
                 onClick = {
                     open = false
                     onReopen()
@@ -551,10 +628,17 @@ private fun SessionOverflowMenu(
 
 /**
  * Inactive-session affordance above the composer: sending auto-resumes
- * (B-M3ab), Reopen is the explicit restart without a message.
+ * (B-M3ab), Reopen is the explicit restart without a message. The web swaps
+ * the bar copy on `!inactiveCanResume` (cannotResume) and keeps the reopen
+ * row disabled while the Cursor gate is checking; the same two inputs drive
+ * this bar (#1084).
  */
 @Composable
-private fun InactiveSessionBar(onReopen: () -> Unit) {
+private fun InactiveSessionBar(
+    canResume: Boolean,
+    onReopen: () -> Unit,
+    reopenDisabledReason: String? = null,
+) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -562,15 +646,23 @@ private fun InactiveSessionBar(onReopen: () -> Unit) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = stringResource(R.string.chat_inactive_bar),
+                text = when {
+                    !canResume -> stringResource(R.string.chat_inactive_cannot_resume)
+                    reopenDisabledReason != null -> reopenDisabledReason
+                    else -> stringResource(R.string.chat_inactive_bar)
+                },
                 style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .weight(1f)
                     .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
             )
-            TextButton(onClick = onReopen) { Text(stringResource(R.string.sessions_action_reopen)) }
+            if (canResume) {
+                TextButton(enabled = reopenDisabledReason == null, onClick = onReopen) {
+                    Text(stringResource(R.string.sessions_action_reopen))
+                }
+            }
         }
     }
 }

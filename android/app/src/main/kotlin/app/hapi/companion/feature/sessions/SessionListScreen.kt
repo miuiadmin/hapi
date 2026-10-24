@@ -44,6 +44,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -60,6 +61,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,6 +84,7 @@ import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SummaryText
 import app.hapi.protocol.wire.TodoProgress
+import kotlinx.coroutines.launch
 
 /**
  * The session list (B-M2b) — standalone screen: navigation and app graph stay
@@ -91,8 +94,9 @@ import app.hapi.protocol.wire.TodoProgress
  * - offline banner over snapshot data, search box (relevance-ranked, port of
  *   the web sidebar search), lens chips — unread-only, active-only, and the
  *   pin-in-progress sections toggle — plus mark-all-read (hub-wide count,
- *   confirm dialog), machine filter chips (≥ 2 machines), pull-to-refresh,
- *   empty state + no-search-results + no-unread + no-active states;
+ *   confirm dialog), machine filter chips (≥ 2 machines), activity
+ *   date-range summary row + clear, pull-to-refresh, empty state +
+ *   no-search-results + no-unread + no-active states;
  * - duplicate agent-session views are collapsed and fresh "new session"
  *   stubs hidden (ViewModel pipeline, web sidebar parity);
  * - sections: pinned first; with pin-in-progress on, connected unpinned rows
@@ -123,13 +127,18 @@ fun SessionListScreen(
     modifier: Modifier = Modifier,
     /** Shows the "+" FAB (new-session form, B-M3d) when non-null. */
     onNewSession: (() -> Unit)? = null,
+    /** null ⇒ no export entry in the actions sheet (tests / previews). */
+    sessionExport: SessionExportSupport? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val cursorGate by viewModel.cursorReopenGate.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var markAllReadOpen by remember { mutableStateOf(false) }
+    var exportRow by remember { mutableStateOf<SessionRowUi?>(null) }
 
     DisposableEffect(viewModel) {
         viewModel.start()
@@ -199,6 +208,20 @@ fun SessionListScreen(
                     TextButton(onClick = { viewModel.setMachineFilter(null) }) { Text(stringResource(R.string.sessions_clear_filter)) }
                 }
             }
+            state.dateRange?.let { range ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        stringResource(
+                            R.string.sessions_time_filter_summary,
+                            formatEpochDayLocalized(range.startEpochDay),
+                            formatEpochDayLocalized(range.endEpochDay),
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::clearDateRange) { Text(stringResource(R.string.sessions_clear_filter)) }
+                }
+            }
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = viewModel::refresh,
@@ -211,7 +234,11 @@ fun SessionListScreen(
                         state.isSearching -> SearchEmptyState(query = state.searchQuery)
                         state.showUnreadOnly -> UnreadEmptyState()
                         state.showActiveOnly -> ActiveEmptyState()
-                        else -> EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                        else -> EmptyState(
+                            hasLoaded = state.hasLoaded,
+                            isOffline = state.isOffline,
+                            hasDateFilter = state.dateRange != null,
+                        )
                     }
                 } else {
                     SessionRows(
@@ -220,7 +247,12 @@ fun SessionListScreen(
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
                         },
-                        onLongPress = { sheetRow = it },
+                        onLongPress = {
+                            // Seed the Cursor reopen gate before the sheet
+                            // opens (web probes on menu open).
+                            viewModel.beginCursorReopenProbe(it.summary)
+                            sheetRow = it
+                        },
                         onToggleGroup = viewModel::toggleDirectoryGroup,
                     )
                 }
@@ -247,6 +279,15 @@ fun SessionListScreen(
 
     sheetRow?.let { row ->
         val context = LocalContext.current
+        // Gate only the probed row's Reopen entry (web: one menu at a time).
+        val gateUi = cursorGate.takeIf { it.sessionId == row.id }?.gate
+        val reopenDisabledReason = when (gateUi?.disabledReason) {
+            CursorReopenGateReason.Missing -> stringResource(R.string.sessions_reopen_cursor_missing)
+            CursorReopenGateReason.Checking -> stringResource(R.string.sessions_reopen_cursor_checking)
+            null -> null
+        }
+        val reopenHint =
+            if (gateUi?.probeUnverified == true) stringResource(R.string.sessions_reopen_cursor_unverified) else null
         SessionActionsSheet(
             row = row,
             onDismiss = { sheetRow = null },
@@ -274,10 +315,16 @@ fun SessionListScreen(
                 viewModel.markSessionUnread(row.id)
                 sheetRow = null
             },
+            onExport = {
+                exportRow = row
+                sheetRow = null
+            },
             onReopen = {
                 viewModel.reopenSession(row.id)
                 sheetRow = null
             },
+            reopenDisabledReason = reopenDisabledReason,
+            reopenHint = reopenHint,
             onDelete = {
                 deleteRow = row
                 sheetRow = null
@@ -321,6 +368,20 @@ fun SessionListScreen(
                 markAllReadOpen = false
             },
             onDismiss = { markAllReadOpen = false },
+        )
+    }
+    if (exportRow != null && sessionExport != null) {
+        SessionExportDialog(
+            sessionId = exportRow?.id.orEmpty(),
+            support = sessionExport,
+            onDismiss = { exportRow = null },
+            onSaved = { filename ->
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.session_export_saved, filename),
+                    )
+                }
+            },
         )
     }
 }
@@ -863,7 +924,7 @@ private fun ActiveEmptyState() {
 }
 
 @Composable
-private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
+private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Boolean = false) {
     // verticalScroll keeps the pull-to-refresh gesture available even though
     // there is nothing to scroll.
     Column(
@@ -879,6 +940,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
                 when {
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_title
                     isOffline -> R.string.sessions_empty_offline_title
+                    hasDateFilter -> R.string.sessions_time_filter_empty_title
                     else -> R.string.sessions_empty_title
                 },
             ),
@@ -890,6 +952,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
                 when {
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_hint
                     isOffline -> R.string.sessions_empty_offline_hint
+                    hasDateFilter -> R.string.sessions_time_filter_empty_hint
                     else -> R.string.sessions_empty_hint
                 },
             ),
@@ -911,6 +974,11 @@ private fun SessionActionsSheet(
     onMarkUnread: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
+    onExport: () -> Unit = {},
+    /** Cursor reopen gate reason (missing/checking) — disables the entry. */
+    reopenDisabledReason: String? = null,
+    /** Cursor probe-unverified hint — entry stays enabled with a caveat. */
+    reopenHint: String? = null,
 ) {
     val summary = row.summary
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -934,12 +1002,21 @@ private fun SessionActionsSheet(
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
         SheetAction(stringResource(R.string.sessions_action_copy_reference), onClick = onCopyReference)
         SheetAction(stringResource(R.string.sessions_action_mark_unread), onClick = onMarkUnread)
+        SheetAction(stringResource(R.string.sessions_action_export), onClick = onExport)
         // Web's SessionActionMenu gating: a connected session offers Archive;
         // a disconnected one offers Reopen + Delete (delete is 409 while active).
         if (summary.active) {
             SheetAction(stringResource(R.string.sessions_action_archive), destructive = true, onClick = onArchive)
         } else {
-            SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
+            // Cursor rows: the chat-store gate may disable Reopen with a
+            // reason (store missing / still probing) or soften it with an
+            // unverified hint (probe failed → soft-allow, #1084).
+            SheetAction(
+                text = stringResource(R.string.sessions_action_reopen),
+                enabled = reopenDisabledReason == null,
+                supportingText = reopenDisabledReason ?: reopenHint,
+                onClick = onReopen,
+            )
             SheetAction(stringResource(R.string.sessions_action_delete), destructive = true, onClick = onDelete)
         }
         Spacer(modifier = Modifier.size(16.dp))
@@ -947,7 +1024,13 @@ private fun SessionActionsSheet(
 }
 
 @Composable
-private fun SheetAction(text: String, destructive: Boolean = false, onClick: () -> Unit) {
+private fun SheetAction(
+    text: String,
+    destructive: Boolean = false,
+    enabled: Boolean = true,
+    supportingText: String? = null,
+    onClick: () -> Unit,
+) {
     ListItem(
         headlineContent = {
             Text(
@@ -955,7 +1038,24 @@ private fun SheetAction(text: String, destructive: Boolean = false, onClick: () 
                 color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
             )
         },
-        modifier = Modifier.clickable(onClick = onClick),
+        supportingContent = supportingText?.let { hint ->
+            {
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        colors = if (enabled) {
+            ListItemDefaults.colors()
+        } else {
+            ListItemDefaults.colors(
+                headlineColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
     )
 }
 
