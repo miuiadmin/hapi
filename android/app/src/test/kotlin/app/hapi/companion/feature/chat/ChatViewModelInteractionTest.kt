@@ -1592,7 +1592,7 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
-    fun `scratchlist entry count feeds the top-bar badge`() = runTest {
+    fun `scratchlist entry count feeds the session-delete hint`() = runTest {
         val scratch = FakeScratchlist()
         val harness = InteractionHarness(this, scratchlist = scratch)
 

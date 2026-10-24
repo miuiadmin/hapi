@@ -602,9 +602,10 @@ class ChatViewModel(
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
-     * Entry count for the top-bar scratchlist badge (B-M4d); stays 0 without
-     * a wired store. The store refetches on [start] (open) and on the
-     * `scratchlistUpdatedAt` SSE trigger.
+     * Entry count feeding the session-delete dialog's scratchlist warning
+     * (web `useScratchlistCount`); stays 0 without a wired store. Counts every
+     * entry — attachment-only rows included. The store refetches on [start]
+     * (open) and on the `scratchlistUpdatedAt` SSE trigger.
      */
     val scratchlistCount: StateFlow<Int> =
         (scratchlist?.state(sessionId)?.map { it.entries.size } ?: flowOf(0))
