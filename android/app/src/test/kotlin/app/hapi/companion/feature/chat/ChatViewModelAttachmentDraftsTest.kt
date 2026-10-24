@@ -142,6 +142,13 @@ private class LeanApi : ChatSessionApi {
         deleteUploadCalls.value = deleteUploadCalls.value + path
         return DeleteUploadResponse(success = true)
     }
+    // Stack-only interface members outside this slice's blast radius: the
+    // drafts tests never exercise them, so they answer empty/failed-fast.
+    override suspend fun getCursorChatStoreStatus(sessionId: String): app.hapi.protocol.wire.CursorChatStoreStatus =
+        error("cursor chat-store probe not scripted")
+
+    override suspend fun getSkills(sessionId: String): app.hapi.protocol.wire.SkillsResponse =
+        app.hapi.protocol.wire.SkillsResponse(success = true, skills = emptyList())
 }
 
 private class LeanSessionStore(var detailToLoad: Session? = null) : SessionDetailStore {
@@ -186,6 +193,9 @@ private class LeanSessionStore(var detailToLoad: Session? = null) : SessionDetai
     var reopenResult: ReopenSessionResponse? = null
     override suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
         reopenResult ?: ReopenSessionResponse(sessionId = sessionId, resumed = true)
+    override suspend fun updateSessionSummary(sessionId: String, text: String) {}
+    override suspend fun suggestSessionTitle(sessionId: String): String = "Suggested title"
+    override suspend fun titleSuggestionAvailable(): Boolean = false
 }
 
 private class LeanMachineStore : MachineListStore {

@@ -94,6 +94,18 @@
     <string name="new_session_agent_availability_loading">正在检查已安装的代理…</string>
     <string name="new_session_retry">重试</string>
     <string name="new_session_model">模型</string>
+    <string name="new_session_agy_fetching_models">正在获取可用模型…</string>
+    <string name="new_session_agy_auth_required">需要身份验证</string>
+    <string name="new_session_agy_auth_hint">请在终端运行 `agy` 以登录 Google。</string>
+    <string name="new_session_agy_no_models">没有可用的 Antigravity 模型</string>
+    <string name="new_session_agy_not_listed">已不再列出</string>
+    <string name="new_session_opencode_loading">正在发现 OpenCode 模型…</string>
+    <string name="new_session_opencode_empty">未在此目录发现 OpenCode 模型</string>
+    <string name="new_session_opencode_default">默认</string>
+    <string name="new_session_error_opencode_models_detail">加载 OpenCode 模型失败：%1$s</string>
+    <string name="new_session_variant">变体</string>
+    <string name="new_session_select_variant">选择变体</string>
+    <string name="new_session_cursor_unavailable">暂无 Cursor 模型列表。请先运行一次 Cursor 会话，或使用 Auto。</string>
     <string name="new_session_effort">思考强度</string>
     <string name="new_session_reasoning_effort">推理强度</string>
     <string name="new_session_permission_mode">权限模式</string>
@@ -382,6 +394,7 @@
     <string name="chat_tool_approved_allow_all_edits">已批准：允许所有编辑</string>
     <string name="chat_tool_denied">已拒绝</string>
     <string name="chat_tool_aborted">已中止</string>
+    <string name="chat_tool_resolved">已处理</string>
     <string name="chat_tool_canceled">— 已取消</string>
     <string name="chat_tool_status_pending">等待中</string>
     <string name="chat_tool_status_error">错误</string>
@@ -463,6 +476,8 @@
     <string name="tool_todo_list">任务清单</string>
     <string name="tool_plan">计划</string>
     <string name="tool_plan_proposal">计划提案</string>
+    <string name="chat_plan_implement">执行计划</string>
+    <string name="chat_plan_continue">继续规划</string>
     <string name="tool_skill">技能</string>
     <string name="tool_skill_named">技能：%1$s</string>
     <string name="tool_reasoning">思考</string>
@@ -689,9 +704,6 @@
     <string name="session_export_saved">已保存 %1$s</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_open_failed">没有可打开此链接的应用。</string>
-    <string name="chat_tool_resolved">已处理</string>
-    <string name="chat_plan_implement">执行计划</string>
-    <string name="chat_plan_continue">继续规划</string>
     <string name="toast_open">打开</string>
     <!-- Machines settings (web /settings/machines twin) -->
     <string name="settings_machines">设备</string>
