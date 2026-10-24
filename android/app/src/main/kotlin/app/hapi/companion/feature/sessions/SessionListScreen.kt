@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -67,14 +69,17 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.hapi.companion.R
+import app.hapi.companion.feature.files.FolderGlyph
 import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.PendingRequest
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
@@ -224,6 +229,7 @@ fun SessionListScreen(
                             onOpenSession(sessionId)
                         },
                         onLongPress = { sheetRow = it },
+                        onToggleGroup = viewModel::toggleDirectoryGroup,
                     )
                 }
             }
@@ -329,11 +335,13 @@ fun SessionListScreen(
 
 // ------------------------------------------------------------------ list --
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionRows(
     sections: List<SessionSectionUi>,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
+    onToggleGroup: (String) -> Unit,
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         sections.forEachIndexed { index, section ->
@@ -361,17 +369,89 @@ private fun SessionRows(
                         SectionHeader(stringResource(R.string.sessions_section_sessions))
                     }
                 }
-                // Directory group (grouped layout): header = the group's
-                // display name (last two path segments, web
-                // `getPathDisplayName`); never rendered unlabeled.
-                SessionSectionKind.DIRECTORY -> item(key = "header-dir-${section.title}") {
-                    SectionHeader(section.title.orEmpty())
+                // Directory group (grouped layout): collapsible header keyed
+                // by the GROUP key, not the title — two machines sharing a
+                // directory name would collide on a title-derived key. The
+                // Surface stops scrolled content from showing through the
+                // sticky header.
+                SessionSectionKind.DIRECTORY -> stickyHeader(key = "header-dir-${section.key}") {
+                    Surface(color = MaterialTheme.colorScheme.background) {
+                        DirectoryGroupHeader(
+                            title = section.title.orEmpty(),
+                            count = section.rows.size,
+                            collapsed = section.collapsed,
+                            onToggle = { section.key?.let(onToggleGroup) },
+                        )
+                    }
                 }
             }
-            items(section.rows, key = { it.id }) { row ->
-                SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
+            // Collapsed groups keep their rows in the section (counts and
+            // tests see the full group); only rendering skips them.
+            if (section.kind != SessionSectionKind.DIRECTORY || !section.collapsed) {
+                val inDirectoryGroup = section.kind == SessionSectionKind.DIRECTORY
+                items(section.rows, key = { it.id }) { row ->
+                    SessionRow(
+                        row = row,
+                        onOpen = onOpen,
+                        onLongPress = onLongPress,
+                        indentStart = if (inDirectoryGroup) 16.dp else 0.dp,
+                        showMeta = !inDirectoryGroup,
+                    )
+                }
             }
         }
+    }
+}
+
+/**
+ * Collapsible directory-group header (web `renderDirectoryGroup` header):
+ * chevron + folder glyph + display name + `($count)` — the literal `(n)`
+ * matches web and is locale-independent.
+ */
+@Composable
+private fun DirectoryGroupHeader(
+    title: String,
+    count: Int,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .heightIn(min = 48.dp)
+            .padding(start = 8.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = if (collapsed) Icons.AutoMirrored.Filled.KeyboardArrowRight else Icons.Filled.KeyboardArrowDown,
+            contentDescription = stringResource(
+                if (collapsed) R.string.sessions_group_expand else R.string.sessions_group_collapse,
+            ),
+            tint = MaterialTheme.hapi.hint,
+            modifier = Modifier.size(20.dp),
+        )
+        Icon(
+            imageVector = FolderGlyph,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "($count)",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.hapi.hint,
+        )
     }
 }
 
@@ -432,6 +512,8 @@ private fun SessionRow(
     row: SessionRowUi,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
+    indentStart: Dp = 0.dp,
+    showMeta: Boolean = true,
 ) {
     val summary = row.summary
     Column(
@@ -444,7 +526,7 @@ private fun SessionRow(
             // 8dp keeps the old content-to-gap rhythm: rows shrank from three
             // text lines to two, and the unchanged 10dp read as oversized
             // gaps between the now-shorter items (device feedback).
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(start = 16.dp + indentStart, end = 16.dp, top = 8.dp, bottom = 8.dp)
             // Dimming expresses "disconnected" (web parity): connected is the
             // resting state here, so only the exception gets marked — no
             // per-row presence dot.
@@ -495,7 +577,13 @@ private fun SessionRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        MetaLine(row)
+        // Inside a directory group the meta line is pure repetition: its
+        // first segment (projectLabel) comes from the same
+        // worktree/path rule as the group title — same source, same value —
+        // and what remains is noise. Flat mode keeps the full meta line.
+        if (showMeta) {
+            MetaLine(row)
+        }
         BadgeLine(summary)
     }
 }
@@ -573,11 +661,23 @@ private fun TodoChip(progress: TodoProgress) {
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         shape = RoundedCornerShape(6.dp),
     ) {
-        Text(
-            text = "☑ ${progress.completed}/${progress.total}",
-            style = MaterialTheme.typography.labelSmall,
+        // No literal "☑" glyph (emoji-font fallback renders it as a colored
+        // emoji on many devices); the material Check icon is the stable twin.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-        )
+        ) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = " ${progress.completed}/${progress.total}",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
     }
 }
 
@@ -906,9 +1006,24 @@ private fun SessionRowsPreview() {
                         SessionSectionKind.RECENT,
                         listOf(previewRow("s4", "Old research")),
                     ),
+                    SessionSectionUi(
+                        SessionSectionKind.DIRECTORY,
+                        listOf(previewRow("s5", "Grouped open row"), previewRow("s6", "Another grouped row")),
+                        title = "github/hapi",
+                        key = "m1::/data/github/hapi",
+                        collapsed = false,
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.DIRECTORY,
+                        listOf(previewRow("s7", "Hidden by collapse")),
+                        title = "repo/lib",
+                        key = "m1::/repo/lib",
+                        collapsed = true,
+                    ),
                 ),
                 onOpen = {},
                 onLongPress = {},
+                onToggleGroup = {},
             )
         }
     }
