@@ -570,4 +570,5 @@
     <string name="sessions_filter_summary">Фильтр: %1$s</string>
     <string name="privacy_policy">Политика конфиденциальности</string>
     <string name="privacy_open_failed">Нет приложения, способного открыть эту ссылку.</string>
+    <string name="toast_open">Открыть</string>
 </resources>

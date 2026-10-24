@@ -577,4 +577,5 @@
     <string name="chat_tool_resolved">已处理</string>
     <string name="chat_plan_implement">执行计划</string>
     <string name="chat_plan_continue">继续规划</string>
+    <string name="toast_open">打开</string>
 </resources>

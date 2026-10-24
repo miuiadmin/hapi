@@ -1,7 +1,13 @@
 package app.hapi.companion
 
 import android.content.Context
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -10,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
@@ -64,6 +71,7 @@ import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
+import app.hapi.companion.feature.toasts.HubToasts
 import app.hapi.data.auth.AuthTerminalReason
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +80,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 object Routes {
     const val HOME = "home"
@@ -220,6 +229,37 @@ fun HapiNavigation() {
         }
     }
 
+    // Hub-pushed toasts (web `ToastContainer` twin): collected at the app
+    // level and shown one at a time as a top snackbar over the nav host —
+    // 6 s auto-dismiss (web TOAST_DURATION_MS; SnackbarDuration has no custom
+    // value, hence Indefinite + withTimeoutOrNull), action tap opens the
+    // target session (push-tap navigation shape), no target = plain display.
+    // Sequential rather than the web's stacked column — declared divergence.
+    val toastSnackbar = remember { SnackbarHostState() }
+    val toastContext = LocalContext.current
+    LaunchedEffect(activeHubGraph, navController, toastContext) {
+        val hubGraph = activeHubGraph ?: return@LaunchedEffect
+        hubGraph.toasts.collect { toast ->
+            val route = HubToasts.routeFor(toast)
+            val result = withTimeoutOrNull(HubToasts.DURATION_MS) {
+                toastSnackbar.showSnackbar(
+                    message = HubToasts.message(toast),
+                    actionLabel = route?.let { toastContext.getString(R.string.toast_open) },
+                    withDismissAction = true,
+                    duration = SnackbarDuration.Indefinite,
+                )
+            }
+            if (result == SnackbarResult.ActionPerformed && route != null) {
+                navController.navigate(route) {
+                    // Keep the stack shallow: back always lands on the list.
+                    popUpTo(Routes.HOME)
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.HOME) {
             val activeHubUrl = registryState.activeHubUrl ?: return@composable
@@ -540,6 +580,16 @@ fun HapiNavigation() {
                 )
             }
         }
+    }
+
+    // Top-center like the web container (`safe-area-inset-top` twin); renders
+    // nothing while no toast is showing, so it never blocks screen input.
+    SnackbarHost(
+        hostState = toastSnackbar,
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .statusBarsPadding(),
+    )
     }
 }
 
