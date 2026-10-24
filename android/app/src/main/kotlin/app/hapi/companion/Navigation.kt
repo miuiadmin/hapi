@@ -818,6 +818,8 @@ private class ChatViewModelHolder(
         syncTargets = hubGraph.syncTargets,
         scope = scope,
         drafts = hubGraph.chatDrafts,
+        attachmentDrafts = hubGraph.attachmentDrafts,
+        draftSnapshots = hubGraph.composerDraftSnapshots,
         scratchlist = hubGraph.scratchlistStore,
     )
 
@@ -833,11 +835,12 @@ private class ChatViewModelHolder(
 
     override fun onCleared() {
         dictation.cancel()
-        // Leaving the chat for good (not rotation): un-sent uploaded
-        // attachments are discarded after a best-effort hub delete (B-M3f;
-        // attachments are not part of drafts v1).
-        viewModel.discardAttachments()
+        // Stop BEFORE discarding: the exit flush persists the final text +
+        // tray references while the tray still holds them, then the discard
+        // empties it (drafts v2 keeps the hub uploads — the persisted/carried
+        // references own them; only the in-memory tray goes away).
         viewModel.stop()
+        viewModel.discardAttachments()
         scope.cancel()
     }
 }
