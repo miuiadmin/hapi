@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.view.inputmethod.EditorInfo
-import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -13,10 +12,12 @@ import android.widget.TextView
 import android.widget.ViewFlipper
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import run.hapi.web.bridge.ShellBridges
 import run.hapi.web.static.WebStaticServing
 
 /**
@@ -44,6 +45,21 @@ class MainActivity : ComponentActivity() {
     private lateinit var webContainer: FrameLayout
     private var webView: WebView? = null
     private var webClient: ShellWebViewClient? = null
+
+    /** Native bridges (file chooser / getUserMedia / downloads). */
+    private var bridges: ShellBridges? = null
+
+    // Launchers registered at construction (before STARTED, as required).
+    // Their callbacks may only ever fire once onCreate has run, by which time
+    // [bridges] is set whenever a picker/permission dialog could be open.
+    private val fileChooserLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            bridges?.onFileChooserResult(result)
+        }
+    private val runtimePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+            bridges?.onRuntimePermissionsResult(grants)
+        }
 
     /** OTA + bundled static serving for the currently paired hub. */
     private val servingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -148,8 +164,11 @@ class MainActivity : ComponentActivity() {
         view.setBackgroundColor(Color.WHITE)
         val client = ShellWebViewClient(this, hubUrl)
         view.webViewClient = client
-        view.webChromeClient = WebChromeClient()
+        val bridge = ShellBridges(this, fileChooserLauncher, runtimePermissionLauncher)
+        view.webChromeClient = bridge.chromeClient()
+        view.setDownloadListener(bridge.downloadListener())
         webClient = client
+        bridges = bridge
         webContainer.addView(
             view,
             0,
@@ -169,6 +188,7 @@ class MainActivity : ComponentActivity() {
         view.destroy()
         webView = null
         webClient = null
+        bridges = null
     }
 
     // -------------------------------------------------------------- pairing

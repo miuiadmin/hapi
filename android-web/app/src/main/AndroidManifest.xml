@@ -5,6 +5,18 @@
          (app shell, API, SSE, socket.io) is same-origin HTTPS. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- getUserMedia bridges (mirrors ../android/app): requested at runtime
+         only when the page asks for mic/camera; denial degrades gracefully,
+         hence the optional features. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

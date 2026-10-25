@@ -1,4 +1,5 @@
 import java.io.File
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -59,6 +60,21 @@ val generateWebDistManifest =
         manifestFile.set(generatedWebDistDir.map { it.file("webdist-manifest.json") })
     }
 
+// Signing-secret resolution, mirroring ../android/app verbatim: gradle
+// property (CLI -P or user-global ~/.gradle/gradle.properties), then
+// environment (CI secrets), then android-web/local.properties (the
+// conventional gitignored machine-local home — not part of gradle's own
+// property chain, hence loaded explicitly).
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingSecret(property: String, env: String): String? =
+    (findProperty(property) as String?)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(env)?.takeIf { it.isNotBlank() }
+        ?: localProperties.getProperty(property)?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "run.hapi.web"
     // Toolchain mirrors ../android/app (compileSdk 36 / minSdk 26 / JVM 17).
@@ -68,12 +84,32 @@ android {
         applicationId = "run.hapi.web"
         minSdk = 26
         targetSdk = 36
-        // CI injects these via -PhapiVersionCode/-PhapiVersionName (same
-        // convention as ../android/app); local defaults keep the shell buildable.
+        // Version injection mirrors ../android/app exactly: CI passes
+        // -PhapiVersionCode/-PhapiVersionName (the same convention the
+        // `android` CI job uses); local defaults keep the shell buildable.
         versionCode = providers.gradleProperty("hapiVersionCode").map { value ->
             value.toInt().also { require(it > 0) { "hapiVersionCode must be positive" } }
         }.orElse(1).get()
         versionName = providers.gradleProperty("hapiVersionName").orElse("0.30.7").get()
+    }
+
+    // Release signing mirrors ../android/app: the SAME fork upload keystore,
+    // resolved from gradle properties (-P / ~/.gradle/gradle.properties),
+    // environment (CI secrets), or android-web/local.properties. All unset →
+    // unsigned release (local dev needs no secrets); CI signs with the same
+    // constant identity as the native APK so both upgrade cleanly.
+    signingConfigs {
+        val keystorePath = signingSecret("hapiUploadKeystore", "HAPI_UPLOAD_KEYSTORE")
+            ?.replaceFirst(Regex("^~"), System.getProperty("user.home"))
+        if (keystorePath != null) {
+            create("release") {
+                storeFile = File(keystorePath)
+                storePassword = signingSecret("hapiUploadKeystorePassword", "HAPI_UPLOAD_KEYSTORE_PASSWORD")
+                keyAlias = signingSecret("hapiUploadKeyAlias", "HAPI_UPLOAD_KEY_ALIAS") ?: "upload"
+                keyPassword = signingSecret("hapiUploadKeyPassword", "HAPI_UPLOAD_KEY_PASSWORD")
+                    ?: signingSecret("hapiUploadKeystorePassword", "HAPI_UPLOAD_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     sourceSets {
@@ -87,7 +123,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Unsigned without a keystore — fine, releases are CI-signed.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
