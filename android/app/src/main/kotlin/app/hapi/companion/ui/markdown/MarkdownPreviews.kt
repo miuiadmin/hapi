@@ -22,8 +22,9 @@ import app.hapi.protocol.git.UnifiedDiffParser
  * strikethrough, inline code + file citations, links incl. blocked/custom
  * schemes, CJK autolink artifacts, inline images, lists + task lists,
  * blockquote, tables -- one streaming-truncated, fenced code, KaTeX
- * block/inline math + currency prose, mermaid degradation, html fallback,
- * thematic break). Compile-checked previews double as visual regressions.
+ * block/inline math + currency prose, mermaid diagram + raw-source
+ * fallback, html fallback, thematic break). Compile-checked previews
+ * double as visual regressions.
  */
 class MarkdownPreviewParameterProvider : PreviewParameterProvider<String> {
     override val values: Sequence<String> = sequenceOf(KITCHEN_SINK_MARKDOWN)
@@ -78,7 +79,11 @@ fun greet(name: String): String {
 ```
 
 ```mermaid
-graph TD; A-->B;
+flowchart LR
+    Prompt[User prompt] --> Agent[HAPI agent]
+    Agent --> Review{Approved?}
+    Review -- yes --> Ship[Ship it]
+    Review -- no --> Agent
 ```
 
 <div class="html-block">raw html falls back to monospace</div>
