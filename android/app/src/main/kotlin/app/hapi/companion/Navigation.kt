@@ -30,6 +30,7 @@ import app.hapi.companion.di.viewModelFactory
 import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
+import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
@@ -305,10 +306,25 @@ fun HapiNavigation() {
             )
             ChatHost(
                 viewModel = holder.viewModel,
-                media = remember(hubGraph, sessionId) {
-                    ChatMedia(hubGraph.imageLoader) { imageId ->
-                        hubGraph.generatedImageUrl(sessionId, imageId)
-                    }
+                media = remember(hubGraph, sessionId, appContext) {
+                    ChatMedia(
+                        imageLoader = hubGraph.imageLoader,
+                        generatedImageUrl = { imageId ->
+                            hubGraph.generatedImageUrl(sessionId, imageId)
+                        },
+                        // Non-image generated media (video/audio/file): same
+                        // endpoint, same authed client (JWT + silent 401
+                        // re-auth + ETag disk cache) as the image loader.
+                        fetchGeneratedMedia = { url, imageId, fileName ->
+                            fetchGeneratedMediaFile(
+                                hubGraph.session.imageClient,
+                                url,
+                                appContext.cacheDir,
+                                imageId,
+                                fileName,
+                            )
+                        },
+                    )
                 },
                 onBack = { navController.popBackStack() },
                 onNavigateToSession = { supersededId ->
