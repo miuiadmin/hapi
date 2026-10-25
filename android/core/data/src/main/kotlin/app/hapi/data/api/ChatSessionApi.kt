@@ -7,6 +7,7 @@ import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.GrokReasoningEffortResponse
 import app.hapi.protocol.wire.OpencodeReasoningEffortResponse
 import app.hapi.protocol.wire.PiModelsResponse
@@ -142,4 +143,15 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
      * composer's `$` skills autocomplete source.
      */
     suspend fun getSkills(sessionId: String): SkillsResponse
+
+    /**
+     * `GET /api/sessions/:id/files?query=&limit=` — ripgrep-backed file search,
+     * the composer `@`-mention file source (codex/copilot flavors only; the
+     * web passes `limit=50`). RPC-wrapped: check `success`.
+     */
+    suspend fun searchSessionFiles(
+        sessionId: String,
+        query: String,
+        limit: Int? = null,
+    ): FileSearchResponse
 }

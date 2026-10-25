@@ -58,6 +58,8 @@ data class Session(
     val permissionMode: String? = null,
     val collaborationMode: String? = null,
     val copilotAgentMode: String? = null,
+    /** Whether this session ever carried message content (zod-optional, fork-safe). */
+    val hasConversationContent: Boolean? = null,
 )
 
 /**

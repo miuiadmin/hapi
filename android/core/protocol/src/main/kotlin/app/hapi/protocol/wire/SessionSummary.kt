@@ -37,6 +37,12 @@ data class SessionSummary(
     val model: String? = null,
     val modelReasoningEffort: String? = null,
     val effort: String? = null,
+    /**
+     * Whether the session ever carried message content (hub-computed).
+     * Optional in the zod schema — absent/old-hub decodes to null, which
+     * mention eligibility treats as "no content" (`=== true` gate).
+     */
+    val hasConversationContent: Boolean? = null,
 )
 
 /** `SessionSummaryMetadata` — list-sized metadata projection. */
