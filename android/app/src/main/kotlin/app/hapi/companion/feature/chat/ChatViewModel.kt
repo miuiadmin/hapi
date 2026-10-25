@@ -816,6 +816,7 @@ class ChatViewModel(
         }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
+    /**
      * Entry count feeding the session-delete dialog's scratchlist warning
      * (web `useScratchlistCount`); stays 0 without a wired store. Counts every
      * entry — attachment-only rows included. The store refetches on [start]
