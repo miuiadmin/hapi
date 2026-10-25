@@ -11,6 +11,8 @@ import app.hapi.companion.feature.files.DirectoryExpandPrefs
 import app.hapi.companion.feature.files.DirectorySortPrefs
 import app.hapi.companion.feature.files.MarkdownPreviewPrefs
 import app.hapi.companion.feature.files.filesDirExpandDataStore
+import app.hapi.companion.feature.newsession.CodexImportedSessionsStore
+import app.hapi.companion.feature.newsession.DataStoreCodexImportedSessionsStore
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.sessions.SessionDisplayPrefs
@@ -133,6 +135,13 @@ class AppGraph(context: Context) {
 
     val dictationLanguage: StateFlow<String?> = dictationPrefs.language
         .stateIn(scope, SharingStarted.Eagerly, null)
+    /**
+     * Codex import markers (thread id → imported-at), the DataStore twin of
+     * the web's localStorage `hapi.codexImportedSessions` (slice A). App-wide
+     * for the same reason as [newSessionPrefs].
+     */
+    val codexImportedSessionsStore: CodexImportedSessionsStore =
+        DataStoreCodexImportedSessionsStore(appContext.hapiDataStore, scope)
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)

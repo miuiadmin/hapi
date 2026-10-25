@@ -74,6 +74,7 @@ fun NewSessionScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val directoryBrowser by viewModel.directoryBrowser.state.collectAsState()
+    val codexImport by viewModel.codexImport.state.collectAsState()
 
     LaunchedEffect(viewModel) {
         viewModel.spawned.collect(onCreated)
@@ -121,6 +122,8 @@ fun NewSessionScreen(
             onCopilotAgentModeSelected = viewModel::setCopilotAgentMode,
             onServiceTierSelected = viewModel::setServiceTier,
             onCreate = viewModel::create,
+            onCodexImportChoose = viewModel::openCodexImportDialog,
+            onCodexImportClear = viewModel::clearCodexImportSelection,
         )
     }
     if (directoryBrowser.open) {
@@ -133,6 +136,18 @@ fun NewSessionScreen(
             onRefresh = viewModel.directoryBrowser::refresh,
             onIncludeHiddenChange = viewModel.directoryBrowser::setIncludeHidden,
             onSelect = viewModel::selectBrowsedDirectory,
+        )
+    }
+    if (codexImport.open) {
+        CodexSessionSyncDialog(
+            state = codexImport,
+            onDismiss = viewModel.codexImport::close,
+            onToggleSession = viewModel.codexImport::toggleSession,
+            onSelectAll = viewModel.codexImport::selectAll,
+            onClearSelection = viewModel.codexImport::clearSelection,
+            onWorkdirFilterChange = viewModel.codexImport::setWorkdirFilter,
+            onSearchQueryChange = viewModel.codexImport::setSearchQuery,
+            onConfirm = viewModel.codexImport::confirm,
         )
     }
 }
@@ -164,6 +179,8 @@ internal fun NewSessionContent(
     onCopilotAgentModeSelected: (String) -> Unit,
     onServiceTierSelected: (String) -> Unit,
     onCreate: () -> Unit,
+    onCodexImportChoose: () -> Unit = {},
+    onCodexImportClear: () -> Unit = {},
 ) {
     val form = state.form
     Column(
@@ -183,6 +200,17 @@ internal fun NewSessionContent(
         )
         SessionTypeSection(state, onSessionTypeChange, onWorktreeNameChange)
         AgentSection(state, onAgentSelected, onRetryAgentAvailability)
+
+        // Codex-history inline section sits between the agent picker and the
+        // model pickers (web NewSession placement of CodexImportActions).
+        if (form.agent == "codex") {
+            CodexImportSection(
+                state = state.codexImport,
+                isDisabled = state.formLocked,
+                onChooseHistory = onCodexImportChoose,
+                onClear = onCodexImportClear,
+            )
+        }
 
         when (form.agent) {
             "agy" -> AgySection(
@@ -210,7 +238,7 @@ internal fun NewSessionContent(
                     label = stringResource(R.string.new_session_model),
                     options = options,
                     selected = form.model,
-                    enabled = !state.isSpawning && !state.modelsLoading && state.modelsError == null,
+                    enabled = !state.formLocked && !state.modelsLoading && state.modelsError == null,
                     loading = state.modelsLoading,
                     supportingError = state.modelsError,
                     onSelect = onModelSelected,
@@ -222,7 +250,7 @@ internal fun NewSessionContent(
                 label = stringResource(R.string.new_session_effort),
                 options = options,
                 selected = form.effort,
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
                 onSelect = onEffortSelected,
             )
         }
@@ -231,7 +259,7 @@ internal fun NewSessionContent(
                 label = stringResource(R.string.new_session_reasoning_effort),
                 options = options,
                 selected = form.modelReasoningEffort,
-                enabled = !state.isSpawning && !state.modelsLoading,
+                enabled = !state.formLocked && !state.modelsLoading,
                 onSelect = onReasoningEffortSelected,
             )
         }
@@ -243,7 +271,7 @@ internal fun NewSessionContent(
                 label = stringResource(R.string.new_session_collaboration_mode),
                 options = state.collaborationModeOptions,
                 selected = form.collaborationMode,
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
                 onSelect = onCollaborationModeSelected,
             )
         }
@@ -252,7 +280,7 @@ internal fun NewSessionContent(
                 label = stringResource(R.string.new_session_copilot_agent_mode),
                 options = state.copilotAgentModeOptions,
                 selected = form.copilotAgentMode,
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
                 onSelect = onCopilotAgentModeSelected,
             )
         }
@@ -264,7 +292,7 @@ internal fun NewSessionContent(
                     OptionItem("fast", stringResource(R.string.new_session_fast_mode_fast)),
                 ),
                 selected = form.serviceTier,
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
                 onSelect = onServiceTierSelected,
             )
         }
@@ -315,7 +343,7 @@ private fun MachineSection(state: NewSessionUiState, onMachineSelected: (String)
             state.machines.isEmpty() -> stringResource(R.string.new_session_no_machines)
             else -> ""
         },
-        enabled = !state.isSpawning && state.machines.isNotEmpty(),
+        enabled = !state.formLocked && state.machines.isNotEmpty(),
         onSelect = onMachineSelected,
     )
     selected?.healthLabel?.let { health ->
@@ -352,14 +380,14 @@ private fun DirectorySection(
             label = { Text(stringResource(R.string.new_session_directory)) },
             placeholder = { Text(stringResource(R.string.new_session_directory_placeholder)) },
             singleLine = true,
-            enabled = !state.isSpawning,
+            enabled = !state.formLocked,
             keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.None,
                 autoCorrectEnabled = false,
                 imeAction = ImeAction.Done,
             ),
             trailingIcon = {
-                IconButton(onClick = onBrowseDirectory, enabled = !state.isSpawning) {
+                IconButton(onClick = onBrowseDirectory, enabled = !state.formLocked) {
                     Icon(Icons.Default.Search, contentDescription = stringResource(R.string.new_session_browse))
                 }
             },
@@ -404,7 +432,7 @@ private fun DirectorySection(
                 state.recentPaths.forEach { path ->
                     AssistChip(
                         onClick = { onRecentPathPicked(path) },
-                        enabled = !state.isSpawning,
+                        enabled = !state.formLocked,
                         label = {
                             Text(
                                 // Chips get crowded fast; lead with the tail.
@@ -446,7 +474,7 @@ private fun SessionTypeSection(
             RadioButton(
                 selected = state.form.sessionType == SESSION_TYPE_SIMPLE,
                 onClick = { onSessionTypeChange(SESSION_TYPE_SIMPLE) },
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
             )
             Column {
                 Text(stringResource(R.string.new_session_type_simple), style = MaterialTheme.typography.bodyMedium)
@@ -461,7 +489,7 @@ private fun SessionTypeSection(
             RadioButton(
                 selected = state.form.sessionType == SESSION_TYPE_WORKTREE,
                 onClick = { onSessionTypeChange(SESSION_TYPE_WORKTREE) },
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
             )
             Column {
                 Text(stringResource(R.string.new_session_type_worktree), style = MaterialTheme.typography.bodyMedium)
@@ -479,7 +507,7 @@ private fun SessionTypeSection(
                 label = { Text(stringResource(R.string.new_session_worktree_name)) },
                 placeholder = { Text(stringResource(R.string.new_session_worktree_name_placeholder)) },
                 singleLine = true,
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
                 isError = state.worktreeNameError != null,
                 supportingText = state.worktreeNameError?.let { { Text(it) } },
                 keyboardOptions = KeyboardOptions(
@@ -510,7 +538,7 @@ private fun AgentSection(
                 FilterChip(
                     selected = state.form.agent == agent.value,
                     onClick = { onAgentSelected(agent.value) },
-                    enabled = !state.isSpawning && !state.agentAvailabilityLoading && state.agentAvailabilityError == null,
+                    enabled = !state.formLocked && !state.agentAvailabilityLoading && state.agentAvailabilityError == null,
                     leadingIcon = { AgentFlavorIcon(agent.value, modifier = Modifier.size(16.dp)) },
                     label = { Text(agent.label) },
                 )
@@ -720,7 +748,7 @@ private fun PermissionSection(
                 label = stringResource(R.string.new_session_permission_mode),
                 options = permission.options,
                 selected = state.form.permissionMode,
-                enabled = !state.isSpawning,
+                enabled = !state.formLocked,
                 onSelect = onPermissionModeSelected,
             )
             // Grok Auto unavailable: the explanatory hint under the select.
@@ -760,7 +788,7 @@ private fun PermissionSection(
                 Switch(
                     checked = state.form.yolo,
                     onCheckedChange = onYoloToggle,
-                    enabled = !state.isSpawning,
+                    enabled = !state.formLocked,
                 )
             }
         }
