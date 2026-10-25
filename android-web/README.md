@@ -24,7 +24,9 @@ and CORS.
 
 `shouldInterceptRequest` is the single seam (`run.hapi.web.static`):
 
-1. **OTA dir** — `filesDir/web-ota/versions/<sha256(sw.js)>`
+1. **OTA dir** — `filesDir/web-ota/<sha256(origin)>/versions/<sha256(sw.js)>`
+   (namespaced per hub origin — a re-pair to another hub never sees the
+   previous hub's dist)
 2. **Bundled** — `assets/webdist` (the web dist baked into the APK at build time)
 3. **Network** — fall through to the hub origin
 

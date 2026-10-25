@@ -14,7 +14,8 @@ Static resources for the hub origin are resolved by
 layers:
 
 1. **OTA directory** — newest dist downloaded at runtime
-   (`filesDir/web-ota/versions/<sha256(sw.js)>`, atomic staging+rename,
+   (`filesDir/web-ota/<sha256(origin)>/versions/<sha256(sw.js)>` — namespaced
+   per hub origin for cross-hub isolation, atomic staging+rename,
    `current-version` pointer, 2 versions retained);
 2. **APK-bundled dist** — `assets/webdist/<rel>`, whitelist from the generated
    `assets/webdist-manifest.json` (dist listing minus `sw.js`);

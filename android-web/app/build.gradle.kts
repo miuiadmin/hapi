@@ -33,7 +33,13 @@ val syncWebDist =
     tasks.register<Sync>("syncWebDist") {
         group = "hapi-web"
         description = "Copies the sibling web/dist into the generated assets dir (bundled layer, served as assets/webdist/<rel>)."
-        from(webDistDir)
+        from(webDistDir) {
+            // Dead weight otherwise (~37 KB): the manifest task already drops
+            // sw.js from the whitelist, so a bundled copy could never be
+            // served — the service worker script must always arrive fresh
+            // from the hub (or the OTA layer), never the APK.
+            exclude("sw.js")
+        }
         into(generatedWebDistDir.map { it.dir("webdist") })
     }
 
@@ -48,9 +54,11 @@ val checkWebDist =
 /**
  * Writes `webdist-manifest.json` — the definitive list of every relative
  * path in the bundled dist (note: this is the dist listing, NOT the sw.js
- * precache list; e.g. KaTeX fonts and sw.js itself are not precached but
- * must be servable from the bundle). The runtime loads it from assets and
- * uses it as the static whitelist + restricted enumeration for asset opens.
+ * precache list; e.g. KaTeX fonts are not precached but must be servable
+ * from the bundle, while sw.js is excluded everywhere — the SW script is
+ * always fetched fresh from the hub/OTA layer, never the APK). The runtime
+ * loads it from assets and uses it as the static whitelist + restricted
+ * enumeration for asset opens.
  */
 val generateWebDistManifest =
     tasks.register<GenerateWebDistManifestTask>("generateWebDistManifest") {

@@ -228,6 +228,12 @@ class MainActivity : ComponentActivity() {
         val previousHub = store.hubUrl()
         store.clear()
         destroyWebView()
+        // The serving stack dies with its WebView. Without this reset, a
+        // re-pair to the SAME hub skips the `servingHub != hub` branch in
+        // showWeb(): the freshly created client would never get a resolver
+        // wired and three-layer static serving would be silently dead.
+        staticServing = null
+        servingHub = null
         hubInput.setText(previousHub ?: "")
         tokenInput.setText("")
         tokenInput.visibility = View.GONE

@@ -5,13 +5,25 @@ import java.io.File
 import java.io.InputStream
 
 /**
- * Android OTA store: `<filesDir>/web-ota/`
+ * Stable per-origin directory name for the OTA store. Namespacing by hub
+ * origin (`https://host[:port]`) guarantees a re-pair to a different hub can
+ * never be served the previous hub's committed dist — both hubs have their
+ * own immutable tree under `web-ota/`. Pure JVM (unit-tested).
+ */
+internal fun otaNamespaceFor(origin: String): String {
+    require(origin.isNotBlank()) { "hub origin must not be blank" }
+    return HotUpdateManager.sha256Hex(origin.toByteArray(Charsets.UTF_8)).substring(0, 16)
+}
+
+/**
+ * Android OTA store: `<filesDir>/web-ota/<sha256(origin)>/`
  *
  * ```
  * web-ota/
- *   current-version        # one line: sha256 hex of the sw.js this build came from
- *   versions/<sha256>/…    # published dist trees (immutable once committed)
- *   staging-<sha256>/…     # in-flight downloads; renamed atomically on success
+ *   <sha256(origin)>/       # per-hub namespaced root (cross-hub isolation)
+ *     current-version       # one line: sha256 hex of the sw.js this build came from
+ *     versions/<sha256>/…   # published dist trees (immutable once committed)
+ *     staging-<sha256>/…    # in-flight downloads; renamed atomically on success
  * ```
  *
  * Implements [OtaFs] for [HotUpdateManager] and [StaticLayerSource] for the
@@ -19,9 +31,9 @@ import java.io.InputStream
  * a @Volatile set and refreshed after each committed round — the restricted
  * enumeration the router does its membership checks against.
  */
-class OtaFileStore(context: Context) : OtaFs, StaticLayerSource {
+class OtaFileStore(context: Context, origin: String) : OtaFs, StaticLayerSource {
 
-    private val root: File = File(context.filesDir, ROOT_DIR)
+    private val root: File = File(File(context.filesDir, ROOT_DIR), otaNamespaceFor(origin))
     private val versionsRoot: File = File(root, "versions")
     private val currentVersionFile: File = File(root, "current-version")
 

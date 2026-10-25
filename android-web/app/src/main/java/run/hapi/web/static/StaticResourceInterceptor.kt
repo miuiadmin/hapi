@@ -47,7 +47,12 @@ class StaticResourceInterceptor(
  */
 class WebStaticServing(context: Context, private val hubUrl: String) {
 
-    private val otaStore = OtaFileStore(context)
+    // OTA cache is namespaced by hub origin: pairing hub B must never be
+    // served hub A's committed dist. originOf only returns null for
+    // non-http(s) input, which the pairing gate already excludes upstream;
+    // the raw-string fallback still keeps different hubs in different
+    // namespaces, so it cannot reintroduce cross-hub pollution.
+    private val otaStore = OtaFileStore(context, HubUrls.originOf(hubUrl) ?: hubUrl)
     private val interceptor =
         StaticResourceInterceptor(hubUrl, otaStore, BundledAssetSource(context))
     private val updater = HotUpdateManager(hubUrl, OkHttpFetcher(), otaStore)
