@@ -183,6 +183,7 @@ object SummaryPatching {
         model = session.model,
         modelReasoningEffort = session.modelReasoningEffort,
         effort = session.effort,
+        hasConversationContent = session.hasConversationContent ?: false,
     )
 
     // ------------------------------------------------------- patch rules --

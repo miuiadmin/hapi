@@ -172,6 +172,30 @@ class SessionDecodingTest {
     }
 
     @Test
+    fun `hasConversationContent decodes present-true and stays null when absent`() {
+        // The mention eligibility gate reads `=== true` — an old hub omitting
+        // the field must decode to null (treated as not mentionable), while a
+        // present flag rides through verbatim.
+        val present = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false,"hasConversationContent":true}""",
+        )
+        assertTrue(present.hasConversationContent == true)
+
+        val absent = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false}""",
+        )
+        assertNull(absent.hasConversationContent)
+
+        val falseFlag = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false,"hasConversationContent":false}""",
+        )
+        assertTrue(falseFlag.hasConversationContent == false)
+    }
+
+    @Test
     fun `decodes a messages page envelope`() {
         val response = HapiJson.decodeFromString(
             MessagesResponse.serializer(),
