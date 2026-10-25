@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hapi Web</string>
+    <string name="pairing_title">Hapi Web</string>
+    <string name="pairing_subtitle">连接你的自托管 hub(必须 https://)</string>
+    <string name="hub_url_hint">https://hapi.example.com</string>
+    <string name="pairing_error_invalid_url">hub 地址无效:必须以 https:// 开头且为合法主机名</string>
+    <string name="token_toggle_show">粘贴 token 快捷登入(可选)</string>
+    <string name="token_toggle_hide">收起 token 输入</string>
+    <string name="token_hint">粘贴 JWT(hub 的 access token)</string>
+    <string name="open_directly">直接打开</string>
+    <string name="settings_glyph">⋮</string>
+    <string name="settings_cd">设置(清除配对)</string>
+    <string name="settings_clear_title">清除配对</string>
+    <string name="settings_clear_message">将删除本机保存的 hub 地址与 token,并返回配对屏。确定继续?</string>
+    <string name="settings_clear_confirm">清除</string>
+    <string name="cancel">取消</string>
+    <string name="download_started">已开始下载:%1$s</string>
+</resources>

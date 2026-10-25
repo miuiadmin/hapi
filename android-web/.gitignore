@@ -1,0 +1,16 @@
+# Gradle
+.gradle/
+.kotlin/
+build/
+app/build/
+
+# IDE / machine-local
+local.properties
+.idea/
+captures/
+.DS_Store
+
+# The bundled web dist is injected by the build (B/C task); never commit it —
+# only the placeholder README in this directory is tracked.
+app/src/main/assets/webdist/*
+!app/src/main/assets/webdist/README.md

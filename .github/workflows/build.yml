@@ -16,14 +16,17 @@
 # Safety net: the verify step greps every produced exe for "wireguard" and fails the
 # build if any hit is found — so if a future hapi version re-introduces it, we notice.
 #
-# Android: alongside the CLI binaries, each release also ships a signed native
-# Android client APK. It is built Firebase-free (no google-services.json → the
+# Android: alongside the CLI binaries, each release also ships TWO signed APKs,
+# both with the same fork upload keystore (constant signing identity):
+#  - hapi-android-*.apk — the native client. It is built Firebase-free (no google-services.json → the
 # google-services plugin is skipped by design; all session features work, FCM
 # push is unavailable) and signed with this fork's own upload keystore, held in
 # repo secrets — the same HAPI_UPLOAD_KEYSTORE* hooks upstream's official build
 # uses, minus the hapiOfficialBuild Firebase validation. Persistent signing
 # identity matters: a stable key keeps the install/upgrade path intact across
 # releases (a fresh key per build would force uninstall/reinstall).
+#  - hapi-web-*.apk — the android-web/ WebView shell (fork-only, never PR'd
+#    upstream); its job builds web/dist itself for the bundled static layer.
 #
 # versionCode is yyyymmddNN (date * 100 + run_number%100): monotonic across days
 # and across same-day reruns (run_attempt is 1 on every fresh run, so two tagged
@@ -187,8 +190,103 @@ jobs:
           if-no-files-found: error
           path: stage/
 
+  # WebView shell APK (android-web/, fork-only long line — never PR'd upstream).
+  # Mirrors the `android` job: same keystore secrets (constant signing
+  # identity), same versionName/versionCode source and formula, same
+  # latest/pinned naming scheme — but produces the hapi-web-*.apk alongside
+  # the native client. Needs web/dist for the bundled static layer, which the
+  # binaries job does not build, so it is built here the same way webapp.yml
+  # does it.
+  android-web:
+    runs-on: ubuntu-latest
+    env:
+      HAPI_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.HAPI_UPLOAD_KEYSTORE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bundled layer input: web/dist (checked fail-loud by checkWebDist).
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Build web dist
+        run: |
+          bun install --frozen-lockfile
+          bun run --cwd web build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Android SDK is preinstalled on GitHub ubuntu runners (licenses
+      # accepted); AGP auto-installs any missing platform/build-tools.
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install fork upload keystore
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.HAPI_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$UPLOAD_KEYSTORE_BASE64"
+          test -n "$HAPI_UPLOAD_KEYSTORE_PASSWORD"
+          umask 077
+          keystore="$RUNNER_TEMP/hapi-upload.keystore"
+          printf '%s' "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          printf '%s\n' "HAPI_UPLOAD_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+
+      - name: version
+        id: aver
+        working-directory: android-web
+        run: |
+          v="$(jq -r .version ../cli/package.json)"
+          vc="$(date +%Y%m%d)$(printf '%02d' $(( ${{ github.run_number }} % 100 )))"
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          echo "vc=$vc" >> "$GITHUB_OUTPUT"
+          echo "versionCode=$vc versionName=$v"
+
+      - name: Test and build signed release APK
+        working-directory: android-web
+        run: |
+          ./gradlew \
+            -PhapiVersionCode="${{ steps.aver.outputs.vc }}" \
+            -PhapiVersionName="${{ steps.aver.outputs.v }}" \
+            :app:testDebugUnitTest \
+            :app:assembleRelease
+
+      - name: Verify APK signed with the fork key
+        working-directory: android-web
+        run: |
+          set -euo pipefail
+          apk="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -type f)"
+          case "$apk" in
+              *unsigned*) echo "::error::unsigned APK produced: $apk"; exit 1 ;;
+          esac
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          test -n "$apksigner"
+          "$apksigner" verify --print-certs "$apk" | tee certs.txt
+          grep -q 'CN=hapi upload' certs.txt || { echo '::error::APK not signed with the fork upload key'; exit 1; }
+
+      - name: stage APK
+        working-directory: android-web
+        run: |
+          set -e
+          mkdir -p "$GITHUB_WORKSPACE/stage"
+          tag="${{ inputs.tag || 'latest' }}"
+          if [ "$tag" = "latest" ]; then
+            # Rolling asset: fixed name (mirrors hapi-android-latest.apk).
+            name="hapi-web-latest.apk"
+          else
+            name="hapi-web-${{ steps.aver.outputs.v }}-${{ steps.aver.outputs.vc }}.apk"
+          fi
+          cp app/build/outputs/apk/release/*.apk "$GITHUB_WORKSPACE/stage/$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-android-web
+          if-no-files-found: error
+          path: stage/
+
   release:
-    needs: [binaries, android]
+    needs: [binaries, android, android-web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -198,7 +296,7 @@ jobs:
         run: |
           set -e
           mkdir -p stage
-          cp all/dist-binaries/* all/dist-android/* stage/
+          cp all/dist-binaries/* all/dist-android/* all/dist-android-web/* stage/
           chmod +x stage/hapi-* 2>/dev/null || true
           cd stage
           sha256sum hapi-* > checksums.sha256
@@ -227,6 +325,10 @@ jobs:
             session features work; FCM push is unavailable. Pair with your hub via the
             web **Settings → Companion pairing** QR, a `hapicompanion://bind` link, or
             manual hub URL + access token (HTTPS required).
+
+            `hapi-web-*.apk` — WebView shell (`run.hapi.web`): the hub's web UI in a
+            minimal wrapper with three-layer static serving (OTA > bundled > network) and
+            hot updates. Independent of the native client — install either or both.
 
             ## Verify
             Each binary is scanner-clean: `grep -aci wireguard hapi-*` → `0`.

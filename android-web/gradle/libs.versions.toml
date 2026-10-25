@@ -1,0 +1,39 @@
+# Version catalog for hapi-android-web.
+# Versions intentionally mirror ../android/gradle/libs.versions.toml (AGP, Kotlin,
+# core-ktx, okhttp, security-crypto). This is a separate lightweight catalog: the
+# web shell deliberately does NOT pull Compose / Material / Firebase / WorkManager.
+
+[versions]
+agp = "8.11.1"
+kotlin = "2.1.21"
+coreKtx = "1.16.0"
+activity = "1.10.1"
+securityCrypto = "1.1.0"
+okhttp = "4.12.0"
+webkit = "1.12.1"
+kotlinxCoroutines = "1.10.2"
+junit = "4.13.2"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+# ComponentActivity supplies OnBackPressedDispatcher (system back handling).
+androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
+# Pairing credentials (hub_url / access_token) at rest.
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+# Mirrors ../android okhttp line (used by the OTA hot-update fetcher).
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+# Coroutines for the OTA hot-update manager (single run, 15s budget) — same pin
+# as ../android/gradle/libs.versions.toml.
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
+# WebViewCompat / WebViewAssetLoader helpers if the static layer needs them.
+androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
+
+# Testing (JVM only — URL logic is pure Kotlin, no android.* classes).
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
