@@ -3,6 +3,14 @@
 package app.hapi.companion.feature.newsession
 
 import app.hapi.protocol.wire.AgentAvailabilityResponse
+import app.hapi.protocol.wire.AgyModelsResponse
+import app.hapi.protocol.wire.CopilotModelsResponse
+import app.hapi.protocol.wire.CursorModelsResponse
+import app.hapi.protocol.wire.GrokModelsResponse
+import app.hapi.protocol.wire.KimiModelsResponse
+import app.hapi.protocol.wire.OpencodeModelVariantsResponse
+import app.hapi.protocol.wire.OpencodeModelsResponse
+import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.CodexArchiveSessionResponse
 import app.hapi.protocol.wire.CodexDesktopScriptResponse
 import app.hapi.protocol.wire.CodexDesktopStatusResponse
@@ -15,6 +23,10 @@ import app.hapi.protocol.wire.CodexMergeDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.PiImportSessionsRequest
+import app.hapi.protocol.wire.PiImportSessionsResponse
+import app.hapi.protocol.wire.PiLocalSessionsResponse
+import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
@@ -95,6 +107,30 @@ class CodexImportControllerTest {
         override suspend fun agentAvailability(machineId: String): AgentAvailabilityResponse =
             throw UnsupportedOperationException()
 
+        override suspend fun agyModels(machineId: String, refresh: Boolean): AgyModelsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun piModels(machineId: String): PiModelsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun cursorModels(machineId: String): CursorModelsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun opencodeModels(machineId: String, cwd: String): OpencodeModelsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun opencodeModelVariants(machineId: String, cwd: String?): OpencodeModelVariantsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun copilotModels(machineId: String, cwd: String): CopilotModelsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun kimiModels(machineId: String, cwd: String): KimiModelsResponse =
+            throw UnsupportedOperationException()
+
         override suspend fun codexModels(machineId: String): CodexModelsResponse =
             throw UnsupportedOperationException()
 
@@ -146,6 +182,15 @@ class CodexImportControllerTest {
             restartCalls.add(1)
             return restartResult
         }
+
+        override suspend fun piSessions(cwd: String?, machineId: String?): PiLocalSessionsResponse =
+            PiLocalSessionsResponse(success = true, sessions = emptyList())
+
+        override suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse =
+            PiImportSessionsResponse(success = true)
+
+        override suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
+            ReopenSessionResponse(sessionId = sessionId, resumed = true)
     }
 
     private class RecordingStore(initial: Map<String, Long> = emptyMap()) : CodexImportedSessionsStore {
