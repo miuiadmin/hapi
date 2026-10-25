@@ -24,12 +24,16 @@ import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.UserTextBlock
 import app.hapi.protocol.chat.VisibleChatBlock
 import coil.ImageLoader
+import java.io.File
 
 /**
  * Hub-scoped media plumbing for chat blocks: the authed Coil loader, the
- * generated-image URL builder, and the hub-relative media resolver used by
- * markdown inline images (all from `HubGraph`). Null loader (previews,
- * tests) degrades to a filename placeholder / link fallback.
+ * generated-image URL builder, the hub-relative media resolver used by
+ * markdown inline images, and the raw byte fetcher used by non-image
+ * generated media (video/audio/file download to the media cache) — all from
+ * `HubGraph`. Null loader/fetcher (previews, tests) degrade: images to a
+ * filename placeholder, inline images to a link fallback, gated media to the
+ * unavailable error line.
  */
 data class ChatMedia(
     val imageLoader: ImageLoader?,
@@ -39,9 +43,12 @@ data class ChatMedia(
      * authed loader; a null return (or the default) degrades to a link.
      */
     val hubMediaUrl: (path: String) -> String? = { null },
+    val fetchGeneratedMedia: (suspend (url: String, imageId: String, fileName: String) -> File)? = null,
 )
 
-val LocalChatMedia = staticCompositionLocalOf { ChatMedia(imageLoader = null, generatedImageUrl = { null }) }
+val LocalChatMedia = staticCompositionLocalOf {
+    ChatMedia(imageLoader = null, generatedImageUrl = { null })
+}
 
 /** Stable LazyColumn key. */
 val VisibleChatBlock.stableId: String

@@ -173,6 +173,9 @@ dependencies {
     // registered on that loader (and the files viewer's local one).
     implementation(libs.coil.compose)
     implementation(libs.coil.svg)
+    // Generated media (chat, C): raw byte download of non-image generated
+    // media (video/audio/file) through the same authed hub client Coil uses.
+    implementation(libs.okhttp)
 
     // FCM push + notification actions (B-M4a). firebase-messaging is always on
     // the classpath; whether it *activates* depends on google-services.json
@@ -210,4 +213,6 @@ dependencies {
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    // Generated media fetch tests: real HTTP round-trip against localhost.
+    testImplementation(libs.okhttp.mockwebserver)
 }
