@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.HapiWeb" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Splash = plain solid windowBackground (no splash screen API). The
+             light palette matches the web app's default light theme. -->
+        <item name="android:windowBackground">@color/shell_background</item>
+        <item name="android:statusBarColor">@color/shell_background</item>
+        <item name="android:navigationBarColor">@color/shell_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
