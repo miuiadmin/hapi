@@ -13,6 +13,11 @@ import android.widget.TextView
 import android.widget.ViewFlipper
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import run.hapi.web.static.WebStaticServing
 
 /**
  * Hapi Web shell — a thin, system-UI-only host (no Compose, no Material
@@ -39,6 +44,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var webContainer: FrameLayout
     private var webView: WebView? = null
     private var webClient: ShellWebViewClient? = null
+
+    /** OTA + bundled static serving for the currently paired hub. */
+    private val servingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var staticServing: WebStaticServing? = null
+    private var servingHub: String? = null
 
     /** System back: in-web history first, default (finish) otherwise. */
     private val backCallback = object : OnBackPressedCallback(true) {
@@ -92,6 +102,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        servingScope.cancel()
         destroyWebView()
         super.onDestroy()
     }
@@ -105,6 +116,15 @@ class MainActivity : ComponentActivity() {
     private fun showWeb() {
         val hub = store.hubUrl() ?: return showPairing()
         val view = ensureWebView(hub)
+        // Three-layer static serving (OTA > bundled > network) for this hub —
+        // attach before the first load, then run one OTA round (silent).
+        if (servingHub != hub) {
+            servingHub = hub
+            staticServing = WebStaticServing(this, hub).also { serving ->
+                webClient?.staticResolver = serving.resolver
+                serving.launchHotUpdate(servingScope) // app start / post-pairing round
+            }
+        }
         val bootUrl = HubUrls.buildBootUrl(hub, store.accessToken())
         webClient?.armHistoryClear()
         view.loadUrl(bootUrl)
