@@ -310,6 +310,7 @@
     <string name="chat_queued_scheduled">定时发送： %1$s</string>
     <string name="chat_queued_steer">插入</string>
     <string name="chat_queued_edit">编辑</string>
+    <string name="chat_markdown_image_failed">图片加载失败 · 点按重试</string>
     <string name="chat_picker_title">添加附件</string>
     <string name="chat_picker_photos">相册</string>
     <string name="chat_picker_camera">相机</string>
@@ -336,6 +337,7 @@
     <string name="chat_tool_awaiting_approval_badge">⏳ 等待审批</string>
     <string name="chat_tool_approved">✓ 已批准</string>
     <string name="chat_tool_denied">✕ 已拒绝</string>
+    <string name="chat_tool_resolved">已处理</string>
     <string name="chat_tool_canceled">— 已取消</string>
     <string name="chat_tool_status_pending">等待中</string>
     <string name="chat_tool_status_error">错误</string>
@@ -414,6 +416,8 @@
     <string name="tool_todo_list">任务清单</string>
     <string name="tool_plan">计划</string>
     <string name="tool_plan_proposal">计划提案</string>
+    <string name="chat_plan_implement">执行计划</string>
+    <string name="chat_plan_continue">继续规划</string>
     <string name="tool_skill">技能</string>
     <string name="tool_skill_named">技能：%1$s</string>
     <string name="tool_reasoning">思考</string>
@@ -581,7 +585,4 @@
     <string name="sessions_filter_summary">筛选：%1$s</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_open_failed">没有可打开此链接的应用。</string>
-    <string name="chat_tool_resolved">已处理</string>
-    <string name="chat_plan_implement">执行计划</string>
-    <string name="chat_plan_continue">继续规划</string>
 </resources>
