@@ -12,6 +12,8 @@ import app.hapi.companion.feature.chat.composer.ComposerDraftSnapshot
 import app.hapi.companion.feature.chat.composer.ComposerDraftSnapshots
 import app.hapi.companion.feature.chat.composer.MentionSuggestion
 import app.hapi.companion.feature.chat.composer.Mentions
+import app.hapi.companion.feature.chat.composer.PendingSchedule
+import app.hapi.companion.feature.chat.composer.ScheduleSend
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
@@ -350,6 +352,14 @@ sealed interface PermissionAction {
  *   limit 50, silent on failure); selection swaps the whole word for the
  *   suggestion's insert text (Copy-reference prose / flavor `@path` form).
  *
+ * B-M16b adds:
+ * - **Scheduled send** ([pendingSchedule]/[setPendingSchedule]): the composer
+ *   clock pick (web `ScheduleTimePicker`) resolves `scheduledAt` at the send
+ *   instant inside [sendMessage] (a pending pick downgrades steer to queue),
+ *   absolute picks auto-clear when their instant passes, and the queued
+ *   bar's Edit re-arms a future fire time as a new pick
+ *   (`computeEditPendingSchedule`).
+ *
  * M2 core (unchanged): owns the session-scope SSE subscription while
  * [start]ed (dual-subscription model: `HubGraph` owns the global pipe) and
  * routes engine events into the shared [SyncTargets]; opens the
@@ -533,6 +543,19 @@ class ChatViewModel(
 
     private val composerText = MutableStateFlow("")
     private val sendInFlight = MutableStateFlow(false)
+
+    /**
+     * Pending scheduled-send pick (B-M16b, web SessionChat `pendingSchedule`):
+     * null = immediate send; a pick makes the next Send carry
+     * `scheduledAt` resolved at the send instant. Owned here so the queued
+     * bar's Edit can re-arm it ([editQueuedMessage]) and the expiry auto-clear
+     * below survives UI recomposition.
+     */
+    private val mutablePendingSchedule = MutableStateFlow<PendingSchedule?>(null)
+
+    /** The composer clock-button state; collected by [ChatScreen]. */
+    val pendingSchedule: StateFlow<PendingSchedule?> = mutablePendingSchedule.asStateFlow()
+    private var pendingScheduleExpiryJob: Job? = null
 
     /**
      * Composer attachment tray (B-M3f). The screen feeds prepared picks in
@@ -1220,6 +1243,32 @@ class ChatViewModel(
     }
 
     /**
+     * Schedule-picker selection / clock-button clear (B-M16b). Mirrors the
+     * web SessionChat `updatePendingSchedule`: absolute picks also arm an
+     * expiry auto-clear (a pick whose instant passes stops highlighting the
+     * clock instead of silently scheduling into the past; a within-grace
+     * past pick — still valid at validation time — clears immediately, the
+     * web's exact `remaining <= 0` behavior). Presets are send-relative and
+     * never expire on a timer.
+     */
+    fun setPendingSchedule(pending: PendingSchedule?) {
+        pendingScheduleExpiryJob?.cancel()
+        pendingScheduleExpiryJob = null
+        mutablePendingSchedule.value = pending
+        if (!ScheduleSend.shouldAutoClearPendingSchedule(pending)) return
+        val ms = (pending as PendingSchedule.Absolute).ms
+        val remaining = ms - now()
+        if (remaining <= 0) {
+            mutablePendingSchedule.value = null
+            return
+        }
+        pendingScheduleExpiryJob = scope.launch {
+            delay(remaining)
+            mutablePendingSchedule.value = null
+        }
+    }
+
+    /**
      * `GET /slash-commands` once per screen (near-static list; a failed fetch
      * retries on the next `/`). RPC failure is silent — the metadata names
      * still populate the menu, like the web's builtin fallback.
@@ -1270,6 +1319,13 @@ class ChatViewModel(
      * Ready attachments are consumed into `SendMessageRequest.attachments`;
      * an unsettled chip (uploading/failed) blocks the send with a notice.
      * Text may be empty when attachments exist (wire: text OR attachments).
+     *
+     * B-M16b: a pending schedule resolves here, at the send instant (web
+     * `resolvePendingSchedule(pending, Date.now())`) — presets are relative to
+     * the Send tap. A pending pick also downgrades a steer long-press to
+     * queue: the wire forbids `scheduledAt` + steer and the web forces the
+     * send intent to 'default' while a schedule is pending. The pick is
+     * cleared with the draft once the send consumes it.
      */
     fun sendMessage(steer: Boolean = false) {
         if (sendInFlight.value) return
@@ -1280,7 +1336,15 @@ class ChatViewModel(
         val text = composerText.value.trim()
         val attachmentMetadata = attachments.consume()
         if (text.isEmpty() && attachmentMetadata == null) return
+        val scheduledAt = ScheduleSend.resolvePendingSchedule(mutablePendingSchedule.value, now())
+        val deliveryMode = if (steer && scheduledAt == null) "steer" else "queue"
         composerText.value = ""
+        // 分歧 (same intent as the web, Android-native restore): the web
+        // clears the pick in SessionChat only after the send is accepted and
+        // restores it on failure; the Android failed row already carries wire
+        // `scheduledAt` and `retryFailedMessage` re-fires with it — the retry
+        // IS the restore — so clearing at dispatch loses nothing.
+        setPendingSchedule(null)
         draftJob?.cancel()
         sendInFlight.value = true
         scope.launch {
@@ -1308,8 +1372,9 @@ class ChatViewModel(
                     text = text,
                     localId = localIdGenerator(),
                     createdAt = now(),
-                    deliveryMode = if (steer) "steer" else "queue",
+                    deliveryMode = deliveryMode,
                     attachments = attachmentMetadata,
+                    scheduledAt = scheduledAt,
                     isRetry = false,
                 )
             } finally { sendInFlight.value = false }
@@ -1650,13 +1715,21 @@ class ChatViewModel(
         }
     }
 
-    /** Edit = cancel + prefill composer (kept when the operator typed meanwhile). */
+    /**
+     * Edit = cancel + prefill composer (kept when the operator typed
+     * meanwhile). B-M16b: a future `scheduledAt` re-arms the pending schedule
+     * as an absolute pick so a re-send keeps (or adjusts) the fire time;
+     * past/null clears it so the re-send goes out immediately (web
+     * `computeEditPendingSchedule`, restored unconditionally like the web's
+     * onEdit → updatePendingSchedule).
+     */
     fun editQueuedMessage(messageId: String) {
         scope.launch {
             val store = awaitWindowStore()
             val row = store.state.value.messages.firstOrNull { it.id == messageId } ?: return@launch
             val preview = queuedPreview(row)
             val editText = preview.text.ifEmpty { preview.attachmentNames.joinToString(", ") }
+            val restoredSchedule = ScheduleSend.computeEditPendingSchedule(row.wire.scheduledAt, now())
             val composerAtEdit = composerText.value
             when (cancelQueuedInternal(messageId)) {
                 "cancelled" -> {
@@ -1665,6 +1738,7 @@ class ChatViewModel(
                     } else {
                         _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditKeptDraft))
                     }
+                    setPendingSchedule(restoredSchedule)
                 }
                 "invoked" -> _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedAlreadyDelivered))
                 else -> Unit
