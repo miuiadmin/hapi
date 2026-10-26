@@ -617,4 +617,12 @@
     <string name="sessions_time_filter_recent_activity">Recent activity</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
+    <string name="connection_reconnecting">Reconnecting…</string>
+    <string name="connection_syncing">Syncing…</string>
+    <string name="connection_reason_heartbeat_timeout">heartbeat timeout</string>
+    <string name="connection_reason_visibility_recovery">resuming after background</string>
+    <string name="connection_reason_connect_timeout">connect timeout</string>
+    <string name="connection_reason_transport_error">stream error</string>
+    <string name="connection_reason_closed">stream closed</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
 </resources>

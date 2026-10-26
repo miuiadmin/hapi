@@ -617,4 +617,12 @@
     <string name="sessions_time_filter_recent_activity">Недавняя активность</string>
     <string name="privacy_policy">Политика конфиденциальности</string>
     <string name="privacy_open_failed">Нет приложения, способного открыть эту ссылку.</string>
+    <string name="connection_reconnecting">Переподключение…</string>
+    <string name="connection_syncing">Синхронизация…</string>
+    <string name="connection_reason_heartbeat_timeout">таймаут heartbeat</string>
+    <string name="connection_reason_visibility_recovery">возобновление после фона</string>
+    <string name="connection_reason_connect_timeout">таймаут подключения</string>
+    <string name="connection_reason_transport_error">ошибка потока</string>
+    <string name="connection_reason_closed">поток закрыт</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
 </resources>

@@ -624,4 +624,12 @@
     <string name="chat_tool_resolved">已处理</string>
     <string name="chat_plan_implement">执行计划</string>
     <string name="chat_plan_continue">继续规划</string>
+    <string name="connection_reconnecting">正在重新连接…</string>
+    <string name="connection_syncing">同步中…</string>
+    <string name="connection_reason_heartbeat_timeout">心跳超时</string>
+    <string name="connection_reason_visibility_recovery">后台恢复中</string>
+    <string name="connection_reason_connect_timeout">连接超时</string>
+    <string name="connection_reason_transport_error">流连接错误</string>
+    <string name="connection_reason_closed">流连接已关闭</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
 </resources>
