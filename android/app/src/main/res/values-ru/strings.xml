@@ -863,4 +863,23 @@
     <string name="pi_import_failed_partial">Не удалось импортировать сессий: %1$d. Причина: %2$s</string>
     <string name="pi_import_error_diverged">Локальная ветка Pi изменилась после предыдущего импорта. Проверьте сессию перед продолжением.</string>
     <string name="pi_import_error_active">Остановите активную сессию Hapi Pi перед импортом более новой нативной истории.</string>
+    <string name="connection_reconnecting">Переподключение…</string>
+    <string name="connection_syncing">Синхронизация…</string>
+    <string name="connection_reason_heartbeat_timeout">таймаут heartbeat</string>
+    <string name="connection_reason_visibility_recovery">возобновление после фона</string>
+    <string name="connection_reason_connect_timeout">таймаут подключения</string>
+    <string name="connection_reason_transport_error">ошибка потока</string>
+    <string name="connection_reason_closed">поток закрыт</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
+    <string name="runner_skew_summary_title">Устаревших раннеров: %1$d</string>
+    <string name="runner_skew_summary_body">Обновите HAPI CLI на каждом хосте ниже, затем перезапустите соответствующий раннер. Сверните или отложите этот баннер, чтобы добраться до сессий под ним.</string>
+    <string name="runner_skew_minimized">Устаревших раннеров: %1$d (%2$s) — нажмите, чтобы развернуть</string>
+    <string name="runner_skew_minimize">Свернуть</string>
+    <string name="runner_skew_dismiss_temp">Отложить на 1 ч</string>
+    <string name="runner_skew_restart">Перезапустить раннер</string>
+    <string name="runner_skew_restart_unavailable">Сначала обновите CLI</string>
+    <string name="runner_skew_restarting">Перезапуск…</string>
+    <string name="runner_skew_binary_updated_hint">(на диске уже более новая версия CLI — раннер скоро перезапустится сам)</string>
+    <string name="runner_skew_upgrade_cli_first">(на диске ещё нет более новой версии CLI — установите/обновите на этом хосте)</string>
+    <string name="runner_skew_restart_failed">Не удалось перезапустить раннер</string>
 </resources>

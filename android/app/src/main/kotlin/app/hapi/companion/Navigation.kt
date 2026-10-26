@@ -41,9 +41,12 @@ import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
 import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
+import app.hapi.companion.feature.chat.composer.AudioRecordStreamingSource
+import app.hapi.companion.feature.chat.composer.DeepgramRealtimeDictationEngine
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
+import app.hapi.companion.feature.chat.composer.OkHttpProviderSocketFactory
 import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
 import app.hapi.companion.feature.files.ApiFilesGateway
 import app.hapi.companion.feature.files.DirectoryExpandPrefs
@@ -93,6 +96,7 @@ import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
 import app.hapi.companion.feature.toasts.HubToasts
 import app.hapi.data.auth.AuthTerminalReason
+import okhttp3.OkHttpClient
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -314,6 +318,8 @@ fun HapiNavigation() {
                         formatStore = graph.sessionExportFormatStore,
                     )
                 },
+                connectionChrome = hubGraph.connectionChrome,
+                runnerSkewChrome = hubGraph.runnerSkewChrome,
             )
         }
 
@@ -820,6 +826,11 @@ private class ChatViewModelHolder(
         scope = scope,
         preferredProviderId = { dictationProviderId.value },
         languageCode = { dictationLanguage.value },
+        realtimeEngine = DeepgramRealtimeDictationEngine(
+            api = hubGraph.session.api,
+            socketFactory = OkHttpProviderSocketFactory(OkHttpClient()),
+            audioFactory = { AudioRecordStreamingSource() },
+        ),
     )
 
     override fun onCleared() {

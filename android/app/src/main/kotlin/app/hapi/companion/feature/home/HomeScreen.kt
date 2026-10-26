@@ -2,6 +2,7 @@ package app.hapi.companion.feature.home
 
 import android.net.Uri
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -60,6 +61,10 @@ fun HomeScreen(
     onOpenSettings: (() -> Unit)? = null,
     /** null ⇒ no export entry in the session actions sheet (tests / previews). */
     sessionExport: SessionExportSupport? = null,
+    /** Global connection banner state; null hides the banner (slice C-①). */
+    connectionChrome: ConnectionChrome? = null,
+    /** Runner version-skew banner state; null hides the banner (slice C-②). */
+    runnerSkewChrome: RunnerSkewChrome? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     var showFilters by rememberSaveable(activeHubUrl) { mutableStateOf(false) }
@@ -83,13 +88,17 @@ fun HomeScreen(
             )
         },
     ) { padding ->
-        SessionListScreen(
-            viewModel = viewModel,
-            onOpenSession = onOpenSession,
-            modifier = Modifier.fillMaxSize().padding(padding),
-            onNewSession = onNewSession,
-            sessionExport = sessionExport,
-        )
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            connectionChrome?.let { GlobalConnectionBanner(it) }
+            runnerSkewChrome?.let { RunnerSkewBanner(it) }
+            SessionListScreen(
+                viewModel = viewModel,
+                onOpenSession = onOpenSession,
+                modifier = Modifier.fillMaxSize(),
+                onNewSession = onNewSession,
+                sessionExport = sessionExport,
+            )
+        }
     }
 
     if (showFilters) {

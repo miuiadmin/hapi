@@ -392,6 +392,45 @@ class HapiApiTest {
     }
 
     @Test
+    fun `restart machine runner posts an empty json body and decodes the message`() {
+        server.enqueue(ok("""{"message":"stop signal sent to supervised runner"}"""))
+
+        val response = runBlocking { session.api.restartMachineRunner("m9") }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/machines/m9/restart-runner", request.path)
+        assertEquals("{}", request.body.readUtf8())
+        assertEquals("stop signal sent to supervised runner", response.message)
+    }
+
+    @Test
+    fun `realtime transcription token posts provider and language and decodes the token`() {
+        server.enqueue(ok("""{"token":"dg-live-123"}"""))
+
+        val response = runBlocking { session.api.fetchRealtimeTranscriptionToken("deepgram", "zh-CN") }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/voice/transcription/realtime-token", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("deepgram", body["provider"]!!.jsonPrimitive.content)
+        assertEquals("zh-CN", body["language"]!!.jsonPrimitive.content)
+        assertEquals("dg-live-123", response.token)
+    }
+
+    @Test
+    fun `realtime transcription token omits a null language`() {
+        server.enqueue(ok("""{"token":"t"}"""))
+
+        runBlocking { session.api.fetchRealtimeTranscriptionToken("deepgram") }
+
+        val body = lastRequestBody()
+        assertEquals("deepgram", body["provider"]!!.jsonPrimitive.content)
+        assertNull(body["language"])
+    }
+
+    @Test
     fun `machine codex models decode and rpc_target_missing surfaces as coded ApiError`() {
         server.enqueue(
             ok(
