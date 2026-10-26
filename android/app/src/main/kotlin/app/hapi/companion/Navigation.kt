@@ -243,6 +243,7 @@ fun HapiNavigation() {
                 onNewSession = { navController.navigate(Routes.newSession()) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 connectionChrome = hubGraph.connectionChrome,
+                runnerSkewChrome = hubGraph.runnerSkewChrome,
             )
         }
 

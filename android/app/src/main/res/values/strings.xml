@@ -625,4 +625,15 @@
     <string name="connection_reason_transport_error">stream error</string>
     <string name="connection_reason_closed">stream closed</string>
     <string name="connection_reason_http_code">HTTP %1$d</string>
+    <string name="runner_skew_summary_title">%1$d runner(s) out of date</string>
+    <string name="runner_skew_summary_body">Upgrade the HAPI CLI on each host below, then restart that runner. Minimize or snooze this banner to reach sessions underneath.</string>
+    <string name="runner_skew_minimized">%1$d outdated runner(s): %2$s — tap to expand</string>
+    <string name="runner_skew_minimize">Minimize</string>
+    <string name="runner_skew_dismiss_temp">Snooze 1h</string>
+    <string name="runner_skew_restart">Restart runner</string>
+    <string name="runner_skew_restart_unavailable">Upgrade CLI first</string>
+    <string name="runner_skew_restarting">Restarting…</string>
+    <string name="runner_skew_binary_updated_hint">(newer CLI on disk — runner should self-restart soon)</string>
+    <string name="runner_skew_upgrade_cli_first">(no newer CLI on disk yet — install/upgrade on that host)</string>
+    <string name="runner_skew_restart_failed">Failed to restart runner</string>
 </resources>

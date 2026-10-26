@@ -23,6 +23,7 @@ import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachinePathsExistsRequest
 import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.MachinesResponse
+import app.hapi.protocol.wire.RestartRunnerResponse
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
@@ -518,6 +519,15 @@ class HapiApi internal constructor(
             RenameMachineRequest(displayName).toJsonBody(),
         )
     }
+
+    /**
+     * `POST /api/machines/:id/restart-runner` — the skew banner's manual
+     * exit: the hub stops a supervised runner so its supervisor relaunches it
+     * with the newer on-disk CLI. Fails (HTTP error) when the runner is not
+     * supervised or not newer-on-disk.
+     */
+    suspend fun restartMachineRunner(machineId: String): RestartRunnerResponse =
+        request("POST", url("api", "machines", machineId, "restart-runner").build(), EMPTY_JSON)
 
     /**
      * `POST /api/machines/:id/spawn`. The response discriminates on `type`,
