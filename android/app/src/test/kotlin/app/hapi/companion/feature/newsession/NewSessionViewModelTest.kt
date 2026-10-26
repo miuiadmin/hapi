@@ -163,7 +163,6 @@ private class FakeGateway : NewSessionGateway {
     val cursorCalls = mutableListOf<String>()
     val opencodeModelsCalls = mutableListOf<Pair<String, String>>()
     val opencodeVariantsCalls = mutableListOf<Pair<String, String?>>()
-    val grokCalls = mutableListOf<Pair<String, String>>()
     val copilotCalls = mutableListOf<Pair<String, String>>()
     val kimiCalls = mutableListOf<Pair<String, String>>()
 
@@ -175,6 +174,10 @@ private class FakeGateway : NewSessionGateway {
     var grokResults = mutableListOf<GrokModelsResponse>()
     var copilotResults = mutableListOf<CopilotModelsResponse>()
     var kimiResults = mutableListOf<KimiModelsResponse>()
+
+    /** Upstream-style single scripted result (the queue wins when non-empty). */
+    var grokResult: GrokModelsResponse = GrokModelsResponse(success = true)
+    var grokThrows: Exception? = null
 
     /** Optional suspending intercepts to park a fetch in Loading. */
     var agyHandler: (suspend (String, Boolean) -> AgyModelsResponse)? = null
@@ -200,8 +203,9 @@ private class FakeGateway : NewSessionGateway {
 
     override suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse {
         grokCalls.add(machineId to cwd)
+        grokThrows?.let { throw it }
         grokHandler?.let { return it(machineId, cwd) }
-        return dequeue(grokResults, GrokModelsResponse(success = true))
+        return if (grokResults.isNotEmpty()) dequeue(grokResults, grokResult) else grokResult
     }
 
     override suspend fun piModels(machineId: String): PiModelsResponse {

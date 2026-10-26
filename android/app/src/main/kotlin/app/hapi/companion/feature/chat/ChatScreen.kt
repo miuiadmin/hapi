@@ -128,11 +128,7 @@ internal fun ChatScreen(
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
-<<<<<<< HEAD
     val pendingSchedule by viewModel.pendingSchedule.collectAsState()
-=======
-    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
->>>>>>> 99fde6e4
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val reopenCard by viewModel.reopenCard.collectAsState()
@@ -452,18 +448,18 @@ internal fun ChatScreen(
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
-<<<<<<< HEAD
                         onOpenFiles = onOpenFiles,
                         onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
                         onParkDraft = if (
                             parkDraftEligible(viewModel.scratchlistEnabled, composerState.text)
                         ) {
                             viewModel::parkComposerDraft
-=======
+                        } else {
+                            null
+                        },
                         scratchlistCount = scratchlistCount,
                         onToggleScratchlist = if (viewModel.scratchlistEnabled) {
                             { viewModel.setScratchlistMode(!composerState.routesToScratchlist) }
->>>>>>> 99fde6e4
                         } else {
                             null
                         },

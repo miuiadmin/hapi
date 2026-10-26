@@ -54,6 +54,7 @@ describe('shared launch configuration', () => {
         // in SharedCodexRoot.config() instead of carrying a frozen string.
         const result = sharedLaunchConfig({}, '/tmp');
         expect(result.threadParams).not.toHaveProperty('developerInstructions');
+    });
     it('maps HAPI autoReview to native auto-review in the workspace-write sandbox', () => {
         const result = sharedLaunchConfig({ permissionMode: 'autoReview', codexArgs: ['--yolo'] }, '/tmp');
         expect(result.threadParams).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });

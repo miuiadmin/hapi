@@ -183,13 +183,9 @@ class DictationController(
      * re-resolves; unchanged preferences keep discovery to one call.
      */
     private var cachedForPreference: String? = null
-    private var cacheInitialized = false
 
     private var job: Job? = null
     private var refreshingAvailability = false
-
-    /** Last preference the cached choice was resolved against (stack pick). */
-    private var cachedForPreference: String? = null
 
     /** A changed settings preference invalidates the cached provider choice. */
     private fun invalidateCacheOnPreferenceChange() {

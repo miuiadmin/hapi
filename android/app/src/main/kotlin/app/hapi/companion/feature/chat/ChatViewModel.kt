@@ -449,10 +449,8 @@ class ChatViewModel(
     private val draftSnapshots: ComposerDraftSnapshots? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
-<<<<<<< HEAD
     /** null ⇒ `$`-menu ranking falls back to name order — tests/previews. */
     private val recentSkills: RecentSkills? = null,
-=======
     /**
      * Hub scratchlist blob fetch for the promote flows (web
      * `fetchScratchlistAttachmentBlob`); null ⇒ promotes degrade to
@@ -464,7 +462,6 @@ class ChatViewModel(
      * pipeline); null ⇒ promote-to-composer skips attachment rehydration.
      */
     private val scratchlistPickPreparer: ScratchlistPromoter.PickPreparer? = null,
->>>>>>> 99fde6e4
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val pipelineIntervalMs: Long = PIPELINE_INTERVAL_MS,
     private val draftSaveDebounceMs: Long = DRAFT_SAVE_DEBOUNCE_MS,
@@ -1777,8 +1774,7 @@ class ChatViewModel(
         store: MessageWindowStore,
         request: SendMessageRequest,
         localId: String,
-<<<<<<< HEAD
-    ) {
+    ): Boolean {
         // Web `resolveSessionId` refuses the resume before the POST when the
         // session can't come back (cursor store gone — #1084). Same surface
         // as a failed resume: row Failed + notice, no request sent.
@@ -1792,11 +1788,8 @@ class ChatViewModel(
         ) {
             store.updateStatus(localId, MessageStatus.Failed)
             _events.tryEmit(ChatEvent.Notice(ChatNotice.ResumeFailed))
-            return
+            return false
         }
-=======
-    ): Boolean {
->>>>>>> 99fde6e4
         val targetSessionId = try {
             api.resumeSession(sessionId, currentDetail()?.permissionMode).sessionId
         } catch (cancellation: CancellationException) {

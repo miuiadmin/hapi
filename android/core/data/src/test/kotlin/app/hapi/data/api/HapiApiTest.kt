@@ -278,6 +278,7 @@ class HapiApiTest {
         val error = assertFailsWith<ApiError> { runBlocking { session.api.rewindConversation("s1", "lm-1") } }
         assertEquals(409, error.status)
         assertEquals("ambiguous_native_boundary_fork_safe", error.code)
+    }
 
     @Test
     fun `upload posts json base64 (not multipart) and yields the hub path`() {

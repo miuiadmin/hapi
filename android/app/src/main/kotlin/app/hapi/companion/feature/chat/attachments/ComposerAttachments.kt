@@ -261,6 +261,7 @@ class ComposerAttachments(
                 )
             }
         }
+    }
 
     /**
      * Snapshot of one Ready chip for the scratchlist park migration (the
@@ -293,6 +294,7 @@ class ComposerAttachments(
      */
     fun removeParked(ids: Set<String>) {
         ids.forEach(::remove)
+    }
 
     /**
      * Leaving the chat for good (ViewModel holder `onCleared`): un-sent

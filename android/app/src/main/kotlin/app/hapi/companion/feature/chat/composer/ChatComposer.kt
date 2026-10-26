@@ -395,6 +395,7 @@ fun ChatComposer(
                             ) {
                                 Icon(HapiInboxGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
                             }
+                        }
                         if (onToggleScratchlist != null) {
                             ScratchlistToggleButton(
                                 active = state.routesToScratchlist,
@@ -1086,6 +1087,7 @@ private fun ChatComposerPreview() {
                     onOpenScratchlist = {},
                     onParkDraft = {},
                     dictation = DictationState.Idle,
+                )
                 ChatComposer(
                     state = ComposerUiState(
                         text = "Holding this thought until the tests pass",

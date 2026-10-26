@@ -22,12 +22,14 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.ForkConversationResponse
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
+import app.hapi.protocol.wire.RewindConversationResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionMetadata
@@ -106,6 +108,12 @@ private class LeanApi : ChatSessionApi {
     override suspend fun abortSession(sessionId: String) = Unit
 
     override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("unused")
+
+    override suspend fun forkConversation(sessionId: String, messageLocalId: String?): ForkConversationResponse =
+        error("unused")
+
+    override suspend fun rewindConversation(sessionId: String, messageLocalId: String): RewindConversationResponse =
+        error("unused")
 
     override suspend fun implementCodexPlan(sessionId: String, planId: String) = Unit
 

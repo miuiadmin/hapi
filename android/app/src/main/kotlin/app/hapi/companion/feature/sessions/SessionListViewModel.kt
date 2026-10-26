@@ -151,6 +151,8 @@ class SessionListViewModel(
     private val groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
     /** Clock zone for the date-range lens; injectable so JVM tests are host-timezone-independent. */
     private val zone: ZoneId = ZoneId.systemDefault(),
+    /** Live zone resolver for runtime timezone changes (upstream TIME_CHANGED refresh). */
+    private val zoneProvider: () -> ZoneId = { ZoneId.systemDefault() },
     /**
      * Cursor chat-store probe (`GET /api/sessions/:id/cursor-chat-store`).
      * Fail-loud default: an unwired probe throws, which the gate catches as
@@ -177,6 +179,9 @@ class SessionListViewModel(
 
     /** Transient date-range lens; null = no date filtering (web: unpersisted `useState`). */
     private val dateRange = MutableStateFlow<SessionDateRange?>(null)
+
+    /** Live clock zone; a timezone broadcast re-resolves it and re-derives dates. */
+    private val timeZone = MutableStateFlow(zone)
 
     private val _errors = MutableSharedFlow<SessionListError>(extraBufferCapacity = 8)
 
@@ -342,7 +347,9 @@ class SessionListViewModel(
         // Chrome quad carries the transient date-range lens alongside the
         // refresh/offline flags (batch13 C: web reads the unpersisted
         // `customStart`/`customEnd` state directly into the list build).
-        combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange) { refreshing, offline, loaded, range ->
+        // timeZone rides as a fifth source (ignored) so a zone refresh
+        // re-emits the whole derived state (upstream TIME_CHANGED feature).
+        combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange, timeZone) { refreshing, offline, loaded, range, _ ->
             ChromeState(refreshing, offline, loaded, range)
         },
         combine(showUnreadOnly, showActiveOnly) { unreadOnly, activeOnly ->
@@ -435,6 +442,11 @@ class SessionListViewModel(
 
     fun setMachineFilter(machineId: String?) {
         machineFilter.value = machineId
+    }
+
+    /** Re-evaluate local dates on timezone broadcasts and foreground resume, even offline. */
+    fun refreshTimeZone() {
+        timeZone.value = zoneProvider()
     }
 
     /** Search-box input; blank disables filtering/ranking entirely. */
@@ -689,12 +701,12 @@ class SessionListViewModel(
         // date range or the machine filter would hide, and the machine chips
         // keep their full counts.
         val activityDays = sessions
-            .map { SessionDateRangeFilter.activityEpochDay(it.updatedAt, zone) }
+            .map { SessionDateRangeFilter.activityEpochDay(it.updatedAt, timeZone.value) }
             .toSet()
         val timeScoped = if (dateRange == null) {
             sessions
         } else {
-            sessions.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, zone) }
+            sessions.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, timeZone.value) }
         }
 
         val visible = if (activeFilter == null) {
