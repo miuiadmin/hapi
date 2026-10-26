@@ -37,6 +37,9 @@ import app.hapi.companion.di.viewModelFactory
 import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
+import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
+import app.hapi.companion.feature.chat.attachments.PrepareResult
+import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
 import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
@@ -100,6 +103,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 
 object Routes {
@@ -594,10 +598,14 @@ fun HapiNavigation() {
                 onBack = { navController.popBackStack() },
                 onSendToComposer = chatHolder?.let { chat ->
                     { scratchEntry ->
-                        chat.viewModel.insertComposerText(scratchEntry.text)
+                        chat.viewModel.promoteScratchlistEntryToComposer(scratchEntry)
                         navController.popBackStack()
                     }
                 },
+                // "Send to queue" stays on this screen (busy state machine +
+                // entry delete live in the scratchlist ViewModel); true =
+                // hub accepted.
+                onSendToQueue = chatHolder?.let { chat -> chat.viewModel::sendScratchlistEntryToQueue },
             )
         }
 
@@ -763,6 +771,7 @@ private class ChatViewModelHolder(
     dictationLanguage: StateFlow<String?> = MutableStateFlow(null),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val attachmentPreparer = AttachmentPreparer(appContext)
 
     val viewModel = ChatViewModel(
         sessionId = sessionId,
@@ -779,6 +788,24 @@ private class ChatViewModelHolder(
         draftSnapshots = hubGraph.composerDraftSnapshots,
         scratchlist = hubGraph.scratchlistStore,
         recentSkills = hubGraph.recentSkills,
+        // Scratchlist promote seams (web `scratchlistAttachmentFlow.ts`):
+        // hub blob fetch + the Android pick pipeline for rehydration.
+        scratchlistBlobFetcher = ScratchlistPromoter.AttachmentFetcher { id, attachmentId ->
+            try {
+                hubGraph.session.api.getScratchlistAttachment(id, attachmentId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+        },
+        scratchlistPickPreparer = ScratchlistPromoter.PickPreparer { attachment, bytes, mimeType ->
+            val resolved = mimeType.takeIf { it.isNotBlank() } ?: attachment.mimeType
+            when (val prepared = attachmentPreparer.prepareFetched(attachment.filename, resolved, bytes)) {
+                is PrepareResult.Ready -> prepared.attachment
+                else -> null
+            }
+        },
     )
 
     /**

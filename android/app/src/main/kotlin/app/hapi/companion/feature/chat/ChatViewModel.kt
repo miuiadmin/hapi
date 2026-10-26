@@ -3,6 +3,8 @@ package app.hapi.companion.feature.chat
 import androidx.annotation.MainThread
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
+import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
+import app.hapi.companion.feature.chat.attachments.chatUploadBase64
 import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
 import app.hapi.companion.feature.chat.composer.AttachmentDrafts
 import app.hapi.companion.feature.chat.composer.ChatDrafts
@@ -38,6 +40,7 @@ import app.hapi.data.store.MessageWindowStore
 import app.hapi.data.store.MessageWindowStores
 import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.data.store.ScratchlistCreateResult
+import app.hapi.data.store.ScratchlistUploadResult
 import app.hapi.data.store.SessionDetailStore
 import app.hapi.data.store.SessionScratchlist
 import app.hapi.protocol.catalog.CatalogOption
@@ -76,6 +79,8 @@ import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
+import app.hapi.protocol.wire.ScratchlistAttachment
+import app.hapi.protocol.wire.ScratchlistEntry
 import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
@@ -191,7 +196,23 @@ data class ComposerUiState(
     val canSteer: Boolean,
     /** Local focus intent; does not replace or send the draft. */
     val focusRequest: Long = 0,
+    /**
+     * Scratchlist mode: Send parks the draft instead of delivering (amber
+     * send button, web `scratchlistMode`).
+     */
+    val routesToScratchlist: Boolean = false,
 )
+
+/**
+ * Web `shouldRouteToScratchlist` (`HappyComposer.tsx` park interception):
+ * while the composer sits in scratchlist mode, Send parks the draft instead
+ * of delivering — unless a scheduled send is pending, which keeps the real
+ * send contract. No schedule-composition surface exists on this branch yet
+ * (scheduled sends only arrive via retry preservation), so callers pass
+ * `schedulePending = false`; the function keeps the full web contract.
+ */
+fun scratchlistSendRouting(scratchlistMode: Boolean, schedulePending: Boolean): Boolean =
+    scratchlistMode && !schedulePending
 
 /** One row of the queued-messages bar (uninvoked sends). */
 data class QueuedRowUi(
@@ -263,6 +284,12 @@ sealed interface ChatNotice {
     data object DraftParked : ChatNotice
     data object ScratchlistFull : ChatNotice
     data object ScratchlistParkFailed : ChatNotice
+
+    /** Promote-to-queue could not stage the entry's attachments (fetch/upload). */
+    data object ScratchlistPromoteStagingFailed : ChatNotice
+
+    /** Promote-to-composer rehydrated only part of the entry's attachments. */
+    data object ScratchlistRehydratePartial : ChatNotice
     data object AttachmentsUploading : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
@@ -422,8 +449,22 @@ class ChatViewModel(
     private val draftSnapshots: ComposerDraftSnapshots? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
+<<<<<<< HEAD
     /** null ⇒ `$`-menu ranking falls back to name order — tests/previews. */
     private val recentSkills: RecentSkills? = null,
+=======
+    /**
+     * Hub scratchlist blob fetch for the promote flows (web
+     * `fetchScratchlistAttachmentBlob`); null ⇒ promotes degrade to
+     * text-only (tests/previews without a hub).
+     */
+    private val scratchlistBlobFetcher: ScratchlistPromoter.AttachmentFetcher? = null,
+    /**
+     * Rebuilds fetched scratchlist bytes as composer picks (Android policy
+     * pipeline); null ⇒ promote-to-composer skips attachment rehydration.
+     */
+    private val scratchlistPickPreparer: ScratchlistPromoter.PickPreparer? = null,
+>>>>>>> 99fde6e4
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val pipelineIntervalMs: Long = PIPELINE_INTERVAL_MS,
     private val draftSaveDebounceMs: Long = DRAFT_SAVE_DEBOUNCE_MS,
@@ -714,18 +755,35 @@ class ChatViewModel(
         .flowOn(pipelineDispatcher)
         .stateIn(scope, SharingStarted.Eagerly, initialState())
 
+    /**
+     * Web `scratchlistMode` composer toggle: while on, Send parks the draft
+     * (see [scratchlistSendRouting]); promote actions and the toggle itself
+     * turn it back off.
+     */
+    private val scratchlistMode = MutableStateFlow(false)
+
+    /** See [scratchlistMode] — consumed by the composer's amber send + hint bar. */
+    val composerScratchlistMode: StateFlow<Boolean> = scratchlistMode.asStateFlow()
+
+    /** Toggle the park-instead-of-send routing (web note-icon toggle). */
+    fun setScratchlistMode(enabled: Boolean) {
+        scratchlistMode.value = enabled
+    }
+
     /** Composer bar state (text is VM-owned so drafts and edit-prefill flow through it). */
     val composer: StateFlow<ComposerUiState> = combine(
         composerText,
         sendInFlight,
         sessionStateFlow(),
         composerFocusRequest,
-    ) { text, sending, session, focusRequest ->
+        scratchlistMode,
+    ) { text, sending, session, focusRequest, scratchlistMode ->
         ComposerUiState(
             text = text,
             isSending = sending,
             canSteer = session.thinking && session.active,
             focusRequest = focusRequest,
+            routesToScratchlist = scratchlistSendRouting(scratchlistMode, schedulePending = false),
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -889,6 +947,30 @@ class ChatViewModel(
 
     /** Whether a scratchlist store is wired — gates the badge and park affordances. */
     val scratchlistEnabled: Boolean = scratchlist != null
+
+    /** Single-flight guard for the park pipeline (web `parkPending`). */
+    private val parkPending = AtomicBoolean(false)
+
+    /** Chat-upload seams for scratchlist promote staging (see [ScratchlistPromoter]). */
+    private val queueStagingUploader = ScratchlistPromoter.ChatUploader { id, filename, bytes, mimeType ->
+        try {
+            val response = api.uploadFile(id, filename, chatUploadBase64(bytes), mimeType)
+            if (response.success) response.path else null
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            null
+        }
+    }
+    private val queueStagingDeleter = ScratchlistPromoter.ChatUploadDeleter { id, path ->
+        try {
+            api.deleteUpload(id, path)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            // Best-effort by contract.
+        }
+    }
 
     // ------------------------------------------------------------ lifecycle --
 
@@ -1250,27 +1332,143 @@ class ChatViewModel(
     }
 
     /**
-     * Scratchlist "Park from composer" (B-M4d): the current draft becomes a
-     * scratchlist entry and the composer clears (store-optimistic; the
-     * composer clears only after the hub accepts, so a failed park cannot
-     * lose the draft).
+     * Scratchlist "Send to queue" promote (web `handlePromoteToQueue`):
+     * stage every entry attachment through the chat upload pipeline (a hub
+     * scratchlist path is not a valid send path), then deliver the entry
+     * text as a durable-queue send. Returns true when the hub accepted —
+     * the caller removes the entry; a false keeps it, retryable.
+     */
+    suspend fun sendScratchlistEntryToQueue(entry: ScratchlistEntry): Boolean {
+        val text = entry.text.trim()
+        if (text.isEmpty() && entry.attachments.isEmpty()) return false
+        val fetcher = scratchlistBlobFetcher
+        val staged = if (entry.attachments.isEmpty() || fetcher == null) {
+            null
+        } else {
+            ScratchlistPromoter.stageForQueueSend(
+                sessionId,
+                entry.attachments,
+                fetcher,
+                queueStagingUploader,
+                queueStagingDeleter,
+            ) ?: run {
+                _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistPromoteStagingFailed))
+                return false
+            }
+        }
+        val accepted = performSend(
+            text = text,
+            localId = localIdGenerator(),
+            createdAt = now(),
+            deliveryMode = "queue",
+            attachments = staged,
+            isRetry = false,
+        )
+        if (accepted) scratchlistMode.value = false
+        return accepted
+    }
+
+    /**
+     * Scratchlist "Copy into composer" promote (web
+     * `handlePromoteToComposer`): the entry text lands in the composer and
+     * every attachment rehydrates as a fresh composer pick (hub blob fetch →
+     * the tray re-uploads through the normal chat pipeline). Copy, not move
+     * — the entry itself stays. Scratchlist composer mode is left first so
+     * the next Send delivers the promoted draft instead of re-parking it
+     * (web flushSync exit order).
+     */
+    fun promoteScratchlistEntryToComposer(entry: ScratchlistEntry) {
+        scratchlistMode.value = false
+        insertComposerText(entry.text)
+        val fetcher = scratchlistBlobFetcher
+        val preparer = scratchlistPickPreparer
+        if (fetcher == null || preparer == null || entry.attachments.isEmpty()) return
+        scope.launch {
+            val picks = ScratchlistPromoter.rehydrateToComposer(sessionId, entry.attachments, fetcher, preparer)
+            picks.forEach { attachments.add(it) }
+            if (picks.size < entry.attachments.size) {
+                _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistRehydratePartial))
+            }
+        }
+    }
+
+    /**
+     * Scratchlist "Park from composer" (B-M4d + attachment migration): the
+     * current draft becomes a scratchlist entry and the composer clears only
+     * after the hub accepts, so a failed park cannot lose the draft. Ready
+     * attachment chips migrate into hub scratchlist storage first (their chat
+     * upload paths are not valid entry attachments); any rejection frees the
+     * migrated hub blobs so a retry can re-migrate from the intact chips.
      */
     fun parkComposerDraft() {
         val store = scratchlist ?: return
+        if (!parkPending.compareAndSet(false, true)) return
+        if (attachments.hasUnsettled()) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
+            parkPending.set(false)
+            return
+        }
         val text = composerText.value
-        if (text.isBlank()) return
+        val chips = attachments.parkableChips()
+        if (text.isBlank() && chips.isEmpty()) {
+            parkPending.set(false)
+            return
+        }
         scope.launch {
-            when (val result = store.createEntry(sessionId, text)) {
-                is ScratchlistCreateResult.Created -> {
-                    // Clear only when the draft is still what we parked (the
-                    // operator may have kept typing while the POST ran).
-                    if (composerText.value == text) setComposerText("")
-                    _events.tryEmit(ChatEvent.Notice(ChatNotice.DraftParked))
+            try {
+                // 1. Migrate Ready chips into hub scratchlist storage; the
+                //    tray stays untouched until the entry write is accepted.
+                val migrated = mutableListOf<ScratchlistAttachment>()
+                var migrationFailed = false
+                for (chip in chips) {
+                    val uploaded = try {
+                        store.uploadAttachment(sessionId, chip.filename, chip.bytes, chip.mimeType)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (_: Exception) {
+                        null
+                    }
+                    val attachment = (uploaded as? ScratchlistUploadResult.Uploaded)?.attachment
+                    if (attachment == null) migrationFailed = true else migrated += attachment
                 }
-                ScratchlistCreateResult.AtCap ->
-                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistFull))
-                is ScratchlistCreateResult.Failed ->
+                if (migrationFailed) {
+                    freeMigratedBlobs(store, migrated)
                     _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistParkFailed))
+                    return@launch
+                }
+                // 2. Persist the entry (text + migrated attachments).
+                when (store.createEntry(sessionId, text, migrated)) {
+                    is ScratchlistCreateResult.Created -> {
+                        // Clear only when the draft is still what we parked
+                        // (the operator may have kept typing while the POSTs ran).
+                        if (composerText.value == text) setComposerText("")
+                        attachments.removeParked(chips.map { it.id }.toSet())
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.DraftParked))
+                    }
+                    ScratchlistCreateResult.AtCap -> {
+                        freeMigratedBlobs(store, migrated)
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistFull))
+                    }
+                    is ScratchlistCreateResult.Failed -> {
+                        freeMigratedBlobs(store, migrated)
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistParkFailed))
+                    }
+                }
+            } finally {
+                parkPending.set(false)
+            }
+        }
+    }
+
+    /** Rejected park: drop the migrated hub blobs so retry re-migrates from the chips. */
+    private suspend fun freeMigratedBlobs(store: SessionScratchlist, migrated: List<ScratchlistAttachment>) {
+        migrated.forEach { attachment ->
+            try {
+                store.deleteAttachment(sessionId, attachment.id)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                // Best-effort.
             }
         }
     }
@@ -1395,6 +1593,14 @@ class ChatViewModel(
             _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
             return
         }
+        // Web `shouldRouteToScratchlist` park interception: in scratchlist
+        // mode Send parks the draft (both tap and steer long-press — the web
+        // interceptor runs before any intent handling). A pending schedule
+        // would keep the real send; none can exist on this surface yet.
+        if (scratchlistSendRouting(scratchlistMode.value, schedulePending = false)) {
+            parkComposerDraft()
+            return
+        }
         val text = composerText.value.trim()
         val attachmentMetadata = attachments.consume()
         if (text.isEmpty() && attachmentMetadata == null) return
@@ -1491,6 +1697,11 @@ class ChatViewModel(
         return SendPayload(text, attachments)
     }
 
+    /**
+     * Optimistic send pipeline. Returns true when the hub accepted the send
+     * (directly or after an inactive-session resume) — the scratchlist
+     * promote-to-queue contract for deleting the entry.
+     */
     private suspend fun performSend(
         text: String,
         localId: String,
@@ -1499,7 +1710,7 @@ class ChatViewModel(
         attachments: List<AttachmentMetadata>? = null,
         scheduledAt: Long? = null,
         isRetry: Boolean,
-    ) {
+    ): Boolean {
         // Wire constraint (SendMessageRequestSchema): scheduled sends exclude
         // attachments (and steer). No Android surface can produce the combo
         // today — this trips loudly if a scheduled-send UI ever forgets it.
@@ -1532,9 +1743,10 @@ class ChatViewModel(
                 scheduledAt = scheduledAt,
                 deliveryMode = deliveryMode,
             )
-            try {
+            return try {
                 api.sendMessage(sessionId, request)
                 store.updateStatus(localId, successStatus())
+                true
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
@@ -1542,6 +1754,7 @@ class ChatViewModel(
                     resumeAndRetry(store, request, localId)
                 } else {
                     store.updateStatus(localId, MessageStatus.Failed)
+                    false
                 }
             }
         } finally {
@@ -1558,12 +1771,13 @@ class ChatViewModel(
      * `router.tsx`): one `POST /resume`, then retry the send against the id
      * the hub returns. A different id supersedes this session — seed the new
      * window from this one, migrate the draft, retarget the optimistic row,
-     * and tell the screen to renavigate.
+     * and tell the screen to renavigate. Returns the retry's outcome.
      */
     private suspend fun resumeAndRetry(
         store: MessageWindowStore,
         request: SendMessageRequest,
         localId: String,
+<<<<<<< HEAD
     ) {
         // Web `resolveSessionId` refuses the resume before the POST when the
         // session can't come back (cursor store gone — #1084). Same surface
@@ -1580,6 +1794,9 @@ class ChatViewModel(
             _events.tryEmit(ChatEvent.Notice(ChatNotice.ResumeFailed))
             return
         }
+=======
+    ): Boolean {
+>>>>>>> 99fde6e4
         val targetSessionId = try {
             api.resumeSession(sessionId, currentDetail()?.permissionMode).sessionId
         } catch (cancellation: CancellationException) {
@@ -1590,7 +1807,7 @@ class ChatViewModel(
             // the inline error and its session-inactive action).
             sendReopenFailure.value = true
             _events.tryEmit(ChatEvent.Notice(ChatNotice.ResumeFailed))
-            return
+            return false
         }
 
         val optimisticRow = store.state.value.messages.firstOrNull { it.localId == localId }
@@ -1611,9 +1828,11 @@ class ChatViewModel(
         sessionStore.updateDetailLocal(sessionId) { it.copy(active = true) }
         sessionStore.scheduleRefresh()
 
+        var accepted = false
         try {
             api.sendMessage(targetSessionId, request)
             targetStore.updateStatus(localId, successStatus())
+            accepted = true
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Exception) {
@@ -1622,6 +1841,7 @@ class ChatViewModel(
         if (targetSessionId != sessionId) {
             _events.tryEmit(ChatEvent.SessionSuperseded(targetSessionId))
         }
+        return accepted
     }
 
     /** `POST /abort` — confirm-free stop of the active turn. */
