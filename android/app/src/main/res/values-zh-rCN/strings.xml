@@ -659,4 +659,13 @@
     <string name="share_error_title">分享暂不可用</string>
     <string name="share_ok">确定</string>
     <string name="share_pair_first">请先配对 Hub，再选择接收分享内容的会话。</string>
+
+    <string name="connection_reconnecting">正在重新连接…</string>
+    <string name="connection_syncing">同步中…</string>
+    <string name="connection_reason_heartbeat_timeout">心跳超时</string>
+    <string name="connection_reason_visibility_recovery">后台恢复中</string>
+    <string name="connection_reason_connect_timeout">连接超时</string>
+    <string name="connection_reason_transport_error">流连接错误</string>
+    <string name="connection_reason_closed">流连接已关闭</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
 </resources>

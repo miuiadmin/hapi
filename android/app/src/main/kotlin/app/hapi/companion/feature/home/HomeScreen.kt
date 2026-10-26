@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.home
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
@@ -37,6 +38,8 @@ fun HomeScreen(
     onNewSession: (() -> Unit)? = null,
     /** Hub menu → settings scaffold (B-M4e). */
     onOpenSettings: (() -> Unit)? = null,
+    /** Global connection banner state; null hides the banner (slice C-①). */
+    connectionChrome: ConnectionChrome? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     var searchExpanded by rememberSaveable(activeHubUrl) { mutableStateOf(state.searchQuery.isNotEmpty()) }
@@ -65,12 +68,15 @@ fun HomeScreen(
             )
         },
     ) { padding ->
-        SessionListScreen(
-            viewModel = viewModel,
-            onOpenSession = onOpenSession,
-            modifier = Modifier.fillMaxSize().padding(padding),
-            onNewSession = onNewSession,
-        )
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            connectionChrome?.let { GlobalConnectionBanner(it) }
+            SessionListScreen(
+                viewModel = viewModel,
+                onOpenSession = onOpenSession,
+                modifier = Modifier.fillMaxSize(),
+                onNewSession = onNewSession,
+            )
+        }
     }
 
     if (filterDestination == FilterDestination.Filters) {

@@ -652,4 +652,13 @@
     <string name="share_error_title">Share unavailable</string>
     <string name="share_ok">OK</string>
     <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
+
+    <string name="connection_reconnecting">Reconnecting…</string>
+    <string name="connection_syncing">Syncing…</string>
+    <string name="connection_reason_heartbeat_timeout">heartbeat timeout</string>
+    <string name="connection_reason_visibility_recovery">resuming after background</string>
+    <string name="connection_reason_connect_timeout">connect timeout</string>
+    <string name="connection_reason_transport_error">stream error</string>
+    <string name="connection_reason_closed">stream closed</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
 </resources>
