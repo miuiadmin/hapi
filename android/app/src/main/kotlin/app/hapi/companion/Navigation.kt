@@ -546,7 +546,7 @@ fun HapiNavigation() {
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
                     factory = viewModelFactory {
                         ChatViewModelHolder(
-                            hubGraph, sessionId, appContext,
+                            graph, hubGraph, sessionId, appContext,
                             graph.dictationProviderId, graph.dictationLanguage,
                         )
                     },
