@@ -208,4 +208,7 @@ dependencies {
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    // Terminal socket client frame-layer tests drive a real OkHttp WebSocket
+    // against MockWebServer (same pattern as :core:data gateway tests).
+    testImplementation(libs.okhttp.mockwebserver)
 }
