@@ -53,6 +53,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -126,7 +127,8 @@ fun ScratchlistScreen(
     // Web `useCopiedFeedback`: single per-list copied entry, latest wins,
     // auto-cleared after 1500 ms.
     var copiedEntryId by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(copiedEntryId) {
+    var copyGeneration by remember { mutableIntStateOf(0) }
+    LaunchedEffect(copyGeneration) {
         if (copiedEntryId != null) {
             delay(COPIED_FEEDBACK_MS)
             copiedEntryId = null
@@ -136,7 +138,8 @@ fun ScratchlistScreen(
     // Web `shouldConfirmDelete`: long texts confirm before delete, short ones go.
     var confirmDeleteEntryId by remember { mutableStateOf<String?>(null) }
     val requestDelete: (String, String?) -> Unit = { entryId, text ->
-        if (ScratchlistEntryOps.shouldConfirmDelete(text)) {
+        val savedText = state.entries.firstOrNull { it.entryId == entryId }?.text
+        if (ScratchlistEntryOps.shouldConfirmDelete(savedText) || ScratchlistEntryOps.shouldConfirmDelete(text)) {
             confirmDeleteEntryId = entryId
         } else {
             viewModel.deleteEntry(entryId)
@@ -227,7 +230,10 @@ fun ScratchlistScreen(
                                     context.getSystemService(ClipboardManager::class.java)
                                         .setPrimaryClip(ClipData.newPlainText("HAPI", entry.text))
                                 }.isSuccess
-                                if (copied) copiedEntryId = entry.entryId
+                                if (copied) {
+                                    copiedEntryId = entry.entryId
+                                    copyGeneration++
+                                }
                             },
                             onDelete = { requestDelete(entry.entryId, entry.text) },
                         )
