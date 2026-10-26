@@ -74,7 +74,7 @@ data class SessionListUiState(
      * Local epoch-days that carry any session activity — the picker's
      * activity hint, derived before any list filtering (web
      * `sessionActivityDates`, which keeps marking all days while a filter is
-     * active).
+     * active). Duplicate views and hidden empty stubs are excluded first.
      */
     val dateActivityEpochDays: Set<Long> = emptySet(),
     /** Live search-box text; blank = no filtering/ranking. */
@@ -412,18 +412,23 @@ class SessionListViewModel(
         val activeFilter = filter
             ?.takeIf { filters.size >= 2 && filters.any { chip -> chip.id == it } }
 
-        // Web pipeline order (`SessionList.tsx`): the activity-day set and the
-        // date-range lens both apply BEFORE the machine scope, and both derive
-        // from the unfiltered list — the picker keeps marking days that the
-        // date range or the machine filter would hide, and the machine chips
-        // keep their full counts.
-        val activityDays = sessions
+        // Choose the canonical agent-session views before applying filters,
+        // so excluding a winner cannot resurrect an older duplicate. Restore
+        // pinned/active order after dedup regroups the rows.
+        val prepared = sortSessionSummaries(
+            SessionListFilters.prepareSidebarSessions(sessions, selectedSessionId),
+        )
+
+        // Calendar hints derive from the full sidebar corpus, before date,
+        // machine, or search filtering (web `sessionActivityDates`). Machine
+        // choices above retain their full source-snapshot counts.
+        val activityDays = prepared
             .map { SessionDateRangeFilter.activityEpochDay(it.updatedAt, zone) }
             .toSet()
         val timeScoped = if (dateRange == null) {
-            sessions
+            prepared
         } else {
-            sessions.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, zone) }
+            prepared.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, zone) }
         }
 
         val visible = if (activeFilter == null) {
@@ -432,25 +437,17 @@ class SessionListViewModel(
             timeScoped.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
         }
 
-        // Sidebar list body, matching the web list: collapse duplicate
-        // agent-session views (resume/reopen chains) and hide fresh "new
-        // session" stubs, then re-apply the canonical order — dedup regroups
-        // rows and must not leave the store's pinned/active ordering behind.
-        val prepared = sortSessionSummaries(
-            SessionListFilters.prepareSidebarSessions(visible, selectedSessionId),
-        )
-
         // Text search: relevance ranking over the already-prepared corpus,
         // pins kept contiguous ahead of ordinary rows.
         val searched = if (searchQuery.isBlank()) {
-            prepared
+            visible
         } else {
             val machineLabels = filters.associate { it.id to it.label }
-            val index = SessionListSearch.buildSessionSearchScoreIndex(prepared, searchQuery) { machineId ->
+            val index = SessionListSearch.buildSessionSearchScoreIndex(visible, searchQuery) { machineId ->
                 machineLabels[machineId ?: UNKNOWN_MACHINE_ID] ?: ""
             }
             SessionListSearch.sortSessionsBySearchRelevancePreservingPins(
-                prepared.filter { it.id in index.matchedIds },
+                visible.filter { it.id in index.matchedIds },
                 index,
             )
         }

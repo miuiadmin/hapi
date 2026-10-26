@@ -624,6 +624,52 @@ class SessionListViewModelTest {
         assertEquals(setOf(day - 1, day), state.dateActivityEpochDays)
     }
 
+    @Test
+    fun `date filtering cannot revive a stale duplicate view`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stale", machineId = "m1", updatedAt = dayMillis - 1, agentSessionId = "agent-1"),
+            summary("fresh", machineId = "m1", updatedAt = dayMillis, agentSessionId = "agent-1"),
+            summary("other", machineId = "m2", updatedAt = dayMillis - 2 * 86_400_000L),
+        )
+        viewModel.uiState.first { it.rows.size == 2 }
+
+        viewModel.setDateRange(day - 1, day - 1)
+        val yesterday = viewModel.uiState.first { it.dateRange != null }
+        assertTrue(yesterday.rows.isEmpty())
+        assertEquals(setOf(day - 2, day), yesterday.dateActivityEpochDays)
+        assertEquals(mapOf("m1" to 2, "m2" to 1), yesterday.machineFilters.associate { it.id to it.sessionCount })
+
+        viewModel.setDateRange(day, day)
+        val today = viewModel.uiState.first { it.dateRange == SessionDateRange(day, day) }
+        assertEquals(listOf("fresh"), today.rows.map { it.id })
+
+        viewModel.clearDateRange()
+        val cleared = viewModel.uiState.first { it.dateRange == null }
+        assertEquals(listOf("fresh", "other"), cleared.rows.map { it.id })
+    }
+
+    @Test
+    fun `date search and activity marks use the active winner and exclude hidden stubs`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("active", updatedAt = dayMillis - 1, active = true, agentSessionId = "agent-1", name = "Home live"),
+            summary("idle", updatedAt = dayMillis, agentSessionId = "agent-1", name = "Home idle"),
+            summary("stub", updatedAt = dayMillis - 2 * 86_400_000L, hasConversationContent = false),
+        )
+        viewModel.uiState.first { it.rows.size == 1 }
+
+        viewModel.setDateRange(day, day)
+        viewModel.setSearchQuery("home")
+        val today = viewModel.uiState.first { it.dateRange != null && it.isSearching }
+        assertTrue(today.rows.isEmpty())
+        assertEquals(setOf(day - 1), today.dateActivityEpochDays)
+
+        viewModel.setDateRange(day - 1, day - 1)
+        val yesterday = viewModel.uiState.first { it.dateRange == SessionDateRange(day - 1, day - 1) }
+        assertEquals(listOf("active"), yesterday.rows.map { it.id })
+    }
+
     // --------------------------------------------- search / dedup / stubs --
 
     @Test
