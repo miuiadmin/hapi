@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Pure-semantics pin of the duplicate-merge helpers (slice B) against
+ * Pure-semantics pin of the duplicate-merge helpers against
  * `web/src/components/NewSession/codexImportMerge.ts` and the normalizers of
  * `web/src/components/NewSession/index.tsx`.
  */

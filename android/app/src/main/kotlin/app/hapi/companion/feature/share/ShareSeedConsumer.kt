@@ -16,7 +16,7 @@ import app.hapi.companion.feature.chat.attachments.PrepareResult
 
 /**
  * Consumes the AppGraph's armed [ArmedShareSeed] inside its target chat
- * (slice A) — the native twin of the web ShareSeedConsumer: once the session
+ * — the native twin of the web ShareSeedConsumer: once the session
  * is active, seed the composer with the share text, push each file through
  * the existing attachment pipeline, and drop the seed.
  *

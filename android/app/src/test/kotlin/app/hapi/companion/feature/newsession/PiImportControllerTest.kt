@@ -45,7 +45,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 
 /**
- * Controller-level pin of the pi import flow (slice C) against the web state
+ * Controller-level pin of the pi import flow against the web state
  * machine: `web/src/components/PiSessionImportDialog.tsx` + the pi branches
  * of `web/src/components/NewSession/index.tsx` (mirrors the web cases
  * "imports the selected Pi history and resumes the canonical HAPI session",

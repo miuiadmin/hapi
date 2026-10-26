@@ -23,7 +23,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 
 /**
- * Wire shapes of the codex-import endpoints (slice A):
+ * Wire shapes of the codex-import endpoints:
  * `GET /api/codex/sessions` + `POST /api/codex/sync-session`;
  * slice B adds archive/status/dedupe/restart.
  */

@@ -77,7 +77,7 @@ private val TerminalConnectedColor = Color(0xFF10B981)
 private val TerminalConnectingColor = Color(0xFBBF24)
 
 /**
- * Interactive remote terminal (slice B): monospace grid rendering of the
+ * Interactive remote terminal: monospace grid rendering of the
  * emulator snapshot, connection status chrome, and the web compact-control
  * input area (command box + direct quick-key pages with sticky Ctrl/Alt).
  */
@@ -281,8 +281,8 @@ private fun UnsupportedBody(modifier: Modifier = Modifier) {
 // --------------------------------------------------------------------- grid --
 
 /**
- * Shared by the terminal screen and the chat-embedded agent-terminal panel
- * (slice C): monospace cell grid + auto-scroll with follow-pause (scrolling up
+ * Shared by the terminal screen and the chat-embedded agent-terminal panel:
+ * monospace cell grid + auto-scroll with follow-pause (scrolling up
  * stops following; back at the bottom resumes). Pure function of the snapshot,
  * so the agent panel feeds it a synthesized [TerminalUiState].
  */

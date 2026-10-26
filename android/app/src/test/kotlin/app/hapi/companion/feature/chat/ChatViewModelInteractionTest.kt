@@ -263,7 +263,7 @@ private class RecordingChatApi : ChatSessionApi {
         return resumeResult ?: throw RuntimeException("resume not scripted")
     }
 
-    /** Cursor chat-store probe script (slice C): null → not-applicable default is erroring. */
+    /** Cursor chat-store probe script: null → not-applicable default is erroring. */
     var cursorChatStoreResult: app.hapi.protocol.wire.CursorChatStoreStatus? = null
     var cursorChatStoreFailure: Exception? = null
     val cursorChatStoreCalls = MutableStateFlow(0)

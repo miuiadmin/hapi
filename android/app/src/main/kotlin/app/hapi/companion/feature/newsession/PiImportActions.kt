@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 
 /**
- * Pi-history inline section of the create form (slice C) — port of web
+ * Pi-history inline section of the create form — port of web
  * `NewSession/PiImportActions.tsx`: title, selected session's title or the
  * description, Clear (only while something is selected), Choose-history
  * (shows the scanning label while a scan runs), and the scan error.

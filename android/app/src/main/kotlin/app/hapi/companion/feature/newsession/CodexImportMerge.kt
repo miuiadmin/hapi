@@ -3,7 +3,7 @@ package app.hapi.companion.feature.newsession
 import app.hapi.protocol.wire.CodexDuplicateSessionGroup
 
 /**
- * Pure helpers of the duplicate-merge leg (slice B), ported from
+ * Pure helpers of the duplicate-merge leg, ported from
  * `web/src/components/NewSession/codexImportMerge.ts` plus the error
  * normalizers of `web/src/components/NewSession/index.tsx`
  * (`normalizeCodexScriptError` / `formatCodexImportFailure`). Android-free so
@@ -61,7 +61,7 @@ object CodexImportMerge {
     /**
      * `normalizeCodexScriptError` launcher-not-found pattern (`/i`); JS `\/`
      * is a plain `/`. Belonged to the restart feature and was deliberately
-     * absent in slice A — added with it here (slice B).
+     * absent in slice A — added with it here.
      */
     val NOT_FOUND_PATTERN: Regex =
         Regex("""未安装/找不到codex客户端|unable to find codex launcher|找不到.*codex""", RegexOption.IGNORE_CASE)

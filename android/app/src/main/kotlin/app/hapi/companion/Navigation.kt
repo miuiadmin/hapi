@@ -168,7 +168,7 @@ object Routes {
 
     fun scratchlist(sessionId: String) = "chat/$sessionId/scratchlist"
 
-    /** Interactive remote terminal (slice B), pushed above its chat. */
+    /** Interactive remote terminal, pushed above its chat. */
     const val TERMINAL = "chat/{sessionId}/terminal"
 
     fun terminal(sessionId: String) = "chat/$sessionId/terminal"
@@ -180,14 +180,14 @@ object Routes {
         if (machineId == null) "newSession" else "newSession?machineId=$machineId"
 
     /**
-     * New-session form entered from the share picker (slice A): the payload
+     * New-session form entered from the share picker: the payload
      * waits in `AppGraph.pendingNewSessionShare`, and `onCreated` arms it
      * bound to the fresh session (web: `?shareTransferId=`).
      */
     fun newSessionWithShareSeed(machineId: String? = null) =
         if (machineId == null) "newSession?share=1" else "newSession?machineId=$machineId&share=1"
 
-    /** Share hand-off picker (slice A): system share → pick session → seed. */
+    /** Share hand-off picker: system share → pick session → seed. */
     const val SHARE = "share"
 
     /** Nested pairing graph (landing ⇄ scan ⇄ manual share one ViewModel). */
@@ -483,7 +483,7 @@ fun HapiNavigation() {
                 onNavigateToSession = { supersededId ->
                     // Resume/reopen handed the conversation to a different id:
                     // replace this chat entry with the superseding session.
-                    // An armed share seed follows the conversation (slice A;
+                    // An armed share seed follows the conversation (
                     // web retargets its pending transfer the same way).
                     graph.retargetPendingShareSeed(sessionId, supersededId)
                     navController.navigate(Routes.chat(supersededId)) {
@@ -732,7 +732,7 @@ fun HapiNavigation() {
                     navController.popBackStack()
                 },
                 onCreated = { sessionId ->
-                    // Share seeding (slice A): bind the waiting payload to
+                    // Share seeding: bind the waiting payload to
                     // the fresh session; the chat's ShareSeedConsumer seeds
                     // it once the session is live.
                     if (seeding) {
@@ -955,7 +955,7 @@ private class ChatViewModelHolder(
     )
 
     /**
-     * Agent PTY panel (slice C), chat-embedded. Lives with the chat VM so the
+     * Agent PTY panel, chat-embedded. Lives with the chat VM so the
      * socket (and its unsubscribe-on-destroy) follows the chat screen's
      * lifetime, not the panel's show/hide toggles. Lazy: it only connects
      * once the panel is first opened (web connects at hidden mount).
@@ -1157,7 +1157,7 @@ private class ScratchlistViewModelHolder(
     }
 }
 
-/** Shell for the interactive remote terminal (slice B). */
+/** Shell for the interactive remote terminal. */
 private class TerminalViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
@@ -1226,7 +1226,7 @@ private class NewSessionViewModelHolder(
     }
 }
 
-/** Same shell for the share hand-off picker (slice A); one per active hub. */
+/** Same shell for the share hand-off picker; one per active hub. */
 private class ShareHandoffViewModelHolder(
     appGraph: AppGraph,
     hubGraph: HubGraph,

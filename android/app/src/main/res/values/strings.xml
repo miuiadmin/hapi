@@ -782,7 +782,7 @@
     <string name="chat_cursor_migration_ambiguous_title">Cursor session upgrade needs manual review</string>
     <string name="chat_cursor_migration_ambiguous_body">This chat exists on disk in multiple workspace folders or the on-disk size does not match the synced history, so HAPI refused to transplant it automatically. Check hub logs for the candidate list (search for "[migrator] ambiguous legacy store" or "[migrator] size sanity check refused"), delete the stale drawers under ~/.cursor/chats/, and reopen the session.</string>
 
-    <!-- Codex session import (slice A) -->
+    <!-- Codex session import -->
     <string name="codex_sync_cancel">Cancel</string>
     <string name="codex_sync_title">Import Codex sessions</string>
     <string name="codex_sync_description">Choose Codex sessions to import into Hapi</string>
@@ -831,7 +831,7 @@
     <string name="codex_sync_duplicates_merge_failed_title">Failed to merge duplicate sessions</string>
     <string name="codex_sync_duplicates_merge_failed_body">Failed to merge duplicate sessions.</string>
 
-    <!-- Pi history import (slice C); web twins: piImport.* in locales/en.ts. -->
+    <!-- Pi history import; web twins: piImport.* in locales/en.ts. -->
     <string name="pi_import_inline_title">Import Pi history</string>
     <string name="pi_import_inline_description">Optional: choose an existing local Pi session to import and continue.</string>
     <string name="pi_import_inline_clear">Clear</string>

@@ -49,7 +49,7 @@ data class AgentTerminalUiState(
 )
 
 /**
- * Agent PTY panel state machine (slice C), the Android twin of
+ * Agent PTY panel state machine, the Android twin of
  * `useAgentTerminalSocket` + `AgentTerminalView`:
  *
  * - Gating mirrors web `canViewAgentTerminal` = `startingMode === 'pty' &&

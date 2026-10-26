@@ -4,7 +4,7 @@ import app.hapi.protocol.wire.CodexDesktopSyncRequest
 import app.hapi.protocol.wire.CodexLocalSessionSummary
 
 /**
- * Pure helpers for the codex session-import flow (slice A), ported from
+ * Pure helpers for the codex session-import flow, ported from
  * `web/src/components/CodexSessionSyncDialog.tsx` + the codex-import branch
  * of the web create form (`web/src/components/NewSession/index.tsx`).
  * Android-free so JVM tests can pin the exact semantics.

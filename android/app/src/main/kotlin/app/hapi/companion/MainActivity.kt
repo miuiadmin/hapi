@@ -41,7 +41,7 @@ import kotlinx.coroutines.launch
  *  - the **internal** notification-tap route ([PushNotifications.ACTION_OPEN_SESSION]
  *    + session-id extra, B-M4a — explicit intent, deliberately no public URI)
  *    → [AppGraph.pendingOpenSessionId];
- *  - system shares (ACTION_SEND / ACTION_SEND_MULTIPLE, slice A) parsed by
+ *  - system shares (ACTION_SEND / ACTION_SEND_MULTIPLE) parsed by
  *    [SystemShareReader] → [AppGraph.pendingShare] → the share hand-off picker.
  */
 // AppCompatActivity (not ComponentActivity) since B-M5a: the appcompat base
@@ -137,7 +137,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * System share (ACTION_SEND / ACTION_SEND_MULTIPLE, slice A): stash the
+     * System share (ACTION_SEND / ACTION_SEND_MULTIPLE): stash the
      * parsed hand-off for `HapiNavigation`, which opens the picker when a
      * hub is paired. Parsing is delegated to the share feature's reader so
      * this stays a two-line shell like the routes above.

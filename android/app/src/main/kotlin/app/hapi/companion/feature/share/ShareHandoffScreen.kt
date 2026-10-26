@@ -51,7 +51,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * Hand-off picker for a system share (slice A), the native twin of the web
+ * Hand-off picker for a system share, the native twin of the web
  * `/share` route: content preview on top, session search + recent active
  * list below, "New session" at the end. Picking arms the AppGraph's
  * [ArmedShareSeed] and navigation opens that chat, where ShareSeedConsumer

@@ -7,7 +7,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * JVM tests for the pure share-intent parser (slice A). The Android
+ * JVM tests for the pure share-intent parser. The Android
  * [SystemShareReader] only unwraps the platform Intent; every tolerance rule
  * lives here and is exercised without Robolectric.
  */

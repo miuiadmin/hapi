@@ -59,7 +59,7 @@ interface TerminalFontPrefs {
 }
 
 /**
- * Terminal screen state machine (slice B): owns the [TerminalEmulator], one
+ * Terminal screen state machine: owns the [TerminalEmulator], one
  * per-viewer [terminalId] (stable across reconnects — the hub replays the
  * buffer for a re-created id), and the socket lifecycle gate.
  *

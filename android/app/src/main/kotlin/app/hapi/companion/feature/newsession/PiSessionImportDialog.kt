@@ -41,7 +41,7 @@ import java.text.DateFormat
 import java.util.Date
 
 /**
- * Pi session-import sheet (slice C) — Android presentation of the web
+ * Pi session-import sheet — Android presentation of the web
  * `PiSessionImportDialog`: amber concurrency warning, directory filter +
  * search (only with a non-empty list), Imported / Needs-attention badges,
  * multi-select with one-continue-now confirm semantics, and batch import.

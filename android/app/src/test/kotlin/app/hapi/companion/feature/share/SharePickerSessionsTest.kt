@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * JVM tests for the share-picker session shaping (slice A) — ported rules of
+ * JVM tests for the share-picker session shaping — ported rules of
  * `web/src/lib/sharePickerSessions.ts`: newest-first ordering, active-only
  * preview capped at the limit, query matching over the whole corpus, and the
  * hidden-active count hint.

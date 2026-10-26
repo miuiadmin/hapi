@@ -79,7 +79,7 @@ interface NewSessionGateway {
     /** `GET /api/machines/:id/kimi-models?cwd=`. */
     suspend fun kimiModels(machineId: String, cwd: String): KimiModelsResponse
     /**
-     * `GET /api/codex/sessions` (codex import, slice A). Soft failures arrive
+     * `GET /api/codex/sessions` (codex import). Soft failures arrive
      * as HTTP 200 `{success:false, sessions:[]}` — the silent-empty policy
      * lives in [CodexImportController], not here.
      */
@@ -99,7 +99,7 @@ interface NewSessionGateway {
     suspend fun resumeSession(sessionId: String, permissionMode: String? = null): ResumeSessionResponse
 
     /**
-     * `POST /api/codex/archive-session` (slice B) — archive one local Codex
+     * `POST /api/codex/archive-session` — archive one local Codex
      * transcript; `machineId` is omitted from the body when null. Failure is
      * HTTP 200 `success:false`; the caller rethrows it into the dialog's red
      * archive banner.
@@ -110,22 +110,22 @@ interface NewSessionGateway {
     ): CodexArchiveSessionResponse
 
     /**
-     * `GET /api/codex/status` (slice B) — `codexClientAvailable=false` means
+     * `GET /api/codex/status` — `codexClientAvailable=false` means
      * the restart call must not be made (not installed / not found).
      */
     suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse
 
     /**
-     * `POST /api/codex/duplicate-sessions` (slice B) — duplicates among the
+     * `POST /api/codex/duplicate-sessions` — duplicates among the
      * batch carried by [payload]; the web caller passes only `sessionIds` so
      * detection scope == execution scope.
      */
     suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse
 
-    /** `POST /api/codex/merge-duplicate-sessions` (slice B) — execute the confirmed merge. */
+    /** `POST /api/codex/merge-duplicate-sessions` — execute the confirmed merge. */
     suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse
 
-    /** `POST /api/codex/restart-desktop` (slice B) — script envelope; check `success`. */
+    /** `POST /api/codex/restart-desktop` — script envelope; check `success`. */
     suspend fun restartCodexDesktop(): CodexDesktopScriptResponse
 
     /**
@@ -140,14 +140,14 @@ interface NewSessionGateway {
     ): PiLocalSessionsResponse
 
     /**
-     * `POST /api/pi/import-sessions` (slice C) — failures are a top-level
+     * `POST /api/pi/import-sessions` — failures are a top-level
      * HTTP 200 `success:false` **or** per-item `results[i].error`; the caller
      * scores the batch from `results`.
      */
     suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse
 
     /**
-     * `POST /api/sessions/:id/reopen` (slice C) — the pi import-at-create leg
+     * `POST /api/sessions/:id/reopen` — the pi import-at-create leg
      * reopens the imported session as-is (web `api.reopenSession`); the
      * returned id may differ from [sessionId] (superseding spawn).
      */

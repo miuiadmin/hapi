@@ -84,7 +84,7 @@ internal fun ChatHost(
         }
     }
 
-    // Share-into-app (slice A): seed the composer once this session is live
+    // Share-into-app: seed the composer once this session is live
     // and an armed share names it (see ShareSeedConsumer for the gating).
     ShareSeedConsumer(viewModel, snackbar)
 

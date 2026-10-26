@@ -14,7 +14,7 @@ import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
 
 /**
- * Duplicate-merge confirmation (slice B) — the Android twin of web
+ * Duplicate-merge confirmation — the Android twin of web
  * `ui/ConfirmDialog` as mounted by `NewSession/index.tsx` for
  * `codexSync.duplicates.confirm.*`. Android keeps it a purpose-built
  * AlertDialog in the `SessionOpsDialogs` style instead of generalizing a

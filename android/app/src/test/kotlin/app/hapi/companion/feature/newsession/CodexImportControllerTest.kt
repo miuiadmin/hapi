@@ -45,7 +45,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 
 /**
- * Controller-level pin of the codex import flow (slice A) against the web
+ * Controller-level pin of the codex import flow against the web
  * state machine: `web/src/components/CodexSessionSyncDialog.tsx` + the
  * codex-import branches of `web/src/components/NewSession/index.tsx`.
  */

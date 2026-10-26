@@ -330,7 +330,7 @@ class CursorModelsTest {
         assertEquals(listOf("auto", "alpha-2"), catalog.baseOptions.map { it.value })
     }
 
-    // ------------------------------------------------- session-sheet merge (slice C) --
+    // ------------------------------------------------- session-sheet merge --
 
     @Test
     fun `session merge dedupes session-first, fills from machine and injects the current wire`() {

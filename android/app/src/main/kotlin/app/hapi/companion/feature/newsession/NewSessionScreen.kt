@@ -155,7 +155,7 @@ fun NewSessionScreen(
             onRestart = viewModel.codexImport::restart,
         )
     }
-    // Duplicate-merge confirm (slice B): armed only after a bulk import whose
+    // Duplicate-merge confirm: armed only after a bulk import whose
     // duplicate detection found groups; independent of the import dialog.
     if (codexImport.duplicateMergeConfirmOpen) {
         DuplicateMergeConfirmDialog(

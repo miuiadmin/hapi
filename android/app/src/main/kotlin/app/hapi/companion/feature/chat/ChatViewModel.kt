@@ -669,7 +669,7 @@ class ChatViewModel(
     private val codexPlanOperations = MutableStateFlow(CodexPlanOperations())
 
     /**
-     * Per-flavor dynamic catalogs behind the config sheet (slice C). One
+     * Per-flavor dynamic catalogs behind the config sheet. One
      * fetch per sheet open: [loadModelOptions] routes on the session flavor,
      * fills the fields that flavor needs, and leaves [loadedFlavor] null on
      * failure so the next open retries.

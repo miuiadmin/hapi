@@ -10,7 +10,7 @@ import app.hapi.protocol.wire.PiModelSummary
 import app.hapi.protocol.wire.PiSelectedModelRef
 
 /**
- * Pure per-flavor section logic for the session config sheet (slice C) —
+ * Pure per-flavor section logic for the session config sheet —
  * ports of `web/src/components/AssistantChat/codexFastMode.ts`,
  * `codexReasoningEffortOptions.ts`, the Pi/grok option branches of
  * `HappyComposer.tsx` + `SessionChat.tsx`, and the cursor variant rows of

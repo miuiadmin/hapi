@@ -21,7 +21,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 
 /**
- * Wire shapes of the pi-import endpoints (slice C):
+ * Wire shapes of the pi-import endpoints:
  * `GET /api/pi/sessions` + `POST /api/pi/import-sessions`.
  */
 class HapiApiPiImportTest {

@@ -788,7 +788,7 @@
     <string name="chat_cursor_migration_ambiguous_title">Cursor 会话升级需要人工处理</string>
     <string name="chat_cursor_migration_ambiguous_body">此会话在磁盘上的多个工作区下存在，或本地存储大小与已同步的历史记录不匹配，因此 HAPI 拒绝自动迁移。请在 hub 日志中搜索 "[migrator] ambiguous legacy store" 或 "[migrator] size sanity check refused" 获取候选列表，删除 ~/.cursor/chats/ 下的陈旧目录后，再重新打开此会话。</string>
 
-    <!-- Codex session import (slice A) -->
+    <!-- Codex session import -->
     <string name="codex_sync_cancel">取消</string>
     <string name="codex_sync_title">导入 Codex 会话</string>
     <string name="codex_sync_description">选择需要导入到 Hapi 的 Codex 会话</string>

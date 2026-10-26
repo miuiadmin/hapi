@@ -139,7 +139,7 @@ class AppGraph(context: Context) {
         .stateIn(scope, SharingStarted.Eagerly, null)
     /**
      * Codex import markers (thread id → imported-at), the DataStore twin of
-     * the web's localStorage `hapi.codexImportedSessions` (slice A). App-wide
+     * the web's localStorage `hapi.codexImportedSessions`. App-wide
      * for the same reason as [newSessionPrefs].
      */
     val codexImportedSessionsStore: CodexImportedSessionsStore =

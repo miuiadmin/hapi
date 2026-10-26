@@ -48,7 +48,7 @@ class CodexImportStrings(
 )
 
 /**
- * Dialog + inline-section state for the codex import (slice A). `error` is
+ * Dialog + inline-section state for the codex import. `error` is
  * the load error shown on the inline section (web `codexImportError`);
  * `importError` is a failed bulk import shown inside the still-open dialog
  * (web surfaces it as a toast — divergence, see controller docs).
@@ -375,7 +375,7 @@ class CodexImportController(
                 )
                 resetDialogFields()
                 update { it.copy(open = false, selectedSessionId = keepSelection) }
-                // Duplicate detection (slice B) — second hop after the import
+                // Duplicate detection — second hop after the import
                 // itself succeeded; scope == the batch just imported.
                 val importedHapiIds = result.hapiSessionIds ?: emptyList()
                 closeDuplicateMergeDialog()

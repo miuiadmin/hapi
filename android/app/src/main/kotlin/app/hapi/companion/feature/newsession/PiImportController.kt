@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
  * Strings the pi-import flow needs at runtime (Strings seam; defaults are
  * English, the Navigation holder resolves resources per locale). Web refs:
  * `piImport.failed.body`, `piImport.error.diverged`, `piImport.error.active`,
- * `piImport.success.title/body`, `piImport.failed.title/partial` (slice C).
+ * `piImport.success.title/body`, `piImport.failed.title/partial`.
  */
 class PiImportStrings(
     /** Load + soft-failure fallback (`piImport.failed.body`). */
@@ -45,7 +45,7 @@ class PiImportStrings(
 )
 
 /**
- * Pure helpers for the pi import (slice C) — web twins live in
+ * Pure helpers for the pi import — web twins live in
  * `PiSessionImportDialog.tsx` (filtering) and `NewSession/index.tsx`
  * (`formatPiImportError`, the import-at-create payload).
  */
@@ -125,7 +125,7 @@ internal object PiImportLogic {
 }
 
 /**
- * Dialog + inline-section state for the pi import (slice C). `error` is the
+ * Dialog + inline-section state for the pi import. `error` is the
  * scan error shown on the inline section (web `piImportError`); the import
  * outcomes are inline notices (web toasts — divergence, see controller docs).
  */
@@ -166,7 +166,7 @@ sealed interface PiImportAtCreateResult {
 }
 
 /**
- * Controller for the pi session-import flow (slice C): owns the list dialog
+ * Controller for the pi session-import flow: owns the list dialog
  * state, the inline section's selection, the two import paths (bulk from the
  * dialog, single continue-now during Create), and the scan's generation
  * guard. Web refs: `web/src/components/PiSessionImportDialog.tsx` (dialog

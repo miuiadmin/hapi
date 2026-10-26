@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 
 /**
- * Codex-history inline section of the create form (slice A) — port of web
+ * Codex-history inline section of the create form — port of web
  * `NewSession/CodexImportActions.tsx`: title, selected session's title or
  * the description, Clear (only while something is selected), Choose-history
  * (shows the loading label while a list load runs), and the load error.

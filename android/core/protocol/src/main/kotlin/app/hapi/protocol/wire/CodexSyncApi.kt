@@ -92,7 +92,7 @@ data class CodexDesktopScriptResponse(
 /**
  * `POST /api/codex/archive-session` body — `machineId` travels only when the
  * caller has one; null is omitted (`explicitNulls=false`), matching the web
- * client's `{sessionId, machineId: machineId ?? undefined}` (slice B).
+ * client's `{sessionId, machineId: machineId ?? undefined}`.
  */
 @Serializable
 data class CodexArchiveSessionRequest(

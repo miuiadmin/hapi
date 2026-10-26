@@ -785,7 +785,7 @@
     <string name="chat_cursor_migration_ambiguous_title">Обновление сессии Cursor требует проверки вручную</string>
     <string name="chat_cursor_migration_ambiguous_body">Этот чат существует на диске в нескольких папках рабочего пространства, либо размер на диске не совпадает с синхронизированной историей, поэтому HAPI отказался переносить его автоматически. Проверьте логи хаба на предмет списка кандидатов (поиск по «[migrator] ambiguous legacy store» или «[migrator] size sanity check refused»), удалите устаревшие папки в ~/.cursor/chats/ и откройте сессию заново.</string>
 
-    <!-- Codex session import (slice A) -->
+    <!-- Codex session import -->
     <string name="codex_sync_cancel">Отмена</string>
     <string name="codex_sync_title">Импорт сессий Codex</string>
     <string name="codex_sync_description">Выберите сессии Codex для импорта в Hapi</string>

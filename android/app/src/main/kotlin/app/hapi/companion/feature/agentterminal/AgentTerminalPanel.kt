@@ -93,7 +93,7 @@ private val AGENT_QUICK_KEY_ROWS: List<List<AgentQuickKey>> = listOf(
 )
 
 /**
- * Chat-embedded agent PTY view (slice C), the Android twin of the web
+ * Chat-embedded agent PTY view, the Android twin of the web
  * `AgentTerminalView`: status strip, shared [TerminalGrid] cell rendering with
  * auto-scroll, and the web quick-key rows (input is interactive — the panel is
  * NOT read-only). Composition drives the subscription lifecycle: entering

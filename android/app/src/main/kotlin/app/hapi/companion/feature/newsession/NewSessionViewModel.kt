@@ -245,9 +245,9 @@ data class NewSessionUiState(
     val agy: AgyUi = AgyUi.Hidden,
     val opencode: OpencodeUi = OpencodeUi.Hidden,
     val cursor: CursorUi = CursorUi.Hidden,
-    /** Codex-history inline section (slice A); renders only for agent codex. */
+    /** Codex-history inline section; renders only for agent codex. */
     val codexImport: CodexImportSectionUi = CodexImportSectionUi(),
-    /** Pi-history inline section (slice C); renders only for agent pi. */
+    /** Pi-history inline section; renders only for agent pi. */
     val piImport: PiImportSectionUi = PiImportSectionUi(),
     /**
      * Web `showPiLaunchConfig` (`agent !== 'pi' || !selectedPiImportSession`):
@@ -424,7 +424,7 @@ class NewSessionViewModel(
     )
 
     /**
-     * Pi session-import controller (slice C). Selecting a session inline
+     * Pi session-import controller. Selecting a session inline
      * adopts its cwd through the form's own [setDirectory] (web
      * `handleSelectPiImportSession` → `setDirectory(session.cwd.trim())`).
      * The web session-list refresh after a bulk import stays a no-op here —
