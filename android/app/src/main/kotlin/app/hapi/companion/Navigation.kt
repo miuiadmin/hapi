@@ -40,9 +40,12 @@ import app.hapi.companion.feature.chat.ChatViewModel
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
+import app.hapi.companion.feature.chat.composer.AudioRecordStreamingSource
+import app.hapi.companion.feature.chat.composer.DeepgramRealtimeDictationEngine
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
+import app.hapi.companion.feature.chat.composer.OkHttpProviderSocketFactory
 import app.hapi.companion.feature.files.ApiFilesGateway
 import app.hapi.companion.feature.files.FileViewerScreen
 import app.hapi.companion.feature.files.FileViewerStrings
@@ -79,6 +82,7 @@ import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
 import app.hapi.data.auth.AuthTerminalReason
+import okhttp3.OkHttpClient
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -856,6 +860,11 @@ private class ChatViewModelHolder(
         api = HapiDictationApi(hubGraph.session.api),
         recorder = MediaRecorderDictation(appContext),
         scope = scope,
+        realtimeEngine = DeepgramRealtimeDictationEngine(
+            api = hubGraph.session.api,
+            socketFactory = OkHttpProviderSocketFactory(OkHttpClient()),
+            audioFactory = { AudioRecordStreamingSource() },
+        ),
     )
 
     override fun onCleared() {
