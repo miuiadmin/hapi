@@ -74,6 +74,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.components.FolderGlyph
@@ -140,12 +144,29 @@ fun SessionListScreen(
     var markAllReadOpen by remember { mutableStateOf(false) }
     var exportRow by remember { mutableStateOf<SessionRowUi?>(null) }
 
-    DisposableEffect(viewModel) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(viewModel, context, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshTimeZone()
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_TIMEZONE_CHANGED) viewModel.refreshTimeZone()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        ContextCompat.registerReceiver(
+            context, receiver, IntentFilter(Intent.ACTION_TIMEZONE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         viewModel.start()
-        onDispose { viewModel.stop() }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            context.unregisterReceiver(receiver)
+            viewModel.stop()
+        }
     }
 
-    val context = LocalContext.current
     LaunchedEffect(viewModel, context) {
         viewModel.errors.collect { error ->
             val label = context.getString(

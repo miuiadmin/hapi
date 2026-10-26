@@ -13,7 +13,7 @@ agent's integration; their supported syntax varies by agent.
 | Agent | Command | Integration | Local | Remote | Permission modes | Resume |
 |-------|---------|-------------|:-----:|:------:|------------------|:------:|
 | Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
-| Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `yolo` (+ `plan` collaboration mode) | ✓ |
+| Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `autoReview` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
@@ -96,7 +96,7 @@ hapi cursor --continue         # Resume the most recent chat
 hapi cursor --plan             # Start in Plan mode (shortcut)
 hapi cursor --mode plan        # Start in Plan mode
 hapi cursor --mode ask         # Start in Ask mode
-hapi cursor --auto-review      # Start with Auto-review (Smart Auto)
+hapi cursor --auto-review      # Start with Auto (Smart Auto)
 hapi cursor --yolo             # Bypass approval prompts (--force)
 hapi cursor --model <model>    # Specify model
 hapi cursor --cursor-worktree              # Cursor-native worktree (auto-named)
@@ -112,7 +112,7 @@ hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 | `plan` | Plan mode - design approach before coding |
 | `ask` | Ask mode - explore code without edits |
 | `debug` | Debug mode - hypotheses + instrumentation |
-| `autoReview` | Auto-review (Smart Auto) - allowlist/sandbox/classifier instead of full YOLO |
+| `autoReview` | Auto (Smart Auto) - allowlist/sandbox/classifier instead of full YOLO |
 | `yolo` | Bypass approval prompts |
 
 Set mode via `--plan` / `--mode` / `--permission-mode` / `--auto-review`, or change from the web UI during a session.
@@ -313,7 +313,7 @@ yolo-style modes and escalate to the standard HAPI permission card otherwise.
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`), driven headlessly via print mode: every turn spawns `agy -p <msg> --conversation <uuid> --output-format stream-json`, and NDJSON events (init / step_update / result) are streamed into the chat. There is no PTY/TUI wrapper and no hook-based permission bridge: permission handling uses agy's own `settings.json` allow/deny rules (`request-review`) or `--dangerously-skip-permissions` (`always-proceed`). Tool calls that lack an allow-rule are auto-denied by agy and surfaced as a chat hint. MCP servers are configured the standard agy way — in the user's global `~/.gemini/config/mcp_config.json` or a workspace `.agents/mcp_config.json` — and are loaded natively by agy in headless mode (no HAPI injection). Remote-only — there is no local terminal input path. [Google Antigravity](https://antigravity.google)
-- **Pi** (`hapi pi`) — the Pi coding agent running as `pi --mode rpc` (JSON-line RPC over piped stdio); remote-control only, no local TUI input path. [badlogic/pi-mono](https://github.com/badlogic/pi-mono)
+- **Pi** (`hapi pi`) — the Pi coding agent running as `pi --mode rpc` (JSON-line RPC over piped stdio); remote-control only, no local TUI input path. [earendil-works/pi](https://github.com/earendil-works/pi)
 
   HAPI translates a subset of Pi's TUI slash commands to native Pi RPC calls, so they work from the web chat as well:
 
@@ -323,6 +323,8 @@ yolo-style modes and escalate to the standard HAPI permission card otherwise.
   - `/help` — list the commands supported from HAPI.
 
   Pi's extension commands and prompt templates (discovered via `get_commands`) keep working from the `/` menu, and skills are available through `$skill-name` like other ACP flavors. Other Pi TUI builtins (e.g. `/tree`, `/export`, `/reload`) cannot run over RPC; typing them in web shows an explicit "terminal-only" notice instead of silently forwarding the text to the model.
+
+  Pi sessions include a `hapi_display_image` tool for showing local PNG, JPEG, GIF, or WebP images up to 25 MiB in the chat. Images returned by Pi tools render inline even when the selected model has no vision support. The display tool also returns image bytes to Pi's model context.
 
 ## Related
 

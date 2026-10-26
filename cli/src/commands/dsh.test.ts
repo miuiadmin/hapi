@@ -43,4 +43,12 @@ describe('parseDshCommandOptions', () => {
         expect(() => parseDshCommandOptions(['--permission-mode', 'plan']))
             .toThrow('Invalid --permission-mode value')
     })
+
+    it('accepts a model override applied through the ACP config option', () => {
+        expect(parseDshCommandOptions(['--model', '["deepseek-official","deepseek-v4-pro"]']))
+            .toEqual({
+                model: '["deepseek-official","deepseek-v4-pro"]',
+                startingMode: 'remote' as const
+            })
+    })
 })

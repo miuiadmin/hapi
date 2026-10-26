@@ -398,6 +398,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 message: 'Cannot switch model: the DSH agent exposes no model config option.'
             })
             return null
+
         }
         try {
             await backend.setConfigOption(acpSessionId, option.id, model)

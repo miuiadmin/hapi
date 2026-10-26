@@ -228,6 +228,8 @@ data class NewSessionUiState(
     /** Codex reasoning-effort options; null hides the field. */
     val reasoningEffortOptions: List<OptionItem>?,
     val permission: PermissionUi,
+    /** Grok create-form gate: `true` renders the Auto-unavailable hint (web `PermissionField`). */
+    val grokAutoUnavailable: Boolean,
     val showCollaborationMode: Boolean,
     val collaborationModeOptions: List<OptionItem>,
     val showFastMode: Boolean,
@@ -437,6 +439,7 @@ class NewSessionViewModel(
     private var codexJob: Job? = null
     private var availabilityJob: Job? = null
     private var defaultDirectoryJob: Job? = null
+    private var grokAutoJob: Job? = null
     private var codexFetchedForMachine: String? = null
 
     // Flavor catalog fetch bookkeeping: one job + dedupe key per slot (same
@@ -546,7 +549,7 @@ class NewSessionViewModel(
                     if (machines.isEmpty()) return@collect
                     val current = form.value.machineId
                     if (current != null && machines.any { it.id == current }) {
-                        if (form.value.directory.isBlank()) applyMachineSelection(current, resetDirectory = true)
+                        if (form.value.directory.isBlank()) initializeMachineDirectory(current)
                         return@collect
                     }
                     val lastUsed = prefsData.value.lastMachineId
@@ -647,6 +650,7 @@ class NewSessionViewModel(
     fun setDirectory(value: String) {
         suppressSuggestions = false
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         form.update { it.copy(directory = value) }
         scheduleDirectoryWork()
     }
@@ -1046,6 +1050,7 @@ class NewSessionViewModel(
         suppressSuggestions = true
         confirmCreateDirectory.value = false
         suggestions.value = emptyList()
+        clearGrokAutoSupport()
         form.update { it.copy(directory = path) }
         scheduleDirectoryWork()
     }
@@ -1115,10 +1120,9 @@ class NewSessionViewModel(
         suggestions.value = emptyList()
         cachedListing = null
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         // The seeded recent path is a pick, not typing — no dropdown.
         suppressSuggestions = true
-        val machine = machineStore.machines.value.firstOrNull { it.id == machineId }
-        val fallback = machine?.let(RemoteDirectoryPath::browseRoots)?.firstOrNull().orEmpty()
         form.update { current ->
             current.copy(
                 machineId = machineId,
@@ -1299,6 +1303,54 @@ class NewSessionViewModel(
                 form.update { reconcileCodexSelections(it) }
             }
         }
+    }
+
+    /**
+     * Grok Auto-mode capability probe (web `useGrokModelsForCwd` +
+     * `shouldEnableGrokModelDiscovery`): fires only for the grok agent with a
+     * machine selected and a directory that exists. `null` (unknown) or `true`
+     * never disables; a literal `false` gates the option and resets an `auto`
+     * selection back to `default` (web `NewSession` reset effect).
+     */
+    private fun refreshGrokAutoSupportIfNeeded() {
+        val current = form.value
+        if (current.agent != "grok") return
+        val machineId = current.machineId ?: return
+        val cwd = current.trimmedDirectory
+        if (cwd.isEmpty()) return
+        if (pathExistence.value[cwd] != true) return
+        val target = machineId to cwd
+        if (grokAutoProbedFor == target) return
+        grokAutoProbedFor = target
+        grokAutoJob?.cancel()
+        grokAutoJob = scope.launch {
+            val supported = try {
+                val response = gateway.grokModels(machineId, cwd)
+                if (response.success) response.autoPermissionModeSupported else null
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+            if (form.value.machineId != machineId) return@launch
+            grokAutoSupport.value = supported
+            if (supported == false) {
+                form.update { formValue ->
+                    if (formValue.agent == "grok" && formValue.permissionMode == "auto") {
+                        formValue.copy(permissionMode = "default")
+                    } else {
+                        formValue
+                    }
+                }
+            }
+        }
+    }
+
+    /** Back to unknown capability — new cwd/machine, or the cwd stopped existing. */
+    private fun clearGrokAutoSupport() {
+        grokAutoJob?.cancel()
+        grokAutoProbedFor = null
+        grokAutoSupport.value = null
     }
 
     private fun reconcileCodexSelections(current: NewSessionForm): NewSessionForm {
@@ -2196,6 +2248,7 @@ class NewSessionViewModel(
             },
             reasoningEffortOptions = reasoningEffortOptions,
             permission = permission,
+            grokAutoUnavailable = grokAutoUnavailable,
             showCollaborationMode = agent == "codex",
             collaborationModeOptions = CodexCollaborationMode.entries.map { OptionItem(it.wireId, it.label) },
             showFastMode = showFastMode,

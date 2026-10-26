@@ -157,3 +157,36 @@ describe('claudeLocal peer-tools child env (#2056)', () => {
         expect(env.HAPI_DISABLE_PEER_TOOLS).toBe('1')
     })
 })
+
+describe('claudeLocal permission mode arguments', () => {
+    beforeEach(() => {
+        harness.spawn.mockClear()
+    })
+
+    it.each(['acceptEdits', 'bypassPermissions', 'plan', 'auto'] as const)('launches the TUI with --permission-mode %s', async (permissionMode) => {
+        await claudeLocal({
+            abort: new AbortController().signal,
+            sessionId: null,
+            path: '/workspace',
+            hookSettingsPath: '/tmp/hooks.json',
+            permissionMode
+        })
+
+        const args = getSpawnArgs()
+        expect(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 2)).toEqual([
+            '--permission-mode', permissionMode
+        ])
+    })
+
+    it('leaves the default mode to Claude settings', async () => {
+        await claudeLocal({
+            abort: new AbortController().signal,
+            sessionId: null,
+            path: '/workspace',
+            hookSettingsPath: '/tmp/hooks.json',
+            permissionMode: 'default'
+        })
+
+        expect(getSpawnArgs()).not.toContain('--permission-mode')
+    })
+})

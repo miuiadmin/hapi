@@ -166,6 +166,10 @@ function createSessionWithMode(mode?: DshMode) {
     return createSessionWithBatches([['first', mode ?? {}]])
 }
 
+function createSession(mode?: DshMode) {
+    return createSessionWithBatches([['first', mode ?? {}]])
+}
+
 describe('DshRemoteLauncher', () => {
     afterEach(() => {
         harness.backend = null

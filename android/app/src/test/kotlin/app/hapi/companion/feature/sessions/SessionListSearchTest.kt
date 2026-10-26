@@ -26,11 +26,13 @@ class SessionListSearchTest {
         machineId: String? = null,
         worktree: WorktreeMetadata? = null,
         pinned: Boolean? = null,
+        globalPinned: Boolean? = null,
     ): SessionSummary = SessionSummary(
         id = id,
         active = false,
         updatedAt = updatedAt,
         pinned = pinned,
+        globalPinned = globalPinned,
         metadata = SessionSummaryMetadata(
             name = name,
             path = path,
@@ -230,6 +232,35 @@ class SessionListSearchTest {
         assertEquals(
             listOf("home-pinned", "homelab-pinned", "home", "homelab"),
             ranked.map { it.id },
+        )
+    }
+
+    @Test
+    fun `search keeps global pins ahead of project pins and higher scoring ordinary rows`() {
+        val global = summary("global", name = "homelab", pinned = false, globalPinned = true)
+        val project = summary("project", name = "Home automation", pinned = true)
+        val ordinary = summary("ordinary", name = "home")
+        val sessions = listOf(ordinary, project, global)
+        val index = SessionListSearch.buildSessionSearchScoreIndex(sessions, "home") { "" }
+
+        assertEquals(
+            listOf("global", "project", "ordinary"),
+            SessionListSearch.sortSessionsBySearchRelevancePreservingPins(sessions, index).map { it.id },
+        )
+    }
+
+    @Test
+    fun `global pins are ranked within their own section without duplicating overlapping pin flags`() {
+        val low = summary("global-low", name = "homelab", globalPinned = true)
+        val high = summary("global-high", name = "home", pinned = true, globalPinned = true)
+        val project = summary("project", name = "home", pinned = true, globalPinned = false)
+        val ordinary = summary("ordinary", name = "home", pinned = false, globalPinned = false)
+        val sessions = listOf(low, project, ordinary, high)
+        val index = SessionListSearch.buildSessionSearchScoreIndex(sessions, "home") { "" }
+
+        assertEquals(
+            listOf("global-high", "global-low", "project", "ordinary"),
+            SessionListSearch.sortSessionsBySearchRelevancePreservingPins(sessions, index).map { it.id },
         )
     }
 

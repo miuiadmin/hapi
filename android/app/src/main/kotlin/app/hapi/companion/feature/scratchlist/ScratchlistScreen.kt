@@ -52,6 +52,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -531,7 +532,7 @@ private fun ScratchlistEditorSheet(
                 placeholder = { Text(stringResource(R.string.scratchlist_placeholder)) },
                 minLines = 3,
                 maxLines = 8,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("scratchlist-editor-text"),
             )
             Spacer(modifier = Modifier.height(10.dp))
             Row(

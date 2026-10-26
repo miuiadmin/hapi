@@ -296,17 +296,18 @@ object SessionListSearch {
     ): List<SessionSummary> = sessions.sortedWith { a, b -> compareSessionsBySearchRelevance(a, b, index) }
 
     /**
-     * Relevance sort that keeps project-pinned rows contiguous ahead of
-     * ordinary rows — flat score sort would interleave them and the renderer
-     * draws a divider on every transition.
+     * Keep global pins, project pins and ordinary rows in separate sections,
+     * with relevance ordering inside each section.
      */
     fun sortSessionsBySearchRelevancePreservingPins(
         sessions: List<SessionSummary>,
         index: SessionSearchScoreIndex,
     ): List<SessionSummary> {
-        val pinned = sessions.filter { it.pinned == true }
-        val ordinary = sessions.filter { it.pinned != true }
-        return sortSessionsBySearchRelevance(pinned, index) + sortSessionsBySearchRelevance(ordinary, index)
+        val (globalPins, remaining) = sessions.partition { it.globalPinned == true }
+        val (projectPins, ordinary) = remaining.partition { it.pinned == true }
+        return sortSessionsBySearchRelevance(globalPins, index) +
+            sortSessionsBySearchRelevance(projectPins, index) +
+            sortSessionsBySearchRelevance(ordinary, index)
     }
 
     /**

@@ -5,6 +5,7 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
+import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
@@ -133,6 +134,7 @@ export async function runDsh(opts: {
             syncSessionMode()
         }
     })
+
     sessionRef.current = dshSession
     launcherRef.current = launcher
 

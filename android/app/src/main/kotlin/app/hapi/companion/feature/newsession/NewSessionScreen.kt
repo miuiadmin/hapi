@@ -989,6 +989,7 @@ private fun previewState(form: NewSessionForm): NewSessionUiState = NewSessionUi
     effortOptions = NewSessionCatalogs.CLAUDE_EFFORTS,
     reasoningEffortOptions = null,
     permission = PermissionUi.YoloToggle("Yolo"),
+    grokAutoUnavailable = false,
     showCollaborationMode = false,
     collaborationModeOptions = emptyList(),
     showFastMode = false,

@@ -124,6 +124,20 @@ class RequestUserInputTest {
 
     private val selectedConfirmOption = listOf("Open sign-in page and continue")
 
+    @Test fun browserValidQueryCharactersKeepTheUrlAndRequireExplicitConfirmation() {
+        val url = "https://example.com/login?state=a|b"
+        val parsed = confirmFixture(url, url)
+        assertEquals(url, parsed.url)
+        assertFalse(isRequestUserInputUrlConfirmed(parsed, emptyMap()))
+        assertTrue(
+            isRequestUserInputUrlConfirmed(parsed, mapOf("__mcp_url_confirmation" to selectedConfirmOption)),
+        )
+        val encodedDescription = confirmFixture(url, "https://example.com/login?state=a%7Cb")
+        assertFalse(
+            isRequestUserInputUrlConfirmed(encodedDescription, mapOf("__mcp_url_confirmation" to selectedConfirmOption)),
+        )
+    }
+
     @Test fun urlConfirmationRequiresSelectedOptionWithMatchingDescription() {
         val url = "https://accounts.example.com/callback"
         val confirmed = confirmFixture(url, url)

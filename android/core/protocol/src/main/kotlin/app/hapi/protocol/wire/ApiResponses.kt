@@ -401,15 +401,21 @@ data class CursorModelsResponse(
 )
 
 /**
- * `GET /api/machines/:id/grok-models` — RPC-wrapped. Ported from
- * `GrokModelsResponse` (`shared/src/apiTypes.ts`).
+ * `GET /api/machines/:id/grok-models?cwd=` (RPC-wrapped: check [success]) —
+ * the directory-scoped Grok probe; `GrokModelsResponse` in
+ * `shared/src/apiTypes.ts`. This slice consumes only
+ * [autoPermissionModeSupported] (the create-form Auto gate); model discovery
+ * stays deferred and unknown fields are ignored by [HapiJson].
  */
 @Serializable
 data class GrokModelsResponse(
     val success: Boolean,
     val availableModels: List<GrokModelSummary>? = null,
     val currentModelId: String? = null,
-    /** False ⇒ the account/CLI build has no auto permission mode; hide/reset it. */
+    /**
+     * Nullable on purpose: the server may omit it, and the gate fires only on
+     * a literal `false` (web guards with `=== false`).
+     */
     val autoPermissionModeSupported: Boolean? = null,
     val error: String? = null,
 )

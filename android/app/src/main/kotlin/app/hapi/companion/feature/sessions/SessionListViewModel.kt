@@ -400,6 +400,7 @@ class SessionListViewModel(
 
     /** Pull-to-refresh / initial load. Coalesces concurrent calls. */
     fun refresh() {
+        refreshTimeZone()
         if (refreshJob?.isActive == true) return
         refreshJob = scope.launch {
             isRefreshing.value = true
