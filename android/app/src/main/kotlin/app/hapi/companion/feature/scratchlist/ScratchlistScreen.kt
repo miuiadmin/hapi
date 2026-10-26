@@ -63,6 +63,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
@@ -272,6 +273,7 @@ fun ScratchlistScreen(
             text = { Text(stringResource(R.string.scratchlist_confirm_delete)) },
             confirmButton = {
                 TextButton(
+                    modifier = Modifier.testTag("scratchlist-confirm-delete"),
                     onClick = {
                         confirmDeleteEntryId = null
                         viewModel.deleteEntry(entryId)
@@ -281,7 +283,10 @@ fun ScratchlistScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmDeleteEntryId = null }) {
+                TextButton(
+                    modifier = Modifier.testTag("scratchlist-cancel-delete"),
+                    onClick = { confirmDeleteEntryId = null },
+                ) {
                     Text(stringResource(R.string.scratchlist_cancel))
                 }
             },

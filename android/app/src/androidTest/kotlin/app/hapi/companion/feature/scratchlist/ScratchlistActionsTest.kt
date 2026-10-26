@@ -3,12 +3,10 @@ package app.hapi.companion.feature.scratchlist
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasSetTextAction
-import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
@@ -66,10 +64,10 @@ class ScratchlistActionsTest {
         compose.onNodeWithText("Delete").performClick()
         compose.onNodeWithText("Delete this scratchlist entry? This cannot be undone.").assertIsDisplayed()
         compose.runOnIdle { assertEquals(emptyList<String>(), store.deletes) }
-        compose.onNode(hasText("Cancel") and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithTag("scratchlist-cancel-delete").performClick()
         compose.runOnIdle { assertEquals(emptyList<String>(), store.deletes) }
         compose.onNodeWithText("Delete").performClick()
-        compose.onNode(hasText("Delete") and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithTag("scratchlist-confirm-delete").performClick()
         compose.runOnIdle { assertEquals(listOf("entry"), store.deletes) }
     }
 
