@@ -4,8 +4,8 @@ import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.boolOrNull
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
-import java.net.URI
 import kotlinx.serialization.json.JsonElement
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * Question/option models + input parsers for the two interactive request
@@ -169,11 +169,9 @@ fun parseRequestUserInput(input: JsonElement?): RequestUserInputParsed {
 
 /** `parseRequestUserInputInput` url branch: http/https or null. */
 fun normalizeRequestUserInputUrl(raw: String): String? {
-    val uri = runCatching { URI(raw) }.getOrNull() ?: return null
-    val scheme = uri.scheme?.lowercase() ?: return null
-    if (scheme != "http" && scheme != "https") return null
-    // Absolute check mirrors `new URL()`: relative refs never carry a usable origin.
-    if (!uri.isAbsolute) return null
+    // Browser-valid query characters (for example '|') need not be URI-safe.
+    // Keep the wire spelling so the confirmation description matches exactly.
+    if (raw.toHttpUrlOrNull() == null) return null
     return raw
 }
 
