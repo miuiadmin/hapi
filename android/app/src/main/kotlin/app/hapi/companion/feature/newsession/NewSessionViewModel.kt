@@ -230,6 +230,7 @@ class NewSessionViewModel(
                 }
             }
             form.value = initial
+            if (!draftRestored) applyPreferredLaunchSettings(initial.machineId, initial.agent)
             refreshAgentAvailability()
             refreshCodexModelsIfNeeded()
             // A restored directory should probe existence but not pop the
@@ -252,7 +253,7 @@ class NewSessionViewModel(
                     if (machines.isEmpty()) return@collect
                     val current = form.value.machineId
                     if (current != null && machines.any { it.id == current }) {
-                        if (form.value.directory.isBlank()) applyMachineSelection(current, resetDirectory = true)
+                        if (form.value.directory.isBlank()) initializeMachineDirectory(current)
                         return@collect
                     }
                     val lastUsed = prefsData.value.lastMachineId
@@ -570,26 +571,28 @@ class NewSessionViewModel(
         confirmCreateDirectory.value = false
         // The seeded recent path is a pick, not typing — no dropdown.
         suppressSuggestions = true
-        val machine = machineStore.machines.value.firstOrNull { it.id == machineId }
-        val fallback = machine?.let(RemoteDirectoryPath::browseRoots)?.firstOrNull().orEmpty()
         form.update { current ->
             current.copy(
                 machineId = machineId,
                 model = "auto",
-                directory = if (resetDirectory) {
-                    fallback
-                } else {
-                    current.directory
-                },
             )
         }
         // Remembered launch defaults follow the machine dimension too (web
         // restore effect re-runs on machineId change) — unless a restored
         // draft still owns the form.
         if (!draftRestored) applyPreferredLaunchSettings(machineId, form.value.agent)
-        if (resetDirectory) resolveDefaultDirectory(machineId, fallback)
         refreshAgentAvailability(force = true)
         refreshCodexModelsIfNeeded()
+        if (resetDirectory) initializeMachineDirectory(machineId) else scheduleDirectoryWork()
+    }
+
+    /** Roster updates may seed a directory without replacing current launch choices. */
+    private fun initializeMachineDirectory(machineId: String) {
+        val machine = machineStore.machines.value.firstOrNull { it.id == machineId }
+        val fallback = machine?.let(RemoteDirectoryPath::browseRoots)?.firstOrNull().orEmpty()
+        suppressSuggestions = true
+        form.update { it.copy(directory = fallback) }
+        resolveDefaultDirectory(machineId, fallback)
         scheduleDirectoryWork()
     }
 

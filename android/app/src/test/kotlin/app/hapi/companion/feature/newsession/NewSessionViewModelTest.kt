@@ -1078,6 +1078,96 @@ class NewSessionViewModelTest {
     }
 
     @Test
+    fun `same machine heartbeat preserves manual launch choices while directory is blank`() = runTest {
+        val machines = FakeMachineStore(listOf(machine("m1")))
+        val prefs = FakePrefs(stored = NewSessionPrefsData(launchSettings = mapOf(
+            "m1" to mapOf("claude" to PreferredLaunchSettings(
+                model = "opus", effort = "high", permissionMode = "bypassPermissions",
+            )),
+        )))
+        val vm = buildViewModel(FakeGateway(), machines, prefs)
+        advanceUntilIdle()
+        assertEquals("opus", vm.uiState.value.form.model)
+        vm.setModel("sonnet")
+        vm.setEffort("low")
+        vm.setPermissionMode("plan")
+        advanceUntilIdle()
+        val edited = vm.uiState.value.form
+        assertEquals("", edited.directory)
+
+        machines.backing.value = listOf(machine("m1").copy(activeAt = 2))
+        advanceUntilIdle()
+        assertEquals(edited, vm.uiState.value.form)
+
+        // A later directory hint may fill the blank without restoring defaults.
+        machines.backing.value = listOf(machine("m1", homeDir = "/home/dev"))
+        advanceUntilIdle()
+        assertEquals(edited.copy(directory = "/home/dev"), vm.uiState.value.form)
+    }
+
+    @Test
+    fun `same machine heartbeat keeps codex reasoning effort and a stricter permission mode`() = runTest {
+        val machines = FakeMachineStore(listOf(machine("m1")))
+        val gateway = FakeGateway().apply {
+            codexResult = CodexModelsResponse(success = true, models = listOf(
+                CodexModelSummary(
+                    id = "codex-model", displayName = "Codex", isDefault = true,
+                    supportedReasoningEfforts = listOf("low", "high"), serviceTiers = listOf("standard"),
+                ),
+            ))
+        }
+        val prefs = FakePrefs(stored = NewSessionPrefsData(launchSettings = mapOf(
+            "m1" to mapOf("codex" to PreferredLaunchSettings(
+                model = "codex-model", modelReasoningEffort = "high", permissionMode = "yolo",
+            )),
+        )))
+        val vm = buildViewModel(gateway, machines, prefs)
+        advanceUntilIdle()
+        vm.setAgent("codex")
+        advanceUntilIdle()
+        assertEquals("yolo", vm.uiState.value.form.permissionMode)
+        vm.setModel("auto")
+        vm.setModelReasoningEffort("low")
+        vm.setPermissionMode("read-only")
+        advanceUntilIdle()
+        val edited = vm.uiState.value.form
+        assertEquals("", edited.directory)
+
+        machines.backing.value = listOf(machine("m1").copy(activeAt = 2))
+        advanceUntilIdle()
+        assertEquals(edited, vm.uiState.value.form)
+    }
+
+    @Test
+    fun `initial machine selection restores launch defaults before seeding its directory`() = runTest {
+        val prefs = FakePrefs(stored = NewSessionPrefsData(launchSettings = mapOf(
+            "m1" to mapOf("claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan")),
+        )))
+        val vm = buildViewModel(
+            FakeGateway(), FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), prefs,
+            initialMachineId = "m1",
+        )
+        advanceUntilIdle()
+        assertEquals("/home/dev", vm.uiState.value.form.directory)
+        assertEquals("opus", vm.uiState.value.form.model)
+        assertEquals("high", vm.uiState.value.form.effort)
+        assertEquals("plan", vm.uiState.value.form.permissionMode)
+    }
+
+    @Test
+    fun `a restored draft with a blank directory keeps its launch choices`() = runTest {
+        val draft = NewSessionForm(
+            machineId = "m1", model = "sonnet", effort = "low", permissionMode = "plan",
+        )
+        val prefs = FakePrefs(draft = draft)
+        val vm = buildViewModel(
+            FakeGateway(), FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), prefs,
+        )
+        advanceUntilIdle()
+        assertEquals(draft.copy(directory = "/home/dev"), vm.uiState.value.form)
+    }
+
+    @Test
     fun `switching machine or agent re-applies each dimension's remembered defaults`() = runTest {
         val gateway = FakeGateway().apply {
             // Catalog contains the remembered codex model, so the settled
