@@ -25,6 +25,8 @@ import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.CodeWrapPrefs
 import app.hapi.companion.feature.settings.LanguagePrefs
 import app.hapi.companion.feature.settings.ThemePrefs
+import app.hapi.companion.feature.share.ArmedShareSeed
+import app.hapi.companion.feature.share.ShareHandoff
 import app.hapi.data.push.EncryptedPrefsPushIdentityStore
 import app.hapi.data.push.PushIdentityManager
 import app.hapi.data.push.PushMessageDecoder
@@ -224,6 +226,55 @@ class AppGraph(context: Context) {
      * `HapiNavigation` consumes, clears, and opens the chat.
      */
     val pendingOpenSessionId = MutableStateFlow<String?>(null)
+
+    // ------------------------------------------------------- share-into-app --
+    // Slice A: the Android shape of the web PWA's share_target transfer.
+    // No IDB transfer store exists here, so the payload rides in these
+    // process-lived slots: MainActivity posts the parsed hand-off, the
+    // picker consumes it, and the armed seed is consumed inside the chat.
+
+    /**
+     * The most recent unconsumed system share (ACTION_SEND/-MULTIPLE), parsed
+     * by [SystemShareReader][app.hapi.companion.feature.share.SystemShareReader].
+     * MainActivity posts (cold start + onNewIntent); `HapiNavigation` opens
+     * the hand-off picker, whose ViewModel consumes and clears it.
+     */
+    val pendingShare = MutableStateFlow<ShareHandoff?>(null)
+
+    /**
+     * A share bound to the session it must land in. Armed when the user picks
+     * a target (or finishes the new-session form); consumed by the chat's
+     * ShareSeedConsumer once that session is active and drafts are restored.
+     */
+    val pendingShareSeed = MutableStateFlow<ArmedShareSeed?>(null)
+
+    /**
+     * A share waiting for the new-session form to finish (web
+     * `?shareTransferId=`): the picker posts it, the form's `onCreated` moves
+     * it into [pendingShareSeed]; backing out of the form clears it.
+     */
+    val pendingNewSessionShare = MutableStateFlow<ShareHandoff?>(null)
+
+    /**
+     * Follow the conversation, not the dead id: when a chat is superseded
+     * (resume/reopen), an armed seed for [fromSessionId] re-binds to
+     * [toSessionId] (web `sharePendingState.ts` retarget).
+     */
+    fun retargetPendingShareSeed(fromSessionId: String, toSessionId: String) {
+        val current = pendingShareSeed.value ?: return
+        if (fromSessionId.isEmpty() || toSessionId.isEmpty() || fromSessionId == toSessionId) return
+        if (current.sessionId != fromSessionId) return
+        pendingShareSeed.value = current.copy(sessionId = toSessionId)
+    }
+
+    /**
+     * Drop an armed seed when its session's screen is gone for good (holder
+     * cleared) — the web drops the pending transfer on tab close. Rotation
+     * keeps holders alive, so this only fires on real exit.
+     */
+    fun abandonPendingShareSeed(sessionId: String) {
+        if (pendingShareSeed.value?.sessionId == sessionId) pendingShareSeed.value = null
+    }
 
     /**
      * The session id of the currently composed chat screen, or null. Feeds

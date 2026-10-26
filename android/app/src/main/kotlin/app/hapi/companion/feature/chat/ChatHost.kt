@@ -29,6 +29,7 @@ import app.hapi.companion.R
 import app.hapi.companion.ui.components.FullTextAction
 import app.hapi.companion.feature.chat.blocks.*
 import app.hapi.companion.feature.chat.composer.DictationController
+import app.hapi.companion.feature.share.ShareSeedConsumer
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.theme.HapiTypography
@@ -52,6 +53,9 @@ internal fun ChatHost(
     onOpenScratchlist: (() -> Unit)?,
     /** null ⇒ no export entry in the chat overflow menu (tests / previews). */
     sessionExport: SessionExportSupport? = null,
+    onOpenTerminal: (() -> Unit)?,
+    /** Agent PTY panel VM; null in tests/previews without a hub graph. */
+    agentTerminal: app.hapi.companion.feature.agentterminal.AgentTerminalViewModel? = null,
 ) {
     val navigation = rememberNavController()
     val entry by navigation.currentBackStackEntryAsState()
@@ -79,6 +83,10 @@ internal fun ChatHost(
             }
         }
     }
+
+    // Share-into-app (slice A): seed the composer once this session is live
+    // and an armed share names it (see ShareSeedConsumer for the gating).
+    ShareSeedConsumer(viewModel, snackbar)
 
     fun pauseReading() {
         reading.followsTail = false
@@ -142,6 +150,8 @@ internal fun ChatHost(
                         onOpenSession = { pauseReading(); onOpenSession(it) },
                         onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
                         sessionExport = sessionExport,
+                        onOpenTerminal = onOpenTerminal?.let { open -> { pauseReading(); open() } },
+                        agentTerminal = agentTerminal,
                         transcriptList = transcriptList, readingState = reading,
                     )
                 }

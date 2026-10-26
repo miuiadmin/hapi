@@ -64,6 +64,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import app.hapi.companion.R
+import app.hapi.companion.feature.agentterminal.AgentTerminalPanel
+import app.hapi.companion.feature.agentterminal.AgentTerminalViewModel
 import app.hapi.companion.feature.chat.composer.DictationErrorKind
 import app.hapi.companion.feature.chat.attachments.AttachmentPickerSheet
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
@@ -119,6 +121,14 @@ internal fun ChatScreen(
     onOpenScratchlist: (() -> Unit)? = null,
     /** null ⇒ no export entry in the overflow menu (tests / previews). */
     sessionExport: SessionExportSupport? = null,
+    /** null ⇒ no terminal overflow entry (tests / previews). */
+    onOpenTerminal: (() -> Unit)? = null,
+    /**
+     * Agent PTY panel: null ⇒ no entry and no panel (tests / previews).
+     * Entry additionally needs header.active + header.agentPty
+     * (web `canViewAgentTerminal`); the panel re-checks and shows reasons.
+     */
+    agentTerminal: AgentTerminalViewModel? = null,
     transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
@@ -153,6 +163,9 @@ internal fun ChatScreen(
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
     var exportDialogOpen by remember { mutableStateOf(false) }
+    // Web terminalVisible (SessionChat state): survives rotation, resets on a
+    // fresh app entry like the web's per-mount useState.
+    var agentTerminalVisible by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -367,6 +380,18 @@ internal fun ChatScreen(
                     }
                     SessionOverflowMenu(
                         active = state.header.active,
+                        // Web terminalSupport gating: entry needs an active
+                        // session AND a host that reports the capability.
+                        onOpenTerminal = if (state.header.active && state.header.terminalSupported) onOpenTerminal else null,
+                        // Web canViewAgentTerminal gating for the overflow toggle
+                        // (the PTY panel's own entry point).
+                        onToggleAgentTerminal = if (
+                            agentTerminal != null && state.header.active && state.header.agentPty
+                        ) {
+                            { agentTerminalVisible = !agentTerminalVisible }
+                        } else {
+                            null
+                        },
                         onRename = { renameDialogOpen = true },
                         onExport = if (sessionExport != null) {
                             { exportDialogOpen = true }
@@ -487,6 +512,14 @@ internal fun ChatScreen(
                     when {
                         state.isInitialLoading -> InitialLoading()
                         state.loadFailed -> LoadFailed(onRetry = viewModel::retry)
+                        // Web parity: the visible agent terminal REPLACES the
+                        // transcript (web hides the thread with display:none);
+                        // the composer below stays for chat.
+                        agentTerminalVisible && agentTerminal != null -> AgentTerminalPanel(
+                            viewModel = agentTerminal,
+                            onHide = { agentTerminalVisible = false },
+                            modifier = Modifier.fillMaxSize(),
+                        )
                         state.blocks.isEmpty() && !state.hasMore -> EmptyChat()
                         else -> ChatTranscript(
                             state = state, paging = historyPaging, jumpToken = jumpToken,
@@ -589,10 +622,11 @@ internal fun ChatScreen(
 }
 
 /**
- * Top-bar ⋮ menu — session-scoped actions only: Rename always, Reopen only
- * for inactive sessions, Delete last. The navigation/quick actions (Files /
- * Scratchlist / Park) live in the composer action row now, one thumb-reach
- * closer to the draft they act on.
+ * Top-bar ⋮ menu — session-scoped actions only: terminal entries (interactive
+ * terminal / agent PTY toggle) when the session supports them, Rename always,
+ * Reopen only for inactive sessions, Delete last. The navigation/quick actions
+ * (Files / Scratchlist / Park) live in the composer action row now, one
+ * thumb-reach closer to the draft they act on.
  */
 @Composable
 private fun SessionOverflowMenu(
@@ -606,12 +640,34 @@ private fun SessionOverflowMenu(
     reopenDisabledReason: String? = null,
     /** Cursor probe-unverified hint — item stays enabled with a caveat. */
     reopenHint: String? = null,
+    /** null ⇒ terminal row hidden (inactive/unsupported session / tests). */
+    onOpenTerminal: (() -> Unit)? = null,
+    /** null ⇒ agent-terminal toggle row hidden (non-PTY/inactive session / tests). */
+    onToggleAgentTerminal: (() -> Unit)? = null,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
         Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_session_actions))
     }
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        if (onOpenTerminal != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_open_terminal)) },
+                onClick = {
+                    open = false
+                    onOpenTerminal()
+                },
+            )
+        }
+        if (onToggleAgentTerminal != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.agent_terminal_menu)) },
+                onClick = {
+                    open = false
+                    onToggleAgentTerminal()
+                },
+            )
+        }
         HorizontalDivider()
         DropdownMenuItem(
             text = { Text(stringResource(R.string.sessions_action_rename)) },

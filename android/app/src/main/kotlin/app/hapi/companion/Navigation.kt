@@ -37,6 +37,8 @@ import app.hapi.companion.di.viewModelFactory
 import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
+import app.hapi.companion.feature.agentterminal.AgentTerminalViewModel
+import app.hapi.companion.feature.agentterminal.SocketIoAgentTerminalGateway
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
@@ -94,6 +96,14 @@ import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
+import app.hapi.companion.feature.share.ArmedShareSeed
+import app.hapi.companion.feature.share.ShareHandoffScreen
+import app.hapi.companion.feature.share.ShareHandoffViewModel
+import app.hapi.companion.feature.terminal.SharedPrefsTerminalFontPrefs
+import app.hapi.companion.feature.terminal.SocketIoTerminalGateway
+import app.hapi.companion.feature.terminal.TerminalEventListener
+import app.hapi.companion.feature.terminal.TerminalScreen
+import app.hapi.companion.feature.terminal.TerminalViewModel
 import app.hapi.companion.feature.toasts.HubToasts
 import app.hapi.data.auth.AuthTerminalReason
 import okhttp3.OkHttpClient
@@ -158,11 +168,27 @@ object Routes {
 
     fun scratchlist(sessionId: String) = "chat/$sessionId/scratchlist"
 
+    /** Interactive remote terminal (slice B), pushed above its chat. */
+    const val TERMINAL = "chat/{sessionId}/terminal"
+
+    fun terminal(sessionId: String) = "chat/$sessionId/terminal"
+
     /** New-session form (B-M3d); optional machine preselect. */
-    const val NEW_SESSION = "newSession?machineId={machineId}"
+    const val NEW_SESSION = "newSession?machineId={machineId}&share={share}"
 
     fun newSession(machineId: String? = null) =
         if (machineId == null) "newSession" else "newSession?machineId=$machineId"
+
+    /**
+     * New-session form entered from the share picker (slice A): the payload
+     * waits in `AppGraph.pendingNewSessionShare`, and `onCreated` arms it
+     * bound to the fresh session (web: `?shareTransferId=`).
+     */
+    fun newSessionWithShareSeed(machineId: String? = null) =
+        if (machineId == null) "newSession?share=1" else "newSession?machineId=$machineId&share=1"
+
+    /** Share hand-off picker (slice A): system share → pick session → seed. */
+    const val SHARE = "share"
 
     /** Nested pairing graph (landing ⇄ scan ⇄ manual share one ViewModel). */
     const val PAIRING = "pairing"
@@ -242,6 +268,32 @@ fun HapiNavigation() {
         }
     }
 
+    // A system share arrived (ACTION_SEND, cold start or onNewIntent): open
+    // the hand-off picker over home when a hub is paired. Without one the
+    // payload has no target and is dropped (native divergence: web would
+    // persist a transfer; the Android hand-off is process-lived).
+    val pendingShare by graph.pendingShare.collectAsState()
+    LaunchedEffect(pendingShare) {
+        if (pendingShare != null) {
+            if (graph.hubRegistry.activeHubUrl != null) {
+                // Already on the picker: navigating again would pop the live
+                // SHARE entry (popUpTo(HOME) runs first, so launchSingleTop
+                // compares against the post-pop top) and destroy its holding
+                // ViewModel while the old screen's own effect consumes the
+                // slot — both payloads lost. The open screen adopts the
+                // replacement in place instead.
+                if (navController.currentDestination?.route != Routes.SHARE) {
+                    navController.navigate(Routes.SHARE) {
+                        popUpTo(Routes.HOME)
+                        launchSingleTop = true
+                    }
+                }
+            } else {
+                graph.pendingShare.value = null
+            }
+        }
+    }
+
     // Last hub signed out (or roster wiped): nothing to show but pairing.
     // Any other active-hub change invalidates an open chat (old hub's session).
     LaunchedEffect(registryState.activeHubUrl) {
@@ -254,7 +306,7 @@ fun HapiNavigation() {
             }
         } else if (
             navController.currentDestination?.route in
-                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
+                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST, Routes.TERMINAL)
         ) {
             navController.popBackStack(Routes.HOME, inclusive = false)
         }
@@ -399,7 +451,7 @@ fun HapiNavigation() {
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
                 factory = viewModelFactory {
                     ChatViewModelHolder(
-                        hubGraph, sessionId, appContext,
+                        graph, hubGraph, sessionId, appContext,
                         graph.dictationProviderId, graph.dictationLanguage,
                     )
                 },
@@ -431,6 +483,9 @@ fun HapiNavigation() {
                 onNavigateToSession = { supersededId ->
                     // Resume/reopen handed the conversation to a different id:
                     // replace this chat entry with the superseding session.
+                    // An armed share seed follows the conversation (slice A;
+                    // web retargets its pending transfer the same way).
+                    graph.retargetPendingShareSeed(sessionId, supersededId)
                     navController.navigate(Routes.chat(supersededId)) {
                         popUpTo(Routes.CHAT) { inclusive = true }
                     }
@@ -455,6 +510,8 @@ fun HapiNavigation() {
                         formatStore = graph.sessionExportFormatStore,
                     )
                 },
+                onOpenTerminal = { navController.navigate(Routes.terminal(sessionId)) },
+                agentTerminal = holder.agentTerminal,
             )
         }
 
@@ -588,7 +645,7 @@ fun HapiNavigation() {
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
                     factory = viewModelFactory {
                         ChatViewModelHolder(
-                            hubGraph, sessionId, appContext,
+                            graph, hubGraph, sessionId, appContext,
                             graph.dictationProviderId, graph.dictationLanguage,
                         )
                     },
@@ -616,9 +673,33 @@ fun HapiNavigation() {
         }
 
         composable(
+            route = Routes.TERMINAL,
+            arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+        ) { entry ->
+            val sessionId = entry.arguments?.getString("sessionId") ?: return@composable
+            val hubGraph = activeHubGraph ?: return@composable
+            val appContext = LocalContext.current.applicationContext
+            val holder = viewModel<TerminalViewModelHolder>(
+                key = "terminal:${hubGraph.hubUrl}:$sessionId",
+                factory = viewModelFactory { TerminalViewModelHolder(hubGraph, sessionId, appContext) },
+            )
+            TerminalScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(
             route = Routes.NEW_SESSION,
             arguments = listOf(
                 navArgument("machineId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+                // Slice A: present when the form was opened from the share
+                // picker (Routes.newSessionWithShareSeed).
+                navArgument("share") {
                     type = NavType.StringType
                     nullable = true
                     defaultValue = null
@@ -627,6 +708,7 @@ fun HapiNavigation() {
         ) { entry ->
             val hubGraph = activeHubGraph ?: return@composable
             val machineId = entry.arguments?.getString("machineId")
+            val seeding = entry.arguments?.getString("share") != null
             val formContext = LocalContext.current
             val holder = viewModel<NewSessionViewModelHolder>(
                 key = "newSession:${hubGraph.hubUrl}",
@@ -642,8 +724,23 @@ fun HapiNavigation() {
             )
             NewSessionScreen(
                 viewModel = holder.viewModel,
-                onBack = { navController.popBackStack() },
+                onBack = {
+                    // Seeding abandoned: drop the payload; back lands on the
+                    // picker, which still holds its own copy (web: form
+                    // cancel deletes the transfer and returns to /share).
+                    if (seeding) graph.pendingNewSessionShare.value = null
+                    navController.popBackStack()
+                },
                 onCreated = { sessionId ->
+                    // Share seeding (slice A): bind the waiting payload to
+                    // the fresh session; the chat's ShareSeedConsumer seeds
+                    // it once the session is live.
+                    if (seeding) {
+                        graph.pendingNewSessionShare.value?.let { payload ->
+                            graph.pendingNewSessionShare.value = null
+                            graph.pendingShareSeed.value = ArmedShareSeed(sessionId, payload)
+                        }
+                    }
                     // Navigate-replace: the form pops so back from the new
                     // chat lands on the session list, not a stale form.
                     navController.navigate(Routes.chat(sessionId)) {
@@ -651,6 +748,29 @@ fun HapiNavigation() {
                         launchSingleTop = true
                     }
                 },
+            )
+        }
+
+        composable(Routes.SHARE) {
+            val hubGraph = activeHubGraph ?: return@composable
+            val shareContext = LocalContext.current.applicationContext
+            val holder = viewModel<ShareHandoffViewModelHolder>(
+                key = "share:${hubGraph.hubUrl}",
+                factory = viewModelFactory {
+                    ShareHandoffViewModelHolder(graph, hubGraph, shareContext)
+                },
+            )
+            ShareHandoffScreen(
+                viewModel = holder.viewModel,
+                // Picker back = discard (web /share back deletes the transfer).
+                onBack = { navController.popBackStack() },
+                onPick = { sessionId ->
+                    navController.navigate(Routes.chat(sessionId)) {
+                        popUpTo(Routes.HOME)
+                        launchSingleTop = true
+                    }
+                },
+                onNewSession = { navController.navigate(Routes.newSessionWithShareSeed()) },
             )
         }
 
@@ -767,6 +887,7 @@ private class SessionListViewModelHolder(
 
 /** Same shell for the per-session [ChatViewModel] (+ its dictation controller). */
 private class ChatViewModelHolder(
+    private val appGraph: AppGraph,
     hubGraph: HubGraph,
     sessionId: String,
     appContext: Context,
@@ -833,14 +954,45 @@ private class ChatViewModelHolder(
         ),
     )
 
+    /**
+     * Agent PTY panel (slice C), chat-embedded. Lives with the chat VM so the
+     * socket (and its unsubscribe-on-destroy) follows the chat screen's
+     * lifetime, not the panel's show/hide toggles. Lazy: it only connects
+     * once the panel is first opened (web connects at hidden mount).
+     */
+    val agentTerminal = AgentTerminalViewModel(
+        sessionId = sessionId,
+        sessionStore = hubGraph.sessionStore,
+        gatewayFactory = { listener: app.hapi.companion.feature.agentterminal.AgentTerminalEventListener ->
+            SocketIoAgentTerminalGateway(
+                baseUrl = hubGraph.hubUrl,
+                sessionId = sessionId,
+                tokenProvider = {
+                    withContext(Dispatchers.IO) {
+                        hubGraph.session.authenticator.currentJwt() ?: hubGraph.session.ensureFreshToken()
+                    }
+                },
+                listener = listener,
+                scope = scope,
+            )
+        },
+        scope = scope,
+    )
+
     override fun onCleared() {
         dictation.cancel()
+        // Leaving the chat for good (not rotation): an unconsumed share seed
+        // bound to this session is dropped (web drops on tab close).
+        appGraph.abandonPendingShareSeed(viewModel.sessionId)
         // Stop BEFORE discarding: the exit flush persists the final text +
         // tray references while the tray still holds them, then the discard
         // empties it (drafts v2 keeps the hub uploads — the persisted/carried
         // references own them; only the in-memory tray goes away).
         viewModel.stop()
         viewModel.discardAttachments()
+        // Best-effort unsubscribe + socket stop before the scope dies (the
+        // hub also idles the stream on socket-level disconnect).
+        agentTerminal.close()
         scope.cancel()
     }
 }
@@ -1005,6 +1157,44 @@ private class ScratchlistViewModelHolder(
     }
 }
 
+/** Shell for the interactive remote terminal (slice B). */
+private class TerminalViewModelHolder(
+    hubGraph: HubGraph,
+    sessionId: String,
+    appContext: Context,
+) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val viewModel = TerminalViewModel(
+        sessionId = sessionId,
+        sessionStore = hubGraph.sessionStore,
+        // Factory-injection solves VM↔gateway ordering: the gateway gets the
+        // event listener the VM constructs it with.
+        gatewayFactory = { listener: TerminalEventListener ->
+            SocketIoTerminalGateway(
+                baseUrl = hubGraph.hubUrl,
+                sessionId = sessionId,
+                tokenProvider = {
+                    // Store reads may block; the fallback exchange is network
+                    // I/O (same pattern as the settings holder).
+                    withContext(Dispatchers.IO) {
+                        hubGraph.session.authenticator.currentJwt() ?: hubGraph.session.ensureFreshToken()
+                    }
+                },
+                listener = listener,
+                scope = scope,
+            )
+        },
+        fontPrefs = SharedPrefsTerminalFontPrefs(appContext),
+        scope = scope,
+    )
+
+    override fun onCleared() {
+        viewModel.close()
+        scope.cancel()
+    }
+}
+
 /** Shell for the create form (B-M3d); draft persistence survives via prefs. */
 private class NewSessionViewModelHolder(
     hubGraph: HubGraph,
@@ -1029,6 +1219,26 @@ private class NewSessionViewModelHolder(
         codexImportStore = codexImportedSessionsStore,
         codexStrings = codexImportStrings,
         piStrings = piImportStrings,
+    )
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
+/** Same shell for the share hand-off picker (slice A); one per active hub. */
+private class ShareHandoffViewModelHolder(
+    appGraph: AppGraph,
+    hubGraph: HubGraph,
+    appContext: Context,
+) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val viewModel = ShareHandoffViewModel(
+        appGraph = appGraph,
+        hubGraph = hubGraph,
+        appContext = appContext,
+        scope = scope,
     )
 
     override fun onCleared() {

@@ -136,6 +136,20 @@ data class ChatHeaderUi(
     val name: String? = null,
     val active: Boolean,
     val thinking: Boolean,
+    /**
+     * `detail.metadata.capabilities.terminal ?? true` — gates the overflow-menu
+     * terminal entry. Detail-only: the list summary metadata carries no
+     * capabilities field, so an unloaded detail optimistically allows it (the
+     * terminal screen re-checks and shows unsupported state).
+     */
+    val terminalSupported: Boolean = true,
+    /**
+     * `detail.metadata.startingMode === 'pty'` (web `canViewAgentTerminal`) —
+     * gates the agent-terminal panel entry. Detail-only like the web's full
+     * session object: the list summary carries no startingMode, so an unloaded
+     * detail hides the entry (the panel itself re-checks and shows a reason).
+     */
+    val agentPty: Boolean = false,
 )
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
@@ -615,6 +629,14 @@ class ChatViewModel(
 
     private val composerText = MutableStateFlow("")
     private val sendInFlight = MutableStateFlow(false)
+    private val mutableDraftsRestored = MutableStateFlow(false)
+
+    /**
+     * Flips once the async [restoreDraft] in [start] has settled — share
+     * seeding waits on it so the seeded paragraph cannot be clobbered by a
+     * draft restore that lands after it.
+     */
+    val draftsRestored: StateFlow<Boolean> = mutableDraftsRestored.asStateFlow()
 
     /**
      * Pending scheduled-send pick (B-M16b, web SessionChat `pendingSchedule`):
@@ -1019,7 +1041,10 @@ class ChatViewModel(
                 // the hub on every chat open (web queued-state reconciliation).
                 runCatching { store.reconcileQueuedState() }
             }
-            launch(workerContext) { restoreDraft() }
+            launch(workerContext) {
+                restoreDraft()
+                mutableDraftsRestored.value = true
+            }
             withContext(workerContext) { loadDetail() }
             launch(workerContext) { observeAttachmentDrafts() }
         }
@@ -1326,6 +1351,18 @@ class ChatViewModel(
         if (text.isBlank()) return
         val current = composerText.value
         setComposerText(if (current.isBlank()) text else "${current.trimEnd()}\n$text")
+    }
+
+    /**
+     * Share-into-app seeding: append [text] as its own paragraph —
+     * the web ShareSeedConsumer joins the existing draft and the seed with a
+     * blank line, and an empty composer takes the seed verbatim. Blank seeds
+     * are no-ops.
+     */
+    fun appendComposerParagraph(text: String) {
+        if (text.isBlank()) return
+        val current = composerText.value
+        setComposerText(if (current.isBlank()) text else "${current.trimEnd()}\n\n$text")
     }
 
     /**
@@ -3059,6 +3096,8 @@ class ChatViewModel(
             name = detail?.metadata?.name ?: summary?.metadata?.name,
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
+            terminalSupported = detail?.metadata?.capabilities?.terminal ?: true,
+            agentPty = detail?.metadata?.startingMode == "pty",
         )
     }
 
