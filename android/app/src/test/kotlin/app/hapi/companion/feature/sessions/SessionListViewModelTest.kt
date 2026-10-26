@@ -156,7 +156,7 @@ private fun machine(id: String, host: String, displayName: String? = null): Mach
 private fun TestScope.buildViewModel(
     sessions: FakeSessionStore = FakeSessionStore(),
     machines: FakeMachineStore = FakeMachineStore(),
-    zone: ZoneId = ZoneId.of("UTC"),
+    zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -164,7 +164,7 @@ private fun TestScope.buildViewModel(
         lastSeenStore = LastSeenStore(backgroundScope),
         scope = backgroundScope,
         hubKey = "hub-test",
-        zone = zone,
+        zoneProvider = zoneProvider,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -500,7 +500,7 @@ class SessionListViewModelTest {
     @Test
     fun `activity days derive before date and machine filtering`() = runTest {
         // 2026-10-05T20:00Z = day 20731 in UTC but day 20732 in Shanghai.
-        val (viewModel, sessions, _) = buildViewModel(zone = ZoneId.of("Asia/Shanghai"))
+        val (viewModel, sessions, _) = buildViewModel(zoneProvider = { ZoneId.of("Asia/Shanghai") })
         sessions.set(
             summary("utc-day", updatedAt = dayMillis),
             summary("shanghai-next-day", updatedAt = 1_791_230_400_000L),
@@ -515,5 +515,55 @@ class SessionListViewModelTest {
         // …but the activity set still marks every pre-filter day (web
         // sessionActivityDates keeps full-activity marking while filtering).
         assertEquals(setOf(20_600L, day, day + 1), state.dateActivityEpochDays)
+    }
+
+    @Test
+    fun `timezone changes update the active date lens and activity marks without new sessions`() = runTest {
+        var zone = ZoneId.of("UTC")
+        val (viewModel, sessions, _) = buildViewModel(zoneProvider = { zone })
+        sessions.set(summary("boundary", updatedAt = dayMillis + 20 * 3_600_000L))
+        viewModel.setDateRange(day, day)
+        val initial = viewModel.uiState.first { it.dateRange != null }
+        assertEquals(listOf("boundary"), initial.rows.map { it.id })
+        assertEquals(setOf(day), initial.dateActivityEpochDays)
+        val calls = sessions.calls.value
+
+        zone = ZoneId.of("Asia/Shanghai")
+        viewModel.refreshTimeZone()
+        val changed = viewModel.uiState.first { it.dateActivityEpochDays == setOf(day + 1) }
+        assertTrue(changed.rows.isEmpty())
+        assertEquals(SessionDateRange(day, day), changed.dateRange)
+        assertEquals(calls, sessions.calls.value)
+    }
+
+    @Test
+    fun `reentering the same viewmodel refreshes the timezone with an unchanged snapshot`() = runTest {
+        var zone = ZoneId.of("UTC")
+        val (viewModel, sessions, _) = buildViewModel(zoneProvider = { zone })
+        sessions.set(summary("boundary", updatedAt = dayMillis + 20 * 3_600_000L))
+        viewModel.setDateRange(day, day)
+        viewModel.start()
+        viewModel.uiState.first { it.dateRange != null && it.rows.size == 1 }
+        viewModel.stop()
+
+        zone = ZoneId.of("Asia/Shanghai")
+        viewModel.start()
+        val changed = viewModel.uiState.first { it.dateActivityEpochDays == setOf(day + 1) }
+        assertTrue(changed.rows.isEmpty())
+        assertEquals(SessionDateRange(day, day), changed.dateRange)
+    }
+
+    @Test
+    fun `live session updates use the current timezone for both rows and activity marks`() = runTest {
+        var zone = ZoneId.of("UTC")
+        val (viewModel, sessions, _) = buildViewModel(zoneProvider = { zone })
+        sessions.set(summary("boundary", updatedAt = dayMillis + 20 * 3_600_000L))
+        viewModel.setDateRange(day, day)
+        viewModel.uiState.first { it.dateRange != null && it.rows.size == 1 }
+
+        zone = ZoneId.of("Asia/Shanghai")
+        sessions.set(summary("boundary", updatedAt = dayMillis + 20 * 3_600_000L + 1))
+        val changed = viewModel.uiState.first { it.dateActivityEpochDays == setOf(day + 1) }
+        assertTrue(changed.rows.isEmpty())
     }
 }

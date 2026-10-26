@@ -100,8 +100,8 @@ class SessionListViewModel(
     private val scope: CoroutineScope,
     /** Last-seen baseline scope, e.g. the hub origin. */
     private val hubKey: String = "default",
-    /** Clock zone for the date-range lens; injectable so JVM tests are host-timezone-independent. */
-    private val zone: ZoneId = ZoneId.systemDefault(),
+    /** Current clock zone; resolved for every date derivation, including after resume. */
+    private val zoneProvider: () -> ZoneId = ZoneId::systemDefault,
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val isRefreshing = MutableStateFlow(false)
@@ -110,6 +110,7 @@ class SessionListViewModel(
 
     /** Transient date-range lens; null = no date filtering (web: unpersisted `useState`). */
     private val dateRange = MutableStateFlow<SessionDateRange?>(null)
+    private val timeZone = MutableStateFlow(zoneProvider())
 
     private val _errors = MutableSharedFlow<SessionListError>(extraBufferCapacity = 8)
 
@@ -156,7 +157,7 @@ class SessionListViewModel(
         machineStore.machines,
         lastSeenStore.state,
         machineFilter,
-        combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange) { refreshing, offline, refreshedOnce, range ->
+        combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange, timeZone) { refreshing, offline, refreshedOnce, range, _ ->
             ChromeState(refreshing, offline, refreshedOnce, range)
         },
     ) { sessions, machines, lastSeen, filter, chrome ->
@@ -200,6 +201,7 @@ class SessionListViewModel(
 
     /** Pull-to-refresh / initial load. Coalesces concurrent calls. */
     fun refresh() {
+        refreshTimeZone()
         if (refreshJob?.isActive == true) return
         refreshJob = scope.launch {
             isRefreshing.value = true
@@ -234,6 +236,11 @@ class SessionListViewModel(
 
     fun setMachineFilter(machineId: String?) {
         machineFilter.value = machineId
+    }
+
+    /** Re-evaluate local dates on timezone broadcasts and foreground resume, even offline. */
+    fun refreshTimeZone() {
+        timeZone.value = zoneProvider()
     }
 
     /**
@@ -350,6 +357,8 @@ class SessionListViewModel(
         hasLoaded: Boolean,
         dateRange: SessionDateRange? = null,
     ): SessionListUiState {
+        // Use one current zone for both filtering and the calendar activity marks.
+        val zone = zoneProvider()
         val names = machines.mapNotNull { machine ->
             val metadata = machine.metadata ?: return@mapNotNull null
             val name = metadata.displayName?.trim()?.takeIf { it.isNotEmpty() }
