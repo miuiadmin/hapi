@@ -402,6 +402,14 @@ class ChatViewModel(
 
     private val composerText = MutableStateFlow("")
     private val sendInFlight = MutableStateFlow(false)
+    private val mutableDraftsRestored = MutableStateFlow(false)
+
+    /**
+     * Flips once the async [restoreDraft] in [start] has settled — share
+     * seeding waits on it so the seeded paragraph cannot be clobbered by a
+     * draft restore that lands after it.
+     */
+    val draftsRestored: StateFlow<Boolean> = mutableDraftsRestored.asStateFlow()
 
     /**
      * Composer attachment tray (B-M3f). The screen feeds prepared picks in
@@ -606,7 +614,10 @@ class ChatViewModel(
                 // the hub on every chat open (web queued-state reconciliation).
                 runCatching { store.reconcileQueuedState() }
             }
-            launch(workerContext) { restoreDraft() }
+            launch(workerContext) {
+                restoreDraft()
+                mutableDraftsRestored.value = true
+            }
             withContext(workerContext) { loadDetail() }
         }
 
@@ -858,6 +869,18 @@ class ChatViewModel(
         if (text.isBlank()) return
         val current = composerText.value
         setComposerText(if (current.isBlank()) text else "${current.trimEnd()}\n$text")
+    }
+
+    /**
+     * Share-into-app seeding (slice A): append [text] as its own paragraph —
+     * the web ShareSeedConsumer joins the existing draft and the seed with a
+     * blank line, and an empty composer takes the seed verbatim. Blank seeds
+     * are no-ops.
+     */
+    fun appendComposerParagraph(text: String) {
+        if (text.isBlank()) return
+        val current = composerText.value
+        setComposerText(if (current.isBlank()) text else "${current.trimEnd()}\n\n$text")
     }
 
     /**

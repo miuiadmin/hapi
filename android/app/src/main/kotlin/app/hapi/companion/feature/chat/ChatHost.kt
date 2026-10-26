@@ -29,6 +29,7 @@ import app.hapi.companion.R
 import app.hapi.companion.ui.components.FullTextAction
 import app.hapi.companion.feature.chat.blocks.*
 import app.hapi.companion.feature.chat.composer.DictationController
+import app.hapi.companion.feature.share.ShareSeedConsumer
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.theme.HapiTypography
@@ -74,6 +75,10 @@ internal fun ChatHost(
             }
         }
     }
+
+    // Share-into-app (slice A): seed the composer once this session is live
+    // and an armed share names it (see ShareSeedConsumer for the gating).
+    ShareSeedConsumer(viewModel, snackbar)
 
     fun pauseReading() {
         reading.followsTail = false

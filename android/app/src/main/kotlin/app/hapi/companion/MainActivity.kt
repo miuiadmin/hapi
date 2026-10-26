@@ -20,6 +20,7 @@ import app.hapi.companion.di.LocalAppGraph
 import app.hapi.companion.fcm.PushNotifications
 import app.hapi.companion.feature.settings.ThemeMode
 import app.hapi.companion.feature.settings.ThemeSettings
+import app.hapi.companion.feature.share.SystemShareReader
 import app.hapi.companion.push.PushBinding
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.pairing.BindLink
@@ -29,14 +30,16 @@ import kotlinx.coroutines.launch
 /**
  * Single-activity entry point (`launchMode="singleTask"`). Hosts the
  * Navigation Compose graph under the persisted theme choice
- * ([AppGraph.themePrefs], B-M4e) and feeds two intent routes — cold start and
+ * ([AppGraph.themePrefs], B-M4e) and feeds three intent routes — cold start and
  * [onNewIntent] — into [AppGraph] flows the navigation layer consumes:
  *
  *  - `hapicompanion://bind?hub=…&code=…` pairing deep links (parsing stays in
  *    [BindLink]) → [AppGraph.pendingBindLink];
  *  - the **internal** notification-tap route ([PushNotifications.ACTION_OPEN_SESSION]
  *    + session-id extra, B-M4a — explicit intent, deliberately no public URI)
- *    → [AppGraph.pendingOpenSessionId].
+ *    → [AppGraph.pendingOpenSessionId];
+ *  - system shares (ACTION_SEND / ACTION_SEND_MULTIPLE, slice A) parsed by
+ *    [SystemShareReader] → [AppGraph.pendingShare] → the share hand-off picker.
  */
 // AppCompatActivity (not ComponentActivity) since B-M5a: the appcompat base
 // class is what applies AppCompatDelegate.setApplicationLocales on API < 33
@@ -72,6 +75,7 @@ class MainActivity : AppCompatActivity() {
             // (or re-trigger a notification navigation).
             handleBindIntent(intent)
             handleOpenSessionIntent(intent)
+            handleShareIntent(intent)
         }
         setContent {
             // Follow-system default renders for the first frames while the
@@ -98,6 +102,7 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         handleBindIntent(intent)
         handleOpenSessionIntent(intent)
+        handleShareIntent(intent)
     }
 
     private fun handleBindIntent(intent: Intent?) {
@@ -117,6 +122,17 @@ class MainActivity : AppCompatActivity() {
         if (intent?.action != PushNotifications.ACTION_OPEN_SESSION) return
         val sessionId = intent.getStringExtra(PushNotifications.EXTRA_SESSION_ID) ?: return
         appGraph.pendingOpenSessionId.value = sessionId
+    }
+
+    /**
+     * System share (ACTION_SEND / ACTION_SEND_MULTIPLE, slice A): stash the
+     * parsed hand-off for `HapiNavigation`, which opens the picker when a
+     * hub is paired. Parsing is delegated to the share feature's reader so
+     * this stays a two-line shell like the routes above.
+     */
+    private fun handleShareIntent(intent: Intent?) {
+        val share = SystemShareReader.read(intent) ?: return
+        appGraph.pendingShare.value = share
     }
 
     /**

@@ -599,4 +599,22 @@
     <string name="chat_tool_resolved">已处理</string>
     <string name="chat_plan_implement">执行计划</string>
     <string name="chat_plan_continue">继续规划</string>
+    <string name="share_title">分享到 HAPI</string>
+    <string name="share_subtitle">选择要附加到的会话。</string>
+    <string name="share_recent_sessions">最近的活跃会话</string>
+    <string name="share_search_results">匹配的会话</string>
+    <string name="share_new_session">新建会话</string>
+    <string name="share_loading">正在加载分享内容…</string>
+    <string name="share_preview_text">分享文本</string>
+    <string name="share_preview_empty">(空分享)</string>
+    <string name="share_preview_files_one">1 个文件</string>
+    <string name="share_preview_files_many">%1$d 个文件</string>
+    <string name="share_no_active_sessions">没有活跃会话。请在下方选择“新建会话”。</string>
+    <string name="share_no_search_results">没有匹配的会话。</string>
+    <string name="share_search_for_more_one">还有 1 个活跃会话 — 搜索以查找。</string>
+    <string name="share_search_for_more_many">还有 %1$d 个活跃会话 — 搜索以查找。</string>
+    <string name="share_not_found_title">未找到分享内容</string>
+    <string name="share_not_found_body">分享内容已不可用,请从源应用重新分享。</string>
+    <string name="share_back_to_sessions">返回会话列表</string>
+    <string name="share_back">返回</string>
 </resources>

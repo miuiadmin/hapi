@@ -592,4 +592,22 @@
     <string name="sessions_time_filter_recent_activity">Недавняя активность</string>
     <string name="privacy_policy">Политика конфиденциальности</string>
     <string name="privacy_open_failed">Нет приложения, способного открыть эту ссылку.</string>
+    <string name="share_title">Поделиться в HAPI</string>
+    <string name="share_subtitle">Выберите сессию, к которой это прикрепить.</string>
+    <string name="share_recent_sessions">Недавние активные сессии</string>
+    <string name="share_search_results">Подходящие сессии</string>
+    <string name="share_new_session">Новая сессия</string>
+    <string name="share_loading">Загрузка общего содержимого…</string>
+    <string name="share_preview_text">Общий текст</string>
+    <string name="share_preview_empty">(пустой общий элемент)</string>
+    <string name="share_preview_files_one">1 файл</string>
+    <string name="share_preview_files_many">%1$d файлов</string>
+    <string name="share_no_active_sessions">Нет активных сессий. Выберите «Новая сессия» ниже.</string>
+    <string name="share_no_search_results">Нет сессий, соответствующих поиску.</string>
+    <string name="share_search_for_more_one">Ещё 1 активная сессия — воспользуйтесь поиском, чтобы найти её.</string>
+    <string name="share_search_for_more_many">Ещё %1$d активных сессий — воспользуйтесь поиском, чтобы найти их.</string>
+    <string name="share_not_found_title">Общее содержимое не найдено</string>
+    <string name="share_not_found_body">Общее содержимое больше недоступно. Поделитесь им ещё раз из исходного приложения.</string>
+    <string name="share_back_to_sessions">Назад к сессиям</string>
+    <string name="share_back">Назад</string>
 </resources>
