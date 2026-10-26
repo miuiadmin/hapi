@@ -434,6 +434,9 @@ private class FakeSessionStore : SessionDetailStore {
     override suspend fun archiveSession(sessionId: String) = Unit
     override suspend fun renameSession(sessionId: String, name: String) = Unit
     override suspend fun deleteSession(sessionId: String) = Unit
+    override suspend fun updateSessionSummary(sessionId: String, text: String) = Unit
+    override suspend fun suggestSessionTitle(sessionId: String): String = "Suggested title"
+    override suspend fun titleSuggestionAvailable(): Boolean = false
     override suspend fun reopenSession(sessionId: String): app.hapi.protocol.wire.ReopenSessionResponse =
         app.hapi.protocol.wire.ReopenSessionResponse(sessionId = sessionId, resumed = true)
 }
