@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -158,7 +159,7 @@ fun RunnerSkewBanner(chrome: RunnerSkewChrome, modifier: Modifier = Modifier) {
 
         state.minimized -> Surface(
             color = SkewAmber.copy(alpha = 0.10f),
-            contentColor = SkewAmberText,
+            contentColor = skewAmberText(),
             border = BorderStroke(2.dp, SkewAmber),
             shape = MaterialTheme.shapes.small,
             modifier = modifier
@@ -181,7 +182,7 @@ fun RunnerSkewBanner(chrome: RunnerSkewChrome, modifier: Modifier = Modifier) {
 
         else -> Surface(
             color = SkewAmber.copy(alpha = 0.10f),
-            contentColor = SkewAmberText,
+            contentColor = skewAmberText(),
             border = BorderStroke(2.dp, SkewAmber),
             shape = MaterialTheme.shapes.medium,
             modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
@@ -226,7 +227,7 @@ fun RunnerSkewBanner(chrome: RunnerSkewChrome, modifier: Modifier = Modifier) {
 private fun RunnerSkewRowCard(row: RunnerSkewRowUi, onRestart: () -> Unit) {
     Surface(
         color = SkewAmber.copy(alpha = 0.08f),
-        contentColor = SkewAmberText,
+        contentColor = skewAmberText(),
         shape = MaterialTheme.shapes.small,
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
     ) {
@@ -249,7 +250,7 @@ private fun RunnerSkewRowCard(row: RunnerSkewRowUi, onRestart: () -> Unit) {
                         else R.string.runner_skew_upgrade_cli_first,
                     ),
                     style = MaterialTheme.typography.labelSmall,
-                    color = SkewAmberHint,
+                    color = skewAmberHint(),
                 )
             }
             TextButton(onClick = onRestart, enabled = row.canRestart && !row.restarting) {
@@ -271,8 +272,17 @@ private fun RunnerSkewRowCard(row: RunnerSkewRowUi, onRestart: () -> Unit) {
 /** Tailwind amber-500 border, the web banner's `border-amber-500`. */
 private val SkewAmber = Color(0xFFF59E0B)
 
-/** amber-950 text on the banner card (dark-amber keeps contrast on tinted amber). */
-private val SkewAmberText = Color(0xFF451A03)
+/**
+ * Text on the banner card. Light themes keep the web's amber-950; dark
+ * themes switch to amber-100 — the 10%-alpha amber tint sits on whatever
+ * the app background is, so contrast is derived from that background
+ * (works for every theme incl. OLED) rather than the system dark flag.
+ */
+@Composable
+private fun skewAmberText(): Color =
+    if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFFEF3C7) else Color(0xFF451A03)
 
-/** amber-800 hint text. */
-private val SkewAmberHint = Color(0xFF92400E)
+/** Hint text: amber-800 light / amber-200 dark, same derivation as above. */
+@Composable
+private fun skewAmberHint(): Color =
+    if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFFDE68A) else Color(0xFF92400E)
