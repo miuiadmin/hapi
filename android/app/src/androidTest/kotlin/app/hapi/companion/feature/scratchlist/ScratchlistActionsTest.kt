@@ -3,7 +3,6 @@ package app.hapi.companion.feature.scratchlist
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -59,8 +58,9 @@ class ScratchlistActionsTest {
     @Test fun shorteningAnUnsavedLongEntryStillRequiresDeletionConfirmation() {
         val text = "x".repeat(101)
         val store = showEntry(text)
-        compose.onNodeWithText(text).performClick()
-        compose.onNode(hasSetTextAction()).performTextReplacement("short")
+        // The merged card includes row buttons; tap the text's own bounds.
+        compose.onNodeWithText(text, useUnmergedTree = true).performClick()
+        compose.onNodeWithTag("scratchlist-editor-text").assertIsDisplayed().performTextReplacement("short")
         compose.onNodeWithText("Delete").performClick()
         compose.onNodeWithText("Delete this scratchlist entry? This cannot be undone.").assertIsDisplayed()
         compose.runOnIdle { assertEquals(emptyList<String>(), store.deletes) }
@@ -73,8 +73,8 @@ class ScratchlistActionsTest {
 
     @Test fun anUnsavedLongDraftAlsoRequiresDeletionConfirmation() {
         val store = showEntry("short")
-        compose.onNodeWithText("short").performClick()
-        compose.onNode(hasSetTextAction()).performTextReplacement("x".repeat(101))
+        compose.onNodeWithText("short", useUnmergedTree = true).performClick()
+        compose.onNodeWithTag("scratchlist-editor-text").assertIsDisplayed().performTextReplacement("x".repeat(101))
         compose.onNodeWithText("Delete").performClick()
         compose.onNodeWithText("Delete this scratchlist entry? This cannot be undone.").assertIsDisplayed()
         compose.runOnIdle { assertEquals(emptyList<String>(), store.deletes) }

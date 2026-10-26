@@ -523,7 +523,7 @@ private fun ScratchlistEditorSheet(
                 placeholder = { Text(stringResource(R.string.scratchlist_placeholder)) },
                 minLines = 3,
                 maxLines = 8,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("scratchlist-editor-text"),
             )
             Spacer(modifier = Modifier.height(10.dp))
             Row(
