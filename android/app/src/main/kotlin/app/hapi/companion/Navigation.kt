@@ -30,6 +30,8 @@ import app.hapi.companion.di.viewModelFactory
 import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
+import app.hapi.companion.feature.agentterminal.AgentTerminalViewModel
+import app.hapi.companion.feature.agentterminal.SocketIoAgentTerminalGateway
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
@@ -380,6 +382,7 @@ fun HapiNavigation() {
                 },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
                 onOpenTerminal = { navController.navigate(Routes.terminal(sessionId)) },
+                agentTerminal = holder.agentTerminal,
             )
         }
 
@@ -727,6 +730,31 @@ private class ChatViewModelHolder(
         scope = scope,
     )
 
+    /**
+     * Agent PTY panel (slice C), chat-embedded. Lives with the chat VM so the
+     * socket (and its unsubscribe-on-destroy) follows the chat screen's
+     * lifetime, not the panel's show/hide toggles. Lazy: it only connects
+     * once the panel is first opened (web connects at hidden mount).
+     */
+    val agentTerminal = AgentTerminalViewModel(
+        sessionId = sessionId,
+        sessionStore = hubGraph.sessionStore,
+        gatewayFactory = { listener: app.hapi.companion.feature.agentterminal.AgentTerminalEventListener ->
+            SocketIoAgentTerminalGateway(
+                baseUrl = hubGraph.hubUrl,
+                sessionId = sessionId,
+                tokenProvider = {
+                    withContext(Dispatchers.IO) {
+                        hubGraph.session.authenticator.currentJwt() ?: hubGraph.session.ensureFreshToken()
+                    }
+                },
+                listener = listener,
+                scope = scope,
+            )
+        },
+        scope = scope,
+    )
+
     override fun onCleared() {
         dictation.cancel()
         // Leaving the chat for good (not rotation): an unconsumed share seed
@@ -736,6 +764,9 @@ private class ChatViewModelHolder(
         // delete (B-M3f; attachments are not part of drafts v1).
         viewModel.discardAttachments()
         viewModel.stop()
+        // Best-effort unsubscribe + socket stop before the scope dies (the
+        // hub also idles the stream on socket-level disconnect).
+        agentTerminal.close()
         scope.cancel()
     }
 }

@@ -50,6 +50,8 @@ internal fun ChatHost(
     onOpenFile: (String, Int?) -> Unit,
     onOpenScratchlist: (() -> Unit)?,
     onOpenTerminal: (() -> Unit)?,
+    /** Agent PTY panel VM (slice C); null in tests/previews without a hub graph. */
+    agentTerminal: app.hapi.companion.feature.agentterminal.AgentTerminalViewModel? = null,
 ) {
     val navigation = rememberNavController()
     val entry by navigation.currentBackStackEntryAsState()
@@ -139,6 +141,7 @@ internal fun ChatHost(
                         dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
                         onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
                         onOpenTerminal = onOpenTerminal?.let { open -> { pauseReading(); open() } },
+                        agentTerminal = agentTerminal,
                         transcriptList = transcriptList, readingState = reading,
                     )
                 }
