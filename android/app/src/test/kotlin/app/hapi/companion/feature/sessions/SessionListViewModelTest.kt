@@ -105,19 +105,26 @@ private fun summary(
     summaryText: String? = null,
     path: String = "/repo/app",
     worktree: WorktreeMetadata? = null,
+    flavor: String = "claude",
+    agentSessionId: String? = null,
+    pinned: Boolean? = null,
+    hasConversationContent: Boolean = true,
 ): SessionSummary = SessionSummary(
     id = id,
     active = active,
     thinking = false,
     activeAt = 0,
     updatedAt = updatedAt,
+    hasConversationContent = hasConversationContent,
+    pinned = pinned,
     metadata = SessionSummaryMetadata(
         name = name,
         path = path,
         machineId = machineId,
         summary = summaryText?.let { SummaryText(it) },
-        flavor = "claude",
+        flavor = flavor,
         worktree = worktree,
+        agentSessionId = agentSessionId,
     ),
     metadataVersion = 0,
     agentStateVersion = 0,
@@ -565,5 +572,139 @@ class SessionListViewModelTest {
         sessions.set(summary("boundary", updatedAt = dayMillis + 20 * 3_600_000L + 1))
         val changed = viewModel.uiState.first { it.dateActivityEpochDays == setOf(day + 1) }
         assertTrue(changed.rows.isEmpty())
+    }
+
+    @Test
+    fun `date search and machine filters compose and clear independently`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("home-today", machineId = "m1", updatedAt = dayMillis + 100, name = "Home today"),
+            summary("parser-today", machineId = "m1", updatedAt = dayMillis + 200, name = "Parser today"),
+            summary("home-yesterday", machineId = "m1", updatedAt = dayMillis - 1, name = "Home yesterday"),
+            summary("home-other-machine", machineId = "m2", updatedAt = dayMillis + 300, name = "Home elsewhere"),
+        )
+        viewModel.uiState.first { it.rows.size == 4 }
+        viewModel.setDateRange(day, day)
+        viewModel.setSearchQuery("home")
+        viewModel.setMachineFilter("m1")
+        val scoped = viewModel.uiState.first {
+            it.dateRange != null && it.searchQuery == "home" && it.activeMachineFilter == "m1"
+        }
+        assertEquals(listOf("home-today"), scoped.rows.map { it.id })
+        assertEquals(setOf(day - 1, day), scoped.dateActivityEpochDays)
+        assertEquals(mapOf("m1" to 3, "m2" to 1), scoped.machineFilters.associate { it.id to it.sessionCount })
+
+        viewModel.clearDateRange()
+        val withoutDate = viewModel.uiState.first { it.dateRange == null }
+        assertEquals(setOf("home-today", "home-yesterday"), withoutDate.rows.map { it.id }.toSet())
+
+        viewModel.setDateRange(day, day)
+        viewModel.setSearchQuery("")
+        val withoutSearch = viewModel.uiState.first { it.dateRange != null && !it.isSearching }
+        assertEquals(setOf("home-today", "parser-today"), withoutSearch.rows.map { it.id }.toSet())
+
+        viewModel.setMachineFilter(null)
+        val withoutMachine = viewModel.uiState.first { it.activeMachineFilter == null }
+        assertEquals(setOf("home-today", "parser-today", "home-other-machine"), withoutMachine.rows.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `date scoped search preserves global and project pin sections`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("ordinary", updatedAt = dayMillis + 300, name = "home"),
+            summary("project", updatedAt = dayMillis + 200, name = "Home automation").copy(pinned = true),
+            summary("global", updatedAt = dayMillis + 100, name = "homelab").copy(globalPinned = true, pinned = true),
+            summary("outside-date", updatedAt = dayMillis - 1, name = "home").copy(globalPinned = true),
+        )
+        viewModel.setDateRange(day, day)
+        viewModel.setSearchQuery("home")
+        val state = viewModel.uiState.first { it.dateRange != null && it.isSearching }
+        assertEquals(listOf("global", "project", "ordinary"), state.rows.map { it.id })
+        assertEquals(setOf(day - 1, day), state.dateActivityEpochDays)
+    }
+
+    // --------------------------------------------- search / dedup / stubs --
+
+    @Test
+    fun `search filters rows, reports no results, and clears back to the full list`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("s1", updatedAt = 900, name = "Home Assistant setup"),
+            summary("s2", updatedAt = 800, name = "Refactor parser"),
+        )
+        viewModel.uiState.first { it.rows.size == 2 }
+
+        viewModel.setSearchQuery("home ass")
+        var state = viewModel.uiState.first { it.isSearching }
+        assertEquals(listOf("s1"), state.rows.map { it.id })
+
+        viewModel.setSearchQuery("zzz")
+        state = viewModel.uiState.first { it.isSearching && it.rows.isEmpty() }
+
+        viewModel.setSearchQuery("")
+        state = viewModel.uiState.first { !it.isSearching }
+        assertEquals(2, state.rows.size)
+    }
+
+    @Test
+    fun `search ranks a title boundary hit above a newer path-only match`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("path-hit", updatedAt = 900, name = "Unrelated", path = "/repo/home-lab"),
+            summary("title-hit", updatedAt = 100, name = "Home Assistant setup"),
+        )
+        viewModel.setSearchQuery("home")
+        val state = viewModel.uiState.first { it.isSearching && it.rows.size == 2 }
+        // Recency alone would order [path-hit, title-hit]; the title weight +
+        // boundary bonus must outrank it.
+        assertEquals(listOf("title-hit", "path-hit"), state.rows.map { it.id })
+    }
+
+    @Test
+    fun `duplicate agent-session views collapse to the newest view`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stale", updatedAt = 500, agentSessionId = "agent-1", name = "Old view"),
+            summary("fresh", updatedAt = 900, agentSessionId = "agent-1", name = "New view"),
+            summary("other", updatedAt = 700, agentSessionId = "agent-2", name = "Other"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(listOf("fresh", "other"), state.rows.map { it.id })
+    }
+
+    @Test
+    fun `the active view wins dedup even when older`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("old-active", updatedAt = 100, active = true, agentSessionId = "agent-1", name = "Old"),
+            summary("new-idle", updatedAt = 900, agentSessionId = "agent-1", name = "New"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 1 }
+        assertEquals("old-active", state.rows.single().id)
+    }
+
+    @Test
+    fun `same agent id across flavors stays two rows`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("claude-view", updatedAt = 900, flavor = "claude", agentSessionId = "shared-1", name = "Claude view"),
+            summary("codex-view", updatedAt = 800, flavor = "codex", agentSessionId = "shared-1", name = "Codex view"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(setOf("claude-view", "codex-view"), state.rows.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `fresh empty-session stubs hide until they gain a title signal`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stub", hasConversationContent = false),
+            summary("named-stub", hasConversationContent = false, name = "Named"),
+            summary("content", hasConversationContent = true),
+            summary("agent-stub", hasConversationContent = false, agentSessionId = "agent-9"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 3 }
+        assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
     }
 }
