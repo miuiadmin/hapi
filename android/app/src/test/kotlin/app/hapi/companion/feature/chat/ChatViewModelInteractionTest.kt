@@ -269,6 +269,16 @@ private class RecordingChatApi : ChatSessionApi {
         return cursorChatStoreResult ?: error("cursor chat-store probe not scripted")
     }
 
+    override suspend fun forkConversation(
+        sessionId: String,
+        messageLocalId: String?,
+    ): app.hapi.protocol.wire.ForkConversationResponse = error("Unexpected fork")
+
+    override suspend fun rewindConversation(
+        sessionId: String,
+        messageLocalId: String,
+    ): app.hapi.protocol.wire.RewindConversationResponse = error("Unexpected rewind")
+
     override suspend fun approvePermission(sessionId: String, requestId: String, options: ApprovePermissionRequest) {
         approveCalls.value = approveCalls.value + (requestId to options)
         approveFailure?.let { throw it }
