@@ -592,4 +592,22 @@
     <string name="sessions_time_filter_recent_activity">Recent activity</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
+    <string name="share_title">Share to HAPI</string>
+    <string name="share_subtitle">Pick a session to attach this to.</string>
+    <string name="share_recent_sessions">Recent active sessions</string>
+    <string name="share_search_results">Matching sessions</string>
+    <string name="share_new_session">New session</string>
+    <string name="share_loading">Loading shared content…</string>
+    <string name="share_preview_text">Shared text</string>
+    <string name="share_preview_empty">(empty share)</string>
+    <string name="share_preview_files_one">1 file</string>
+    <string name="share_preview_files_many">%1$d files</string>
+    <string name="share_no_active_sessions">No active sessions. Pick \"New session\" below.</string>
+    <string name="share_no_search_results">No sessions match your search.</string>
+    <string name="share_search_for_more_one">1 more active session — search to find it.</string>
+    <string name="share_search_for_more_many">%1$d more active sessions — search to find them.</string>
+    <string name="share_not_found_title">Shared content not found</string>
+    <string name="share_not_found_body">The shared content is no longer available. Share it again from the source app.</string>
+    <string name="share_back_to_sessions">Back to sessions</string>
+    <string name="share_back">Back</string>
 </resources>

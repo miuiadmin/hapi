@@ -66,6 +66,23 @@
                     android:host="bind"
                     android:scheme="hapicompanion" />
             </intent-filter>
+            <!-- System share target: ACTION_SEND (text and single
+                 files) + ACTION_SEND_MULTIPLE. The web PWA share_target's
+                 accept list ends in a wildcard MIME entry, so the filters
+                 match any type and reject in the picker rather than hiding
+                 from the sheet. MainActivity is singleTask/single-instance
+                 by design: a share while the app is open reuses the live
+                 task instead of stacking a second home. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
         <!-- Composer attachments (B-M3f): scratch Uri for TakePicture camera
