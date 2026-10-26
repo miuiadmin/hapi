@@ -362,6 +362,19 @@ class HapiApiTest {
     }
 
     @Test
+    fun `restart machine runner posts an empty json body and decodes the message`() {
+        server.enqueue(ok("""{"message":"stop signal sent to supervised runner"}"""))
+
+        val response = runBlocking { session.api.restartMachineRunner("m9") }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/machines/m9/restart-runner", request.path)
+        assertEquals("{}", request.body.readUtf8())
+        assertEquals("stop signal sent to supervised runner", response.message)
+    }
+
+    @Test
     fun `machine codex models decode and rpc_target_missing surfaces as coded ApiError`() {
         server.enqueue(
             ok(

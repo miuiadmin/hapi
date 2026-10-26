@@ -40,6 +40,8 @@ fun HomeScreen(
     onOpenSettings: (() -> Unit)? = null,
     /** Global connection banner state; null hides the banner (slice C-①). */
     connectionChrome: ConnectionChrome? = null,
+    /** Runner version-skew banner state; null hides the banner (slice C-②). */
+    runnerSkewChrome: RunnerSkewChrome? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     var searchExpanded by rememberSaveable(activeHubUrl) { mutableStateOf(state.searchQuery.isNotEmpty()) }
@@ -70,6 +72,7 @@ fun HomeScreen(
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             connectionChrome?.let { GlobalConnectionBanner(it) }
+            runnerSkewChrome?.let { RunnerSkewBanner(it) }
             SessionListScreen(
                 viewModel = viewModel,
                 onOpenSession = onOpenSession,

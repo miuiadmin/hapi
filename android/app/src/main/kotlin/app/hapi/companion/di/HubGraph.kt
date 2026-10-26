@@ -3,6 +3,7 @@ package app.hapi.companion.di
 import android.content.Context
 import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.home.ConnectionChrome
+import app.hapi.companion.feature.home.RunnerSkewChrome
 import app.hapi.data.HubSession
 import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.CredentialStore
@@ -120,6 +121,17 @@ class HubGraph(
     val connectionChrome: ConnectionChrome =
         ConnectionChrome(
             globalFailureNotice = sseEngine.connectionFailureNotice(SseSubscriptionKey.Global),
+            scope = scope,
+        )
+
+    /**
+     * Runner version-skew banner state (slice C-②): machines missing required
+     * capabilities + the manual restart exit.
+     */
+    val runnerSkewChrome: RunnerSkewChrome =
+        RunnerSkewChrome(
+            machines = machineStore.machines,
+            restartRunner = { machineId -> session.api.restartMachineRunner(machineId) },
             scope = scope,
         )
 
