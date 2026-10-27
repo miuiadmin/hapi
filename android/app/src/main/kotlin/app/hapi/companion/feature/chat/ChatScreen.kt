@@ -72,6 +72,7 @@ import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.DictationEvent
 import app.hapi.companion.feature.chat.composer.DictationState
 import app.hapi.companion.feature.chat.composer.QueuedMessagesBar
+import app.hapi.companion.feature.chat.share.ShareTurnDialog
 import app.hapi.companion.feature.files.FolderGlyph
 import app.hapi.companion.feature.sessions.DeleteSessionDialog
 import app.hapi.companion.feature.sessions.RenameSessionDialog
@@ -128,6 +129,7 @@ internal fun ChatScreen(
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
     var messageInfoBlock by remember { mutableStateOf<VisibleChatBlock?>(null) }
+    var shareTurnBlock by remember { mutableStateOf<VisibleChatBlock?>(null) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -391,6 +393,7 @@ internal fun ChatScreen(
                             listState = transcriptList, readingState = readingState,
                             messageAggregates = state.messageAggregates,
                             onShowMessageInfo = { messageInfoBlock = it },
+                            onShareTurn = { shareTurnBlock = it },
                         )
                     }
                     if (!state.loadFailed) state.warning?.let { warning ->
@@ -457,6 +460,14 @@ internal fun ChatScreen(
                 onDismiss = { messageInfoBlock = null },
             )
         }
+    }
+    shareTurnBlock?.let { shareBlock ->
+        ShareTurnDialog(
+            target = shareBlock,
+            blocks = state.blocks,
+            info = state.shareTurnInfo,
+            onDismiss = { shareTurnBlock = null },
+        )
     }
 }
 
