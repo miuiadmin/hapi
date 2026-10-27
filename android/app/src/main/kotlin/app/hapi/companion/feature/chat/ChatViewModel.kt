@@ -50,6 +50,7 @@ import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.SessionStatusData
+import app.hapi.protocol.chat.TeamRosterModel
 import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
@@ -60,6 +61,7 @@ import app.hapi.protocol.chat.buildSessionStatusData
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.chat.reduceChatBlocks
+import app.hapi.protocol.chat.toTeamRosterModel
 import app.hapi.protocol.window.MessageStatus
 import app.hapi.protocol.window.MessageWindowState
 import app.hapi.protocol.window.MessageViewMode
@@ -84,6 +86,7 @@ import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.ScratchlistAttachment
 import app.hapi.protocol.wire.ScratchlistEntry
 import app.hapi.protocol.wire.arrayOrNull
+import app.hapi.protocol.wire.decodeTeamState
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
 import java.util.UUID
@@ -208,6 +211,12 @@ data class ChatUiState(
      * panel keeps seeing the raw evidence it needs.
      */
     val sessionStatus: SessionStatusData? = null,
+    /**
+     * Subagent team roster carried by the session record, or null while the
+     * session has no team (or the payload is undecodable). Replaced
+     * wholesale whenever the hub broadcasts a newer team state.
+     */
+    val teamRoster: TeamRosterModel? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -2966,6 +2975,11 @@ class ChatViewModel(
             messages = normalized,
             backgroundTaskCount = inputs.detail?.backgroundTaskCount,
         )
+        // Team state is hub-owned session data, not derived from messages:
+        // decode the stored element, hide the panel on any decode failure.
+        val teamRoster = inputs.detail?.teamState
+            ?.let(::decodeTeamState)
+            ?.toTeamRosterModel()
         val visibleBlocks = buildVisibleChatBlocks(
             reduced.blocks,
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
@@ -3013,6 +3027,7 @@ class ChatViewModel(
             inactiveCanResume = buildInactiveCanResume(inputs, visibleMessages.size),
             historyGate = buildHistoryGate(inputs, visibleBlocks),
             sessionStatus = sessionStatus,
+            teamRoster = teamRoster,
         )
     }
 
