@@ -45,9 +45,12 @@ import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.blocks.HistoryActionsRow
 import app.hapi.data.store.ChatHistoryPagingState
+import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.protocol.chat.CliOutputBlock
 import app.hapi.protocol.chat.UserTextBlock
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.buildMessageMetadataLabels
+import app.hapi.protocol.chat.messageMetadataForBlock
 import app.hapi.protocol.chat.threadKey
 import app.hapi.protocol.chat.visibleBlockRole
 import kotlinx.coroutines.Dispatchers
@@ -75,6 +78,8 @@ internal fun ChatTranscript(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(state.sessionId),
+    messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
+    onShowMessageInfo: (VisibleChatBlock) -> Unit = {},
 ) {
     val rowState = rememberSaveableStateHolder()
     val stateKeys = remember(state.sessionId) { mutableSetOf<String>() }
@@ -260,10 +265,23 @@ internal fun ChatTranscript(
                         // pass through here.
                         val historyRole = visibleBlockRole(row.block)
                         Column(
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalAlignment =
                                 if (historyRole == "user") Alignment.End else Alignment.Start,
                         ) {
                             ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
+                            // Usage info (model / tokens / cost / timing) under
+                            // blocks that carry it; aggregated groups expose the
+                            // summed view through the same popup.
+                            val metadata = remember(row.block, messageAggregates) {
+                                messageMetadataForBlock(row.block, messageAggregates)
+                            }
+                            val labels = remember(metadata) {
+                                metadata?.let(::buildMessageMetadataLabels).orEmpty()
+                            }
+                            if (labels.isNotEmpty()) {
+                                MessageInfoEntry(onClick = { onShowMessageInfo(row.block) })
+                            }
                             // Only user-role rows consume the local id
                             // (fork-at-message / rewind native points);
                             // assistant gating keys off the block key alone.

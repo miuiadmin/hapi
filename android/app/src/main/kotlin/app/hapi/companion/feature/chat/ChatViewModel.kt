@@ -21,6 +21,7 @@ import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock
+import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.CursorReopenGate
 import app.hapi.companion.feature.sessions.formatReopenError
@@ -56,6 +57,7 @@ import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.aggregateResponseGroups
 import app.hapi.protocol.chat.buildConversationOutline
 import app.hapi.protocol.chat.buildVisibleChatBlocks
 import app.hapi.protocol.chat.findLatestCompletedBoundaryKey
@@ -225,6 +227,8 @@ data class ChatUiState(
      * transcript rows are keyed by, so it stays scroll-addressable.
      */
     val conversationOutline: List<ConversationOutlineItem> = emptyList(),
+    /** Summed usage metadata per response group, keyed by first-block id. */
+    val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
 )
 
 /** Composer bar state (M3a). */
@@ -3022,6 +3026,7 @@ class ChatViewModel(
             flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
             blocks = transcriptProjection.project(visibleBlocks),
+            messageAggregates = aggregateResponseGroups(visibleBlocks),
             processSteps = visibleBlocks.filterIsInstance<ToolCallBlock>().filter(::opensToolProcess)
                 .associate { it.id to it.children.size },
             permissionOverrides = inputs.permissionOverrides,

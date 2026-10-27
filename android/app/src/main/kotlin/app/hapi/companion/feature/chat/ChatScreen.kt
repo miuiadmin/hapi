@@ -88,6 +88,9 @@ import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ConversationOutlineItem
+import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.buildMessageMetadataLabels
+import app.hapi.protocol.chat.messageMetadataForBlock
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -168,6 +171,7 @@ internal fun ChatScreen(
     // fresh app entry like the web's per-mount useState.
     var agentTerminalVisible by rememberSaveable { mutableStateOf(false) }
     var outlineSheetOpen by remember { mutableStateOf(false) }
+    var messageInfoBlock by remember { mutableStateOf<VisibleChatBlock?>(null) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -559,6 +563,8 @@ internal fun ChatScreen(
                             onRetryHistory = viewModel::loadOlder,
                             onJumpToLatest = viewModel::jumpToLatest,
                             listState = transcriptList, readingState = readingState,
+                            messageAggregates = state.messageAggregates,
+                            onShowMessageInfo = { messageInfoBlock = it },
                         )
                     }
                     if (!state.loadFailed) state.warning?.let { warning ->
@@ -658,6 +664,19 @@ internal fun ChatScreen(
             onConfirm = viewModel::confirmRewindFallback,
             onDismiss = viewModel::dismissRewindFallback,
         )
+    }
+    messageInfoBlock?.let { infoBlock ->
+        val labels = remember(infoBlock, state.messageAggregates) {
+            messageMetadataForBlock(infoBlock, state.messageAggregates)
+                ?.let(::buildMessageMetadataLabels)
+                .orEmpty()
+        }
+        if (labels.isNotEmpty()) {
+            MessageMetadataDialog(
+                labels = labels,
+                onDismiss = { messageInfoBlock = null },
+            )
+        }
     }
 }
 
