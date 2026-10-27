@@ -229,6 +229,8 @@ data class ChatUiState(
     val conversationOutline: List<ConversationOutlineItem> = emptyList(),
     /** Summed usage metadata per response group, keyed by first-block id. */
     val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
+    /** Context-remaining readout for the composer strip; null until usage arrives. */
+    val contextUsage: ContextUsageIndicator? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -3020,10 +3022,19 @@ class ChatViewModel(
         // syncGeneration 0 = no tail sync has even begun (the moment between
         // open and syncTail) — still "loading", never a flash of empty state.
         val syncSettled = !window.isSyncingTail && window.syncGeneration > 0
+        val flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor
+        // Composer-strip context readout rides the session-level usage
+        // projection; the window falls back to a flavor/model estimate when
+        // the usage signal omits one.
+        val contextUsage = ContextUsage.indicator(
+            usage = reduced.latestUsage,
+            sessionModel = inputs.detail?.model,
+            flavor = flavor,
+        )
         return ChatUiState(
             sessionId = sessionId,
             header = buildHeader(inputs),
-            flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
+            flavor = flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
             blocks = transcriptProjection.project(visibleBlocks),
             messageAggregates = aggregateResponseGroups(visibleBlocks),
@@ -3046,6 +3057,7 @@ class ChatViewModel(
             sessionStatus = sessionStatus,
             teamRoster = teamRoster,
             conversationOutline = outlineItems,
+            contextUsage = contextUsage,
         )
     }
 
