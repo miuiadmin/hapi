@@ -922,6 +922,8 @@
     <string name="pi_import_failed_partial">%1$d 个 session 导入失败：%2$s</string>
     <string name="pi_import_error_diverged">本机 Pi 分支在上次导入后发生变化，请先检查会话再继续。</string>
     <string name="pi_import_error_active">请先停止正在运行的 Hapi Pi session，再导入新增的原生历史。</string>
+
+    <!-- Global connection + runner version-skew banners (Home chrome). -->
     <string name="connection_reconnecting">正在重新连接…</string>
     <string name="connection_syncing">同步中…</string>
     <string name="connection_reason_heartbeat_timeout">心跳超时</string>

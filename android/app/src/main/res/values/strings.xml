@@ -916,6 +916,8 @@
     <string name="pi_import_failed_partial">%1$d sessions failed: %2$s</string>
     <string name="pi_import_error_diverged">The local Pi branch changed after the previous import. Review the session before continuing.</string>
     <string name="pi_import_error_active">Stop the active Hapi Pi session before importing newer native history.</string>
+
+    <!-- Global connection + runner version-skew banners (Home chrome). -->
     <string name="connection_reconnecting">Reconnecting…</string>
     <string name="connection_syncing">Syncing…</string>
     <string name="connection_reason_heartbeat_timeout">heartbeat timeout</string>

@@ -919,6 +919,8 @@
     <string name="pi_import_failed_partial">Не удалось импортировать сессий: %1$d. Причина: %2$s</string>
     <string name="pi_import_error_diverged">Локальная ветка Pi изменилась после предыдущего импорта. Проверьте сессию перед продолжением.</string>
     <string name="pi_import_error_active">Остановите активную сессию Hapi Pi перед импортом более новой нативной истории.</string>
+
+    <!-- Global connection + runner version-skew banners (Home chrome). -->
     <string name="connection_reconnecting">Переподключение…</string>
     <string name="connection_syncing">Синхронизация…</string>
     <string name="connection_reason_heartbeat_timeout">таймаут heartbeat</string>
