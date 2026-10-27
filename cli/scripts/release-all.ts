@@ -6,6 +6,9 @@
  * 3. Publish platform packages first (so lockfile can resolve them)
  * 4. Verify all platform packages are live on npm
  * 5. Publish main package
+ *
+ * Re-running with the same version is safe: packages already on npm are skipped,
+ * so a release that failed midway can be resumed.
  * 6. bun install --lockfile-only --os=* --cpu=* (to lock all platform packages)
  * 7. Git commit + tag + push
  */
@@ -42,6 +45,51 @@ function run(cmd: string, cwd = projectRoot): void {
     }
 }
 
+const platforms = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64'];
+const mainPackage = '@twsxtd/hapi';
+
+function isPublished(name: string, expectedVersion: string): boolean {
+    try {
+        const published = execSync(`npm view ${name}@${expectedVersion} version`, {
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        return published === expectedVersion;
+    } catch {
+        return false;
+    }
+}
+
+function assertNpmLogin(): string {
+    try {
+        return execSync('npm whoami', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+        console.error('❌ npm token is missing or invalid. Run `npm login` (or set a new token) first.');
+        process.exit(1);
+    }
+}
+
+// npm answers an unauthorized publish to a scoped package with a misleading 404,
+// so verify write access to every package before publishing anything.
+function assertWriteAccess(packages: string[]): void {
+    let access: Record<string, string>;
+    try {
+        access = JSON.parse(execSync('npm access list packages --json', {
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }));
+    } catch {
+        console.error('❌ Could not list npm package access. Check that your npm token is valid.');
+        process.exit(1);
+    }
+    const missing = packages.filter(name => access[name] !== 'read-write');
+    if (missing.length > 0) {
+        console.error(`❌ npm token lacks write access to: ${missing.join(', ')}`);
+        console.error('   Use a token with read-write permission on all @twsxtd/hapi* packages.');
+        process.exit(1);
+    }
+}
+
 async function waitForPlatformPackages(platforms: string[], expectedVersion: string): Promise<void> {
     const timeoutMs = 10 * 60 * 1000;
     const intervalMs = 15_000;
@@ -50,14 +98,9 @@ async function waitForPlatformPackages(platforms: string[], expectedVersion: str
 
     while (pending.size > 0) {
         for (const name of [...pending]) {
-            try {
-                const published = execSync(`npm view ${name} version`, { encoding: 'utf-8' }).trim();
-                if (published === expectedVersion) {
-                    console.log(`   ✓ ${name}@${expectedVersion} is live on npm`);
-                    pending.delete(name);
-                }
-            } catch {
-                // Not published yet, keep waiting
+            if (isPublished(name, expectedVersion)) {
+                console.log(`   ✓ ${name}@${expectedVersion} is live on npm`);
+                pending.delete(name);
             }
         }
         if (pending.size === 0) {
@@ -105,15 +148,12 @@ async function main(version: string): Promise<void> {
 
     // Pre-check: Ensure npm is logged in (skip in dry-run mode)
     if (!dryRun) {
-        try {
-            const npmUser = execSync('npm whoami', { encoding: 'utf-8' }).trim();
-            console.log(`   ✓ Logged in to npm as: ${npmUser}`);
-        } catch {
-            console.error('❌ Not logged in to npm. Run `npm login` first.');
-            process.exit(1);
-        }
+        const npmUser = assertNpmLogin();
+        console.log(`   ✓ Logged in to npm as: ${npmUser}`);
+        assertWriteAccess([mainPackage, ...platforms.map(platform => `${mainPackage}-${platform}`)]);
+        console.log('   ✓ npm token can publish all packages');
     } else {
-        console.log('   ✓ Skipping npm login check (dry-run)');
+        console.log('   ✓ Skipping npm login and access checks (dry-run)');
     }
 
     // Step 1: Update all release versions before building or publishing.
@@ -132,8 +172,12 @@ async function main(version: string): Promise<void> {
     // Step 3: Prepare and publish platform packages
     console.log('\n📤 Step 3: Publishing platform packages...');
     run('bun run prepare-npm-packages');
-    const platforms = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64'];
     for (const platform of platforms) {
+        const name = `${mainPackage}-${platform}`;
+        if (!dryRun && isPublished(name, version)) {
+            console.log(`   ✓ ${name}@${version} already published, skipping`);
+            continue;
+        }
         const npmDir = join(projectRoot, 'npm', platform);
         run(`npm publish --access public${dryRun ? ' --dry-run' : ''}`, npmDir);
     }
@@ -150,8 +194,16 @@ async function main(version: string): Promise<void> {
 
     // Step 5: Publish main package
     console.log('\n📤 Step 5: Publishing main package...');
-    const mainNpmDir = join(projectRoot, 'npm', 'main');
-    run(`npm publish --access public${dryRun ? ' --dry-run' : ''}`, mainNpmDir);
+    if (!dryRun && isPublished(mainPackage, version)) {
+        console.log(`   ✓ ${mainPackage}@${version} already published, skipping`);
+    } else {
+        if (!dryRun) {
+            // The token may have expired while building or waiting for platform packages.
+            assertNpmLogin();
+        }
+        const mainNpmDir = join(projectRoot, 'npm', 'main');
+        run(`npm publish --access public${dryRun ? ' --dry-run' : ''}`, mainNpmDir);
+    }
 
     // --publish-npm 模式到此结束
     if (publishNpm) {
