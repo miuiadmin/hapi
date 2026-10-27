@@ -849,57 +849,6 @@ private fun MentionDropdown(
     }
 }
 
-// -------------------------------------------------------- mention dropdown --
-
-/**
- * `@` mention rows above the input (B-M16a, web `Autocomplete.tsx` twin):
- * session chips (`@<title>` + `Session · <id8> [· active]`) ahead of file hits
- * (`@<fileName>` + path); tap swaps the active word for the insert text.
- */
-@Composable
-private fun MentionDropdown(
-    suggestions: List<MentionSuggestion>,
-    onSelect: (MentionSuggestion) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val mentionSuggestionsDescription = stringResource(R.string.chat_mention_suggestions)
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shape = RoundedCornerShape(12.dp),
-        tonalElevation = 2.dp,
-        modifier = modifier
-            .fillMaxWidth()
-            .semantics { contentDescription = mentionSuggestionsDescription },
-    ) {
-        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-            items(suggestions, key = { it.key }) { suggestion ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(onClick = { onSelect(suggestion) })
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Text(
-                        text = suggestion.label,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = suggestion.description,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.hapi.hint,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
-            }
-        }
-    }
-}
-
 // ------------------------------------------------------------- dictation --
 
 /** Elapsed-time recording chip with a cancel affordance (discards the take). */

@@ -197,8 +197,6 @@ class ScheduleSendTest {
         )
     }
 
-    }
-
     @Test
     fun `formatScheduledTime uses the 24-hour cycle and locale date order for ru and zh`() {
         val now = Instant.parse("2026-06-01T00:00:00Z").toEpochMilli()

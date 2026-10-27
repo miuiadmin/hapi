@@ -686,19 +686,6 @@ class ChatViewModel(
 
     /** The composer clock-button state; collected by [ChatScreen]. */
     val pendingSchedule: StateFlow<PendingSchedule?> = mutablePendingSchedule.asStateFlow()
-    private var pendingScheduleExpiryJob: Job? = null
-
-    /**
-     * Pending scheduled-send pick (B-M16b, web SessionChat `pendingSchedule`):
-     * null = immediate send; a pick makes the next Send carry
-     * `scheduledAt` resolved at the send instant. Owned here so the queued
-     * bar's Edit can re-arm it ([editQueuedMessage]) and the expiry auto-clear
-     * below survives UI recomposition.
-     */
-    private val mutablePendingSchedule = MutableStateFlow<PendingSchedule?>(null)
-
-    /** The composer clock-button state; collected by [ChatScreen]. */
-    val pendingSchedule: StateFlow<PendingSchedule?> = mutablePendingSchedule.asStateFlow()
     /**
      * Expiry auto-clear job for the pending schedule pick. Atomic: set/clear
      * race across the main thread (clock pick / send) and the edit-restore
