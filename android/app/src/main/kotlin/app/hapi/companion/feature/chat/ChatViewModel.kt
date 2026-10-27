@@ -48,6 +48,7 @@ import app.hapi.protocol.catalog.Flavors
 import app.hapi.protocol.catalog.ModelCatalog
 import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
+import app.hapi.protocol.chat.ConversationOutlineItem
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.SessionStatusData
 import app.hapi.protocol.chat.TeamRosterModel
@@ -55,6 +56,7 @@ import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.buildConversationOutline
 import app.hapi.protocol.chat.buildVisibleChatBlocks
 import app.hapi.protocol.chat.findLatestCompletedBoundaryKey
 import app.hapi.protocol.chat.buildSessionStatusData
@@ -217,6 +219,12 @@ data class ChatUiState(
      * wholesale whenever the hub broadcasts a newer team state.
      */
     val teamRoster: TeamRosterModel? = null,
+    /**
+     * Jump-to-message outline of the loaded window: one entry per locatable
+     * user message, stored order. Each entry targets the same block id the
+     * transcript rows are keyed by, so it stays scroll-addressable.
+     */
+    val conversationOutline: List<ConversationOutlineItem> = emptyList(),
 )
 
 /** Composer bar state (M3a). */
@@ -2980,6 +2988,10 @@ class ChatViewModel(
         val teamRoster = inputs.detail?.teamState
             ?.let(::decodeTeamState)
             ?.toTeamRosterModel()
+        // Outline entries come from the same reduced tree the transcript
+        // renders; user blocks survive projection untouched, so every
+        // entry's target block keeps its row and position in the list.
+        val outlineItems = buildConversationOutline(reduced.blocks)
         val visibleBlocks = buildVisibleChatBlocks(
             reduced.blocks,
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
@@ -3028,6 +3040,7 @@ class ChatViewModel(
             historyGate = buildHistoryGate(inputs, visibleBlocks),
             sessionStatus = sessionStatus,
             teamRoster = teamRoster,
+            conversationOutline = outlineItems,
         )
     }
 

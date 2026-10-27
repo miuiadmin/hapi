@@ -87,6 +87,7 @@ import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.chat.ConversationOutlineItem
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -166,6 +167,7 @@ internal fun ChatScreen(
     // Web terminalVisible (SessionChat state): survives rotation, resets on a
     // fresh app entry like the web's per-mount useState.
     var agentTerminalVisible by rememberSaveable { mutableStateOf(false) }
+    var outlineSheetOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -358,6 +360,23 @@ internal fun ChatScreen(
         )
     }
 
+    /**
+     * Reveal an outline entry's message in the transcript. Detaching from
+     * the tail comes first — the follow-tail correction would otherwise
+     * snap the list straight back to the newest message. The list keeps a
+     * fixed header row at index 0, hence the +1; each outline entry targets
+     * a block id the transcript rows are keyed by, so the lookup cannot
+     * drift between the panel and the list.
+     */
+    val onOutlineSelect: (ConversationOutlineItem) -> Unit = { item ->
+        outlineSheetOpen = false
+        readingState.followsTail = false
+        val rowIndex = state.blocks.indexOfFirst { it.stableId == item.targetBlockId }
+        if (rowIndex >= 0) {
+            scope.launch { transcriptList.scrollToItem(rowIndex + 1) }
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
@@ -392,6 +411,7 @@ internal fun ChatScreen(
                         } else {
                             null
                         },
+                        onOpenOutline = { outlineSheetOpen = true },
                         onRename = { renameDialogOpen = true },
                         onExport = if (sessionExport != null) {
                             { exportDialogOpen = true }
@@ -576,6 +596,16 @@ internal fun ChatScreen(
             onSetServiceTier = viewModel::setServiceTier,
         )
     }
+    if (outlineSheetOpen) {
+        OutlinePanel(
+            items = state.conversationOutline,
+            hasMore = state.hasMore,
+            loadingMore = state.isLoadingOlder || state.isSyncingTail,
+            onLoadMore = viewModel::loadOlder,
+            onSelect = onOutlineSelect,
+            onDismiss = { outlineSheetOpen = false },
+        )
+    }
     if (renameDialogOpen) {
         RenameSessionDialog(
             initialName = state.header.name ?: state.header.title,
@@ -654,6 +684,8 @@ private fun SessionOverflowMenu(
     onOpenTerminal: (() -> Unit)? = null,
     /** null ⇒ agent-terminal toggle row hidden (non-PTY/inactive session / tests). */
     onToggleAgentTerminal: (() -> Unit)? = null,
+    /** null ⇒ outline row hidden (tests / previews). */
+    onOpenOutline: (() -> Unit)? = null,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
@@ -675,6 +707,15 @@ private fun SessionOverflowMenu(
                 onClick = {
                     open = false
                     onToggleAgentTerminal()
+                },
+            )
+        }
+        if (onOpenOutline != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.outline_open)) },
+                onClick = {
+                    open = false
+                    onOpenOutline()
                 },
             )
         }
