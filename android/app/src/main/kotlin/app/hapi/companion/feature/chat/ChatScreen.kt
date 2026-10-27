@@ -80,7 +80,7 @@ import app.hapi.companion.feature.chat.composer.DictationState
 import app.hapi.companion.feature.chat.composer.QueuedMessagesBar
 import app.hapi.companion.feature.chat.composer.parkDraftEligible
 import app.hapi.companion.feature.chat.share.ShareTurnDialog
-import app.hapi.companion.feature.files.FolderGlyph
+import app.hapi.companion.ui.components.FolderGlyph
 import app.hapi.companion.feature.sessions.DeleteSessionDialog
 import app.hapi.companion.feature.sessions.CursorReopenGateReason
 import app.hapi.companion.feature.sessions.RenameSessionDialog
