@@ -40,7 +40,7 @@ data class SessionSummary(
      * Optional in the zod schema — absent/old-hub decodes to null, which
      * mention eligibility treats as "no content" (`=== true` gate).
      */
-    val hasConversationContent: Boolean? = null,
+    val hasConversationContent: Boolean = false,
 )
 
 /** `SessionSummaryMetadata` — list-sized metadata projection. */

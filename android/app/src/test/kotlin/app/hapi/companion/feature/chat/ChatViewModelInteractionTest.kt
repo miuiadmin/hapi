@@ -1938,7 +1938,7 @@ class ChatViewModelInteractionTest {
     private fun peerSummary(
         id: String,
         name: String? = "Peer chat",
-        hasContent: Boolean? = true,
+        hasContent: Boolean = true,
     ): SessionSummary = SessionSummary(
         id = id,
         active = false,

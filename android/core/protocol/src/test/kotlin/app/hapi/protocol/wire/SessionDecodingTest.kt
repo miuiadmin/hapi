@@ -6,6 +6,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 /**
  * Full-payload decoding for [Session], [SessionSummary] and [MessagesResponse]
@@ -209,10 +210,11 @@ class SessionDecodingTest {
     }
 
     @Test
-    fun `hasConversationContent decodes present-true and stays null when absent`() {
-        // The mention eligibility gate reads `=== true` — an old hub omitting
-        // the field must decode to null (treated as not mentionable), while a
-        // present flag rides through verbatim.
+    fun `hasConversationContent decodes present flags and defaults to false when absent or null`() {
+        // The mention eligibility gate reads the flag as `== true` — an old
+        // hub omitting the field (or sending JSON null, coerced by
+        // [HapiJson]) decodes to the `false` default (not mentionable),
+        // while a present flag rides through verbatim.
         val present = HapiJson.decodeFromString(
             SessionSummary.serializer(),
             """{"id":"s-1","active":false,"hasConversationContent":true}""",
@@ -223,7 +225,13 @@ class SessionDecodingTest {
             SessionSummary.serializer(),
             """{"id":"s-1","active":false}""",
         )
-        assertNull(absent.hasConversationContent)
+        assertFalse(absent.hasConversationContent)
+
+        val nullFlag = HapiJson.decodeFromString(
+            SessionSummary.serializer(),
+            """{"id":"s-1","active":false,"hasConversationContent":null}""",
+        )
+        assertFalse(nullFlag.hasConversationContent)
 
         val falseFlag = HapiJson.decodeFromString(
             SessionSummary.serializer(),

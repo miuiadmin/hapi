@@ -125,6 +125,12 @@ class MentionsTest {
         assertNull(Mentions.mentionQueryOf("/cmd"))
         assertNull(Mentions.mentionQueryOf("@a.b"))
         assertNull(Mentions.mentionQueryOf("@a b c"))
+        // Web trigger prefixes ['@', '/', '$']: a boundary-legal '/' or '$'
+        // word stops the backward scan, so the tail word routes to the
+        // slash/skill domain instead of joining a multi-word mention query.
+        assertNull(Mentions.mentionQueryOf("@ref /tmp"))
+        assertNull(Mentions.mentionQueryOf("@ref \$cost"))
+        assertEquals("/tmp", Mentions.findActiveWord("@ref /tmp", 8, 8)?.word)
     }
 
     @Test
@@ -308,7 +314,7 @@ class MentionsTest {
         id: String,
         active: Boolean = false,
         updatedAt: Long = 0,
-        hasConversationContent: Boolean? = true,
+        hasConversationContent: Boolean = true,
         metadata: SessionSummaryMetadata? = null,
     ): SessionSummary = SessionSummary(
         id = id,
@@ -455,11 +461,13 @@ class MentionsTest {
     }
 
     @Test
-    fun `matchSessionsForMention treats absent content flag as not mentionable`() {
-        // Old hubs omit the field; null must behave like false (=== true gate).
+    fun `matchSessionsForMention treats a false content flag as not mentionable`() {
+        // Non-nullable on this lineage: old hubs omitting the field decode to
+        // `false` (see SessionDecodingTest), which must behave as not
+        // mentionable (=== true gate).
         val legacy = makeSession(
-            id = "legacy-null",
-            hasConversationContent = null,
+            id = "legacy-false",
+            hasConversationContent = false,
             metadata = SessionSummaryMetadata(path = "/work/legacy", name = "Legacy row"),
         )
         assertEquals(emptyList(), Mentions.matchSessionsForMention(listOf(legacy), "legacy"))

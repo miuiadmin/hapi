@@ -64,7 +64,7 @@ object SessionListFilters {
      * id — the auto-created "New session" stub the sidebar hides.
      */
     fun isSidebarEmptySessionStub(session: SessionSummary): Boolean {
-        if (session.active || session.hasConversationContent == true) return false
+        if (session.active || session.hasConversationContent) return false
         val meta = session.metadata ?: return true
         if (!meta.agentSessionId.isNullOrBlank()) return false
         if (hasSessionTitleSignal(meta)) return false

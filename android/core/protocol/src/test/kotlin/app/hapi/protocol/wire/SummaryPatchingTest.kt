@@ -172,7 +172,7 @@ class SummaryPatchingTest {
         assertTrue(summary.active)
         assertTrue(summary.thinking)
         // Carried through for the sidebar's empty-stub hiding (web parity).
-        assertTrue(summary.hasConversationContent == true)
+        assertTrue(summary.hasConversationContent)
         assertEquals(false, summary.pinned)
         assertEquals(false, summary.globalPinned)
         assertEquals(3, summary.metadataVersion)
