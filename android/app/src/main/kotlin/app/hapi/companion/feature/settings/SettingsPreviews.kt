@@ -19,7 +19,8 @@ import java.time.LocalDate
  * Compile-checked previews doubling as visual regressions for the B-M4e
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
  * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
- * non-owner gating) and the General subpage it drills into.
+ * non-owner gating), the General subpage it drills into, and the Display
+ * subpage (session-list prefs, metadata switches, font tiers).
  */
 
 private fun bucket(
@@ -166,6 +167,31 @@ private fun SettingsHubNonOwnerPreview() {
             SettingsHubContent(
                 entries = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = false)),
                 onOpenCategory = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings display", showBackground = true, heightDp = 1700)
+@Composable
+private fun SettingsDisplayPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsDisplayContent(
+                settings = DisplaySettings(
+                    sessionPreviewLimit = 12,
+                    showActiveSessionsOnly = true,
+                    sessionListStatusMode = SessionListStatusMode.DETAILED,
+                    headerMetadata = SessionHeaderMetadata(createdAt = true),
+                    fontScale = AppFontScale.L,
+                ),
+                onSetSessionPreviewLimit = {},
+                onSetShowActiveSessionsOnly = {},
+                onSetPinInProgressSessions = {},
+                onSetSessionListStatusMode = {},
+                onSetFontScale = {},
+                onSetHeaderMetadata = {},
                 onBack = {},
             )
         }
