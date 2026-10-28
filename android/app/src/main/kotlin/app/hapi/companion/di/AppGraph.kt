@@ -23,7 +23,10 @@ import app.hapi.companion.feature.sessions.DataStoreSessionExportFormatStore
 import app.hapi.companion.feature.sessions.SessionExportFormatStore
 import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.CodeWrapPrefs
+import app.hapi.companion.feature.settings.DataStoreDisplayPrefs
+import app.hapi.companion.feature.settings.DisplayPrefs
 import app.hapi.companion.feature.settings.LanguagePrefs
+import app.hapi.companion.feature.settings.SessionHeaderMetadata
 import app.hapi.companion.feature.settings.ThemePrefs
 import app.hapi.companion.feature.share.ArmedShareSeed
 import app.hapi.companion.feature.share.ShareHandoff
@@ -187,6 +190,23 @@ class AppGraph(context: Context) {
     /** Export-dialog format choice (web localStorage twin; sessions feature reads it). */
     val sessionExportFormatStore: SessionExportFormatStore =
         DataStoreSessionExportFormatStore(appContext.hapiDataStore)
+
+    /**
+     * Display preferences (P2 Display subpage): font scale + header metadata
+     * + session-list preferences, defaults mirroring the web `/settings/display`
+     * hooks. Same app-wide store as theme/language (web localStorage twin).
+     */
+    val displayPrefs: DisplayPrefs = DataStoreDisplayPrefs(appContext.hapiDataStore)
+
+    /**
+     * Eagerly-cached metadata gates for the chat headers (appLanguage
+     * precedent): each session's ChatViewModel combines this flow so its
+     * header subtitle re-renders when a Display switch flips, without each
+     * nav entry scoping its own read.
+     */
+    val sessionHeaderMetadata: StateFlow<SessionHeaderMetadata> = displayPrefs.settings
+        .map { it.headerMetadata }
+        .stateIn(scope, SharingStarted.Eagerly, SessionHeaderMetadata())
 
     /**
      * Eagerly-cached language for non-composable surfaces (B-M5a): FCM

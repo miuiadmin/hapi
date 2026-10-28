@@ -14,11 +14,13 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.lifecycleScope
 import app.hapi.companion.di.AppGraph
 import app.hapi.companion.di.LocalAppGraph
 import app.hapi.companion.fcm.PushNotifications
+import app.hapi.companion.feature.settings.DisplaySettings
 import app.hapi.companion.feature.settings.ThemeMode
 import app.hapi.companion.feature.settings.ThemeSettings
 import app.hapi.companion.feature.share.SystemShareReader
@@ -26,6 +28,8 @@ import app.hapi.companion.push.PushBinding
 import app.hapi.companion.ui.markdown.CodeWrapState
 import app.hapi.companion.ui.markdown.LocalCodeWrap
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.HapiTypeScale
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.protocol.pairing.BindLink
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -86,6 +90,13 @@ class MainActivity : AppCompatActivity() {
             val theme by appGraph.themePrefs.settings.collectAsState(initial = ThemeSettings())
             val codeWrap by appGraph.codeWrapPrefs.wrap.collectAsState(initial = false)
             val scope = rememberCoroutineScope()
+            // P2 Display font scale: unscaled (1f) for the first frames, then
+            // the persisted tier. The factor composes with the platform's sp
+            // scaling inside the chat typography tiers.
+            val display by appGraph.displayPrefs.settings.collectAsState(initial = DisplaySettings())
+            val typeStyles = remember(display.fontScale) {
+                HapiTypeScale.stylesFor(display.fontScale.factor)
+            }
             HapiTheme(
                 darkTheme = when (theme.mode) {
                     ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -102,6 +113,7 @@ class MainActivity : AppCompatActivity() {
                     LocalCodeWrap provides CodeWrapState(codeWrap) { enabled ->
                         scope.launch { appGraph.codeWrapPrefs.setWrap(enabled) }
                     },
+                    LocalHapiTypeStyles provides typeStyles,
                 ) {
                     HapiNavigation()
                 }

@@ -89,6 +89,7 @@ import app.hapi.companion.ui.components.HapiInboxGlyph
 import app.hapi.companion.ui.components.HapiNoteGlyph
 import app.hapi.companion.ui.components.HapiPaperclipGlyph
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
@@ -307,7 +308,7 @@ fun ChatComposer(
                     BasicTextField(
                         value = state.text,
                         onValueChange = onTextChange,
-                        textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
+                        textStyle = LocalHapiTypeStyles.current.body.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),

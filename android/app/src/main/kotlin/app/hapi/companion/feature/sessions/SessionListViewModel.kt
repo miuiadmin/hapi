@@ -13,6 +13,7 @@ import java.time.ZoneId
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -123,6 +125,7 @@ private data class SelectionSnapshot(
     val query: String,
     val selected: String?,
     val overrides: Map<String, Boolean>,
+    val activeSessionsOnly: Boolean = false,
 )
 
 /**
@@ -164,6 +167,12 @@ class SessionListViewModel(
     },
     /** Wall clock for the probe staleness window; injectable for JVM tests. */
     private val now: () -> Long = System::currentTimeMillis,
+    /**
+     * P2 display "active sessions only" lens (app-wide `DisplayPrefs` flow;
+     * default false = full list, so tests and previews construct without
+     * display prefs).
+     */
+    private val showActiveSessionsOnly: Flow<Boolean> = flowOf(false),
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
@@ -341,8 +350,9 @@ class SessionListViewModel(
         combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
             Triple(sessions, machines, lastSeen)
         },
-        combine(machineFilter, searchQuery, selectedSessionId, collapseOverrides) { filter, query, selected, overrides ->
-            SelectionSnapshot(filter, query, selected, overrides)
+        combine(machineFilter, searchQuery, selectedSessionId, collapseOverrides, showActiveSessionsOnly) { filter, query, selected, overrides, activeOnly ->
+            SelectionSnapshot(filter, query, selected, overrides, activeOnly)
+
         },
         // Chrome quad carries the transient date-range lens alongside the
         // refresh/offline flags (batch13 C: web reads the unpersisted
@@ -367,6 +377,7 @@ class SessionListViewModel(
             searchQuery = selection.query,
             selectedSessionId = selection.selected,
             collapseOverrides = selection.overrides,
+            showActiveSessionsOnly = selection.activeSessionsOnly,
             isRefreshing = chrome.refreshing,
             isOffline = chrome.offline,
             hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
@@ -646,6 +657,7 @@ class SessionListViewModel(
         searchQuery: String,
         selectedSessionId: String?,
         collapseOverrides: Map<String, Boolean> = emptyMap(),
+        showActiveSessionsOnly: Boolean = false,
         isRefreshing: Boolean,
         isOffline: Boolean,
         hasLoaded: Boolean,
@@ -695,18 +707,36 @@ class SessionListViewModel(
         val activeFilter = filter
             ?.takeIf { filters.size >= 2 && filters.any { chip -> chip.id == it } }
 
+        // Choose the canonical agent-session views before applying filters,
+        // so excluding a winner cannot resurrect an older duplicate. Restore
+        // pinned/active order after dedup regroups the rows.
+        val preparedEarly = sortSessionSummaries(
+            SessionListFilters.prepareSidebarSessions(sessions, selectedSessionId),
+        )
+
+        // "Active sessions only" lens (web `filterActiveSessionsOnly`): hide
+        // inactive sessions, but never the one the operator currently has
+        // open — toggling the lens must not yank the selection out from
+        // under them. Order-preserving, so the sort above survives.
+        val corpus = if (showActiveSessionsOnly) {
+            preparedEarly.filter { it.active || it.id == selectedSessionId }
+        } else {
+            preparedEarly
+        }
+
         // Web pipeline order (`SessionList.tsx`): the activity-day set and the
-        // date-range lens both apply BEFORE the machine scope, and both derive
-        // from the unfiltered list — the picker keeps marking days that the
-        // date range or the machine filter would hide, and the machine chips
-        // keep their full counts.
-        val activityDays = sessions
+        // date-range lens both apply BEFORE the machine scope — the picker
+        // keeps marking days that the date range or the machine filter would
+        // hide, and the machine chips keep their full counts. Calendar hints
+        // derive from the lensed corpus (web derives `sessionActivityDates`
+        // from `allSessions` — post active-only, pre the other lenses).
+        val activityDays = corpus
             .map { SessionDateRangeFilter.activityEpochDay(it.updatedAt, timeZone.value) }
             .toSet()
         val timeScoped = if (dateRange == null) {
-            sessions
+            corpus
         } else {
-            sessions.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, timeZone.value) }
+            corpus.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, timeZone.value) }
         }
 
         val visible = if (activeFilter == null) {

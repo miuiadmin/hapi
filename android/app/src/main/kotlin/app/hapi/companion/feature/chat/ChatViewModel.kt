@@ -26,10 +26,11 @@ import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.CursorReopenGate
 import app.hapi.companion.feature.sessions.formatReopenError
+import app.hapi.companion.feature.newsession.CursorModels
 import app.hapi.companion.feature.sessions.inactiveSessionCanResume
 import app.hapi.companion.feature.sessions.isCursorChatStoreProbeApplicable
 import app.hapi.companion.feature.sessions.resolveCursorReopenGate
-import app.hapi.companion.feature.newsession.CursorModels
+import app.hapi.companion.feature.settings.SessionHeaderMetadata
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.sse.SseEngine
@@ -104,6 +105,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -139,7 +141,7 @@ import kotlinx.serialization.json.put
 /** Chat top-bar model: title cascade + status + meta line. */
 data class ChatHeaderUi(
     val title: String,
-    /** "Flavor · machine · worktree/path" meta line; null when nothing known. */
+    /** "Flavor · machine · worktree/path" meta line; segments hide per the Display metadata switches; null when nothing known. */
     val subtitle: String?,
     /** Raw `metadata.flavor` — drives the brand icon next to the meta line. */
     val flavor: String? = null,
@@ -162,6 +164,25 @@ data class ChatHeaderUi(
      */
     val agentPty: Boolean = false,
 )
+
+/**
+ * Chat-header subtitle (`flavor · machine · worktree`) gated by the P2
+ * Display "session metadata" switches — the web `SessionHeader` renders its
+ * `agent`, `machine`, and `worktree` items behind the same preferences
+ * (`SessionHeader.tsx`): a hidden segment drops out and the rest reflow,
+ * and nothing left means no subtitle at all. Web's session-list rows never
+ * consume these switches, so neither does the Android list.
+ */
+internal fun gatedHeaderSubtitle(
+    flavorLabel: String?,
+    machineLabel: String?,
+    worktreeLabel: String?,
+    metadata: SessionHeaderMetadata,
+): String? = listOfNotNull(
+    flavorLabel?.takeIf { metadata.agent },
+    machineLabel?.takeIf { metadata.machine },
+    worktreeLabel?.takeIf { metadata.worktree },
+).takeIf { it.isNotEmpty() }?.joinToString(" · ")
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
 enum class PermissionRowOverride {
@@ -513,6 +534,12 @@ class ChatViewModel(
      * pipeline); null ⇒ promote-to-composer skips attachment rehydration.
      */
     private val scratchlistPickPreparer: ScratchlistPromoter.PickPreparer? = null,
+    /**
+     * P2 display gates for the header subtitle segments (app-wide
+     * `DisplayPrefs` flow; default = all visible, so tests and previews
+     * construct without display prefs).
+     */
+    private val headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val pipelineIntervalMs: Long = PIPELINE_INTERVAL_MS,
     private val draftSaveDebounceMs: Long = DRAFT_SAVE_DEBOUNCE_MS,
@@ -789,6 +816,7 @@ class ChatViewModel(
         /** Cursor gate probe verdict; null = unknown/loading/failed (soft-allow). */
         val cursorChatOnDisk: Boolean?,
         val historyActionPending: Boolean,
+        val headerMetadata: SessionHeaderMetadata,
     )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -804,6 +832,7 @@ class ChatViewModel(
                 permissionOverrides,
                 cursorChatStoreProbe,
                 historyActionPending,
+                headerMetadata,
             ) { values: Array<Any?> -> pipelineInputs(values) }
         }
         // The web samples pipeline runs through React batching; here: emit the
@@ -2950,6 +2979,7 @@ class ChatViewModel(
             permissionOverrides = values[5] as Map<String, PermissionRowOverride>,
             cursorChatOnDisk = (values[6] as? CursorChatStoreProbe.Loaded)?.onDisk,
             historyActionPending = values[7] as Boolean,
+            headerMetadata = values[8] as SessionHeaderMetadata,
         )
     }
 
@@ -3174,9 +3204,12 @@ class ChatViewModel(
         val machineLabel = machineDisplayName(inputs)
         val worktree = (detail?.metadata?.worktree ?: summary?.metadata?.worktree)
             ?.let { it.name.ifBlank { it.branch } }
-        val subtitle = listOfNotNull(flavor?.let(Flavors::label), machineLabel, worktree)
-            .takeIf { it.isNotEmpty() }
-            ?.joinToString(" · ")
+        val subtitle = gatedHeaderSubtitle(
+            flavorLabel = flavor?.let(Flavors::label),
+            machineLabel = machineLabel,
+            worktreeLabel = worktree,
+            metadata = inputs.headerMetadata,
+        )
 
         return ChatHeaderUi(
             title = title,
