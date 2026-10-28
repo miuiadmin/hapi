@@ -130,6 +130,8 @@
 
     <!-- Settings scaffold (B-M4e) -->
     <string name="settings_title">设置</string>
+    <string name="settings_category_general">通用</string>
+    <string name="settings_category_general_summary">外观、语言与关于</string>
     <string name="settings_back">返回</string>
     <string name="settings_cancel">取消</string>
     <string name="settings_retry">重试</string>

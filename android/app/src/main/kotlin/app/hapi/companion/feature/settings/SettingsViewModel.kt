@@ -46,7 +46,9 @@ sealed interface HubSettingsState {
 /**
  * Settings-home state: appearance + language prefs (DataStore-backed), the
  * owner gate, and the About hub probe. Plain constructor for JVM tests;
- * Navigation hosts it behind a per-hub lifecycle holder.
+ * Navigation hosts it behind a per-hub lifecycle holder. The hub directory
+ * passes [probeHealth] = false — it needs only the owner gate, so opening the
+ * hub itself fires no `/health` request (the General subpage's holder does).
  */
 class SettingsViewModel(
     private val themePrefs: ThemePrefs,
@@ -61,6 +63,8 @@ class SettingsViewModel(
     /** Owner-only `PUT /api/hub-settings`. */
     private val putHubSettings: suspend (UpdateHubSettingsRequest) -> HubSettings,
     private val scope: CoroutineScope,
+    /** Kick off the About hub probe eagerly (default) or skip it. */
+    probeHealth: Boolean = true,
 ) {
 
     val themeSettings: StateFlow<ThemeSettings> = themePrefs.settings
@@ -90,7 +94,9 @@ class SettingsViewModel(
 
     init {
         scope.launch { mutableIsOwner.value = isOwnerNamespace(runCatching { currentJwt() }.getOrNull()) }
-        scope.launch { loadHubInfo() }
+        if (probeHealth) {
+            scope.launch { loadHubInfo() }
+        }
         scope.launch {
             if (isOwner.value) loadHubSettings() else mutableIsOwner.collect { owner ->
                 if (owner && mutableHubSettings.value == null) loadHubSettings()

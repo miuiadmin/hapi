@@ -90,7 +90,8 @@ import app.hapi.companion.feature.settings.DictationSettingsViewModel
 import app.hapi.companion.feature.settings.MachinesScreen
 import app.hapi.companion.feature.settings.MachinesViewModel
 import app.hapi.companion.feature.settings.RenameMachineGateway
-import app.hapi.companion.feature.settings.SettingsScreen
+import app.hapi.companion.feature.settings.SettingsGeneralScreen
+import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
 import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
@@ -196,8 +197,13 @@ object Routes {
     const val PAIRING_SCAN = "pairing/scan"
     const val PAIRING_MANUAL = "pairing/manual"
 
-    /** Settings scaffold + owner-only dashboards (B-M4e). */
+    /**
+     * Settings hub (category directory) + flat subpage routes (B-M4e → P2
+     * hub IA). Usage/Storage are owner-only dashboards reached straight from
+     * the hub rows; General holds the uncategorized items.
+     */
     const val SETTINGS = "settings"
+    const val SETTINGS_GENERAL = "settings/general"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
 
@@ -379,14 +385,25 @@ fun HapiNavigation() {
             val hubGraph = activeHubGraph ?: return@composable
             val holder = viewModel<SettingsViewModelHolder>(
                 key = "settings:${hubGraph.hubUrl}",
+                factory = viewModelFactory { SettingsViewModelHolder(graph, hubGraph, probeHealth = false) },
+            )
+            SettingsHubScreen(
+                viewModel = holder.viewModel,
+                onOpenCategory = { route -> navController.navigate(route) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_GENERAL) {
+            val hubGraph = activeHubGraph ?: return@composable
+            val holder = viewModel<SettingsViewModelHolder>(
+                key = "settingsGeneral:${hubGraph.hubUrl}",
                 factory = viewModelFactory { SettingsViewModelHolder(graph, hubGraph) },
             )
-            SettingsScreen(
+            SettingsGeneralScreen(
                 viewModel = holder.viewModel,
                 dictation = holder.dictation,
                 onOpenMachines = { navController.navigate(Routes.SETTINGS_MACHINES) },
-                onOpenUsage = { navController.navigate(Routes.SETTINGS_USAGE) },
-                onOpenStorage = { navController.navigate(Routes.SETTINGS_STORAGE) },
                 onBack = { navController.popBackStack() },
             )
         }
@@ -1061,7 +1078,12 @@ private class FileViewerViewModelHolder(
  * Shells for the settings graph (B-M4e). Settings/usage/storage are hub-scoped
  * (keys include the hub origin): a hub switch swaps in fresh state.
  */
-private class SettingsViewModelHolder(graph: AppGraph, hubGraph: HubGraph) : ViewModel() {
+private class SettingsViewModelHolder(
+    graph: AppGraph,
+    hubGraph: HubGraph,
+    /** The hub directory needs only the owner gate; skip its About `/health` probe. */
+    probeHealth: Boolean = true,
+) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val viewModel = SettingsViewModel(
@@ -1079,6 +1101,7 @@ private class SettingsViewModelHolder(graph: AppGraph, hubGraph: HubGraph) : Vie
         fetchHubSettings = { hubGraph.session.api.getHubSettings() },
         putHubSettings = { hubGraph.session.api.updateHubSettings(it) },
         scope = scope,
+        probeHealth = probeHealth,
     )
 
     /** Dictation provider/language rows: app-wide prefs + this hub's providers. */
