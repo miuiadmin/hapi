@@ -35,6 +35,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
+import app.hapi.companion.feature.chat.LocalChatSettings
 import app.hapi.companion.feature.chat.permissions.PermissionVerdictLabel
 import app.hapi.companion.feature.chat.permissions.PermissionVerdicts
 import app.hapi.companion.feature.chat.vector
@@ -65,7 +66,16 @@ fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifie
     val planProposal = isPlanProposalTool(tool.name)
     // An output-first placeholder can acquire its real tool name later. Open a
     // newly recognized plan, but retain explicit folding across input updates.
-    var expanded by rememberSaveable(block.id, planProposal) { mutableStateOf(planProposal) }
+    // The *initial* fold follows the P2 Chat `toolCardsCollapsed` preference
+    // (default keeps plans expanded — web `codex-exploration-collapsed`'s
+    // nearest Android surface is this plan card, the only inline-foldable
+    // tool content; groups and ordinary calls open the inspector).
+    // Read outside the initializer: the rememberSaveable lambda is not
+    // composable, and only the *initial* fold follows the preference anyway.
+    val chatSettings = LocalChatSettings.current
+    var expanded by rememberSaveable(block.id, planProposal) {
+        mutableStateOf(planProposal && !chatSettings.toolCardsCollapsed)
+    }
 
     // Flat tint by design — web renders shadow-none cards; the "card" feel
     // comes from surfaceContainerLow standing out against the background, so

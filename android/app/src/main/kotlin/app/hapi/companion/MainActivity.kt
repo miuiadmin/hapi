@@ -17,9 +17,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.lifecycleScope
+import androidx.compose.material3.MaterialTheme
 import app.hapi.companion.di.AppGraph
 import app.hapi.companion.di.LocalAppGraph
 import app.hapi.companion.fcm.PushNotifications
+import app.hapi.companion.feature.chat.ChatSurfaces
+import app.hapi.companion.feature.chat.LocalChatSettings
+import app.hapi.companion.feature.chat.LocalChatSurfaceColors
+import app.hapi.companion.feature.settings.ChatSettings
 import app.hapi.companion.feature.settings.DisplaySettings
 import app.hapi.companion.feature.settings.ThemeMode
 import app.hapi.companion.feature.settings.ThemeSettings
@@ -97,15 +102,26 @@ class MainActivity : AppCompatActivity() {
             val typeStyles = remember(display.fontScale) {
                 HapiTypeScale.stylesFor(display.fontScale.factor)
             }
+            // P2 Chat settings: composer Enter behavior + collapse defaults +
+            // surface-color presets (default frame = pre-settings behavior).
+            val chatSettings by appGraph.chatPrefs.settings.collectAsState(initial = ChatSettings())
+            val darkTheme = when (theme.mode) {
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK, ThemeMode.OLED -> true
+            }
             HapiTheme(
-                darkTheme = when (theme.mode) {
-                    ThemeMode.SYSTEM -> isSystemInDarkTheme()
-                    ThemeMode.LIGHT -> false
-                    ThemeMode.DARK, ThemeMode.OLED -> true
-                },
+                darkTheme = darkTheme,
                 dynamicColor = theme.dynamicColor,
                 oled = theme.mode == ThemeMode.OLED,
             ) {
+                // Resolved inside the theme: both surfaces mix their preset
+                // accents onto the live themed neutral (surfaceContainerLow),
+                // re-mixed when the theme or a preference flips.
+                val surfaceBase = MaterialTheme.colorScheme.surfaceContainerLow
+                val chatSurfaceColors = remember(chatSettings, darkTheme, surfaceBase) {
+                    ChatSurfaces.resolveAll(chatSettings, surfaceBase, darkTheme)
+                }
                 CompositionLocalProvider(
                     LocalAppGraph provides appGraph,
                     // The DataStore flow re-emits after every write, so all
@@ -114,6 +130,8 @@ class MainActivity : AppCompatActivity() {
                         scope.launch { appGraph.codeWrapPrefs.setWrap(enabled) }
                     },
                     LocalHapiTypeStyles provides typeStyles,
+                    LocalChatSettings provides chatSettings,
+                    LocalChatSurfaceColors provides chatSurfaceColors,
                 ) {
                     HapiNavigation()
                 }
