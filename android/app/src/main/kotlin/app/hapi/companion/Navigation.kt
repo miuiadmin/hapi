@@ -239,7 +239,7 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory { SessionListViewModelHolder(graph.sessionHeaderMetadata) },
+                factory = viewModelFactory { SessionListViewModelHolder() },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph),
@@ -339,7 +339,7 @@ fun HapiNavigation() {
             }
             val holder = viewModel<ChatViewModelHolder>(
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
-                factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext, graph.sessionHeaderMetadata) },
             )
             ChatHost(
                 viewModel = holder.viewModel,
@@ -464,7 +464,7 @@ fun HapiNavigation() {
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
-                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext, graph.sessionHeaderMetadata) },
                 )
             }
             ScratchlistScreen(
@@ -586,13 +586,9 @@ fun HapiNavigation() {
  * Androidx-lifecycle shell around the plain [SessionListViewModel]: survives
  * config changes with the nav entry. Retain only the current graph: returning
  * to the same URL creates a new HubGraph and must not revive a closed store
- * or its old filter. The global SSE pipe still belongs to HubGraph. The
- * P2 header-metadata gates arrive as an app-wide flow (default = all visible,
- * so tests and previews construct without display prefs).
+ * or its old filter. The global SSE pipe still belongs to HubGraph.
  */
-private class SessionListViewModelHolder(
-    private val headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
-) : ViewModel() {
+private class SessionListViewModelHolder() : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
@@ -610,7 +606,6 @@ private class SessionListViewModelHolder(
             lastSeenStore = hubGraph.lastSeenStore,
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
-            headerMetadata = headerMetadata,
         ).also { model = it }
     }
 
@@ -635,6 +630,8 @@ private class ChatViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     appContext: Context,
+    /** P2 display gates for the header subtitle (app-wide flow; default = all visible). */
+    headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -650,6 +647,7 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        headerMetadata = headerMetadata,
     )
 
     /**
