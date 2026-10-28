@@ -4,7 +4,6 @@ import app.hapi.data.api.ApiError
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
-import app.hapi.companion.feature.settings.SessionHeaderMetadata
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.sortSessionSummaries
@@ -12,7 +11,6 @@ import java.time.ZoneId
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,7 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -48,13 +45,6 @@ data class SessionRowUi(
     val flavor: String?,
     val unread: Boolean,
     val machine: MachineFilterUi? = null,
-    /**
-     * P2 display gates carried to the screen: the row hides its flavor icon
-     * (`agent`) and relative-time stamp (`lastActive`) per these flags. The
-     * meta line's `worktree`/`machine` segments are already filtered at
-     * composition time above. Default = everything visible.
-     */
-    val headerMetadata: SessionHeaderMetadata = SessionHeaderMetadata(),
 ) {
     val id: String get() = summary.id
 }
@@ -117,12 +107,6 @@ class SessionListViewModel(
     private val hubKey: String = "default",
     /** Current clock zone; resolved for every date derivation, including after resume. */
     private val zoneProvider: () -> ZoneId = ZoneId::systemDefault,
-    /**
-     * P2 display gates (app-wide `DisplayPrefs` flow; default = all visible).
-     * Gates the meta line segments here and reaches the screen via
-     * [SessionRowUi.headerMetadata].
-     */
-    private val headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
@@ -179,21 +163,20 @@ class SessionListViewModel(
         combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
             Triple(sessions, machines, lastSeen.lastSeen)
         },
-        combine(machineFilter, searchQuery, selectedSessionId, headerMetadata) { filter, query, selected, header ->
-            ListLensState(filter, query, selected, header)
+        combine(machineFilter, searchQuery, selectedSessionId) { filter, query, selected ->
+            Triple(filter, query, selected)
         },
         combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange, timeZone) { refreshing, offline, loaded, range, _ ->
             ChromeState(refreshing, offline, loaded, range)
         },
-    ) { (sessions, machines, lastSeen), lens, chrome ->
+    ) { (sessions, machines, lastSeen), (filter, query, selected), chrome ->
         buildUiState(
             sessions = sessions,
             machines = machines,
             lastSeen = lastSeen,
-            filter = lens.machineFilter,
-            searchQuery = lens.searchQuery,
-            selectedSessionId = lens.selectedSessionId,
-            headerMetadata = lens.headerMetadata,
+            filter = filter,
+            searchQuery = query,
+            selectedSessionId = selected,
             isRefreshing = chrome.refreshing,
             isOffline = chrome.offline,
             hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
@@ -398,7 +381,6 @@ class SessionListViewModel(
         isOffline: Boolean,
         hasLoaded: Boolean,
         dateRange: SessionDateRange? = null,
-        headerMetadata: SessionHeaderMetadata = SessionHeaderMetadata(),
     ): SessionListUiState {
         // Use one current zone for both filtering and the calendar activity marks.
         val zone = zoneProvider()
@@ -490,23 +472,11 @@ class SessionListViewModel(
                 subtitle = summaryText?.takeIf { it != title },
                 meta = buildList {
                     projectLabel(summary)?.let(::add)
-                    // P2 display gate: the worktree segment hides per the
-                    // `worktree` switch (project stays — it is the web group
-                    // name, which has no switch).
-                    if (headerMetadata.worktree) {
-                        summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
-                    }
+                    summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
                 }.takeIf { it.isNotEmpty() }?.joinToString(" · "),
                 flavor = summary.metadata?.flavor,
                 unread = LastSeenStore.isUnread(summary, lastSeen[summary.id] ?: 0),
-                // P2 display gate: `machine` switch, composed with the
-                // disambiguation rule above.
-                machine = if (showMachine && headerMetadata.machine) {
-                    filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) }
-                } else {
-                    null
-                },
-                headerMetadata = headerMetadata,
+                machine = if (showMachine) filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) } else null,
             )
         }
 
@@ -522,14 +492,6 @@ class SessionListViewModel(
             dateActivityEpochDays = activityDays,
         )
     }
-
-    /** Aggregated lens inputs (machine filter/search/selection + display gates) so [combine] stays within its typed arity. */
-    private data class ListLensState(
-        val machineFilter: String?,
-        val searchQuery: String,
-        val selectedSessionId: String?,
-        val headerMetadata: SessionHeaderMetadata,
-    )
 
     /** Aggregated non-session inputs so [combine] stays within its typed arity. */
     private data class ChromeState(
