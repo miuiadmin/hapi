@@ -19,8 +19,9 @@ import java.time.LocalDate
  * Compile-checked previews doubling as visual regressions for the B-M4e
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
  * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
- * non-owner gating), the General subpage it drills into, and the Display
- * subpage (session-list prefs, metadata switches, font tiers).
+ * non-owner gating), the General subpage it drills into, the Display subpage
+ * (session-list prefs, metadata switches, font tiers), and the Chat subpage
+ * (Enter behavior, collapse defaults, surface-color presets).
  */
 
 private fun bucket(
@@ -192,6 +193,28 @@ private fun SettingsDisplayPreview() {
                 onSetSessionListStatusMode = {},
                 onSetFontScale = {},
                 onSetHeaderMetadata = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings chat", showBackground = true, heightDp = 1100)
+@Composable
+private fun SettingsChatPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsChatContent(
+                settings = ChatSettings(
+                    enterBehavior = ComposerEnterBehavior.SEND,
+                    reasoningCollapsed = false,
+                    toolGroupBackground = ChatSurfaceColor.SOFT_BLUE,
+                ),
+                onSetEnterBehavior = {},
+                onSetReasoningCollapsed = {},
+                onSetToolCardsCollapsed = {},
+                onSetToolGroupBackground = {},
+                onSetUserMessageBackground = {},
                 onBack = {},
             )
         }
