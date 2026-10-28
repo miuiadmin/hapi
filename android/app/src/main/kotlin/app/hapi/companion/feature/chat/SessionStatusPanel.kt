@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,6 +37,9 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.ui.components.HapiCircleDotGlyph
+import app.hapi.companion.ui.components.HapiSquareCheckGlyph
+import app.hapi.companion.ui.components.HapiSquareGlyph
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.SessionStatusData
 import app.hapi.protocol.chat.SessionStatusSubagent
@@ -295,14 +300,20 @@ private fun TaskRow(text: String, status: String) {
         inProgress -> MaterialTheme.hapi.link
         else -> MaterialTheme.hapi.hint
     }
-    val glyph = when {
-        completed -> "☑"
-        inProgress -> "◉"
-        else -> "☐"
-    }
     val trimmed = text.trim()
-    Row {
-        Text(glyph, style = MaterialTheme.typography.bodyMedium, color = tone)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        // Status mark follows the batch-11 glyph ruling: OEM emoji fonts
+        // colorize ☑/◉/☐, so the mark renders as stroke glyphs (14dp, toned).
+        Icon(
+            imageVector = when {
+                completed -> HapiSquareCheckGlyph
+                inProgress -> HapiCircleDotGlyph
+                else -> HapiSquareGlyph
+            },
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = tone,
+        )
         Text(
             text = trimmed.ifEmpty { stringResource(R.string.session_status_task_empty) },
             style = MaterialTheme.typography.bodyMedium,

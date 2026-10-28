@@ -15,9 +15,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +37,8 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.ui.components.HapiSquareCheckGlyph
+import app.hapi.companion.ui.components.HapiSquareGlyph
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.TeamMemberDot
 import app.hapi.protocol.chat.TeamRosterModel
@@ -236,7 +242,7 @@ private fun MemberChip(name: String, agentType: String?, dot: TeamMemberDot) {
     }
 }
 
-/** One tracked task: status glyph + title in the status tone, owner as suffix. */
+/** One tracked task: status icon + title in the status tone, owner as suffix. */
 @Composable
 private fun TaskRow(title: String, owner: String?, mark: TeamTaskMark) {
     val tone = when (mark) {
@@ -245,27 +251,36 @@ private fun TaskRow(title: String, owner: String?, mark: TeamTaskMark) {
         TeamTaskMark.BLOCKED -> MaterialTheme.colorScheme.error
         TeamTaskMark.PENDING -> MaterialTheme.hapi.hint
     }
-    val glyph = when (mark) {
-        TeamTaskMark.COMPLETED -> "☑"
-        TeamTaskMark.IN_PROGRESS -> "▶"
-        TeamTaskMark.BLOCKED -> "⚠"
-        TeamTaskMark.PENDING -> "☐"
-    }
-    val text = buildAnnotatedString {
-        append(glyph)
-        append(" ")
-        append(title)
-        owner?.let {
-            withStyle(SpanStyle(color = MaterialTheme.hapi.hint)) {
-                append(" [$it]")
+    // Status mark follows the batch-11 glyph ruling: OEM emoji fonts
+    // colorize ☑/☐ and ▶/⚠ read as emoji glyphs, so the mark renders as
+    // vector icons (stroke glyphs + core Material, 14dp, toned).
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = when (mark) {
+                TeamTaskMark.COMPLETED -> HapiSquareCheckGlyph
+                TeamTaskMark.IN_PROGRESS -> Icons.Default.PlayArrow
+                TeamTaskMark.BLOCKED -> Icons.Default.Warning
+                TeamTaskMark.PENDING -> HapiSquareGlyph
+            },
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = tone,
+        )
+        val text = buildAnnotatedString {
+            append(title)
+            owner?.let {
+                withStyle(SpanStyle(color = MaterialTheme.hapi.hint)) {
+                    append(" [$it]")
+                }
             }
         }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = tone,
+            modifier = Modifier.padding(start = 6.dp),
+        )
     }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = tone,
-    )
 }
 
 /** One member-to-member message: sender and recipient emphasized, body dimmed. */
