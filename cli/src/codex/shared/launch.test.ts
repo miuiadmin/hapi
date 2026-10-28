@@ -45,7 +45,6 @@ describe('shared launch configuration', () => {
     it('does not interpret flags after -- as configuration', () => {
         expect(sharedLaunchConfig({ codexArgs: ['--', '--profile=explain'] }, '/tmp').tuiArgs).toEqual(['--', '--profile=explain']);
         expect(sharedLaunchConfig({ codexArgs: ['--', '-C', 'literal'] }, '/tmp').tuiArgs).toEqual(['--', '-C', 'literal']);
-        expect(() => sharedLaunchConfig({ permissionMode: 'safe-yolo' }, '/tmp')).toThrow('not a native shared');
     });
 
     it('does not freeze developer instructions into threadParams (#2056)', () => {

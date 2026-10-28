@@ -222,6 +222,7 @@ private fun SettingsChatPreview() {
     }
 }
 
+@Preview(name = "Settings general · owner", showBackground = true, heightDp = 1200)
 @Composable
 private fun SettingsGeneralOwnerPreview() {
     HapiTheme(darkTheme = false, dynamicColor = false) {

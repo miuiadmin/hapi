@@ -123,8 +123,8 @@ describe('permissions routes (tiann/hapi#1735)', () => {
 
     // Answering a permission on a session whose engine socket is gone used to
     // surface as a bare 500 (RpcTargetMissingError was never mapped). It must
-    // fail fast with 409 + engine_unreachable instead.
-    it('returns 409 engine_unreachable when the engine socket is gone (approve)', async () => {
+    // fail fast with 503 + rpc_target_missing instead.
+    it('returns 503 rpc_target_missing when the engine socket is gone (approve)', async () => {
         const app = createApp({
             approvePermission: async () => { throw new RpcTargetMissingError('session-1:Permission', 'handler-not-registered') }
         })
@@ -133,14 +133,14 @@ describe('permissions routes (tiann/hapi#1735)', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({})
         })
-        expect(res.status).toBe(409)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('not connected to the hub'),
-            code: 'engine_unreachable'
+            code: 'rpc_target_missing'
         })
     })
 
-    it('returns 409 engine_unreachable when the engine socket is gone (deny)', async () => {
+    it('returns 503 rpc_target_missing when the engine socket is gone (deny)', async () => {
         const app = createApp({
             denyPermission: async () => { throw new RpcTargetMissingError('session-1:Permission', 'socket-disconnected') }
         })
@@ -149,10 +149,10 @@ describe('permissions routes (tiann/hapi#1735)', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({})
         })
-        expect(res.status).toBe(409)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('not connected to the hub'),
-            code: 'engine_unreachable'
+            code: 'rpc_target_missing'
         })
     })
 

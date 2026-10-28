@@ -1962,12 +1962,13 @@ class NewSessionViewModel(
         val permission: PermissionUi = when {
             agent == "pi" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
-                options = PermissionModes.forLaunch(agent).map { mode ->
-                    if (mode.wireId == "auto" && grokAutoUnavailable) {
-                        OptionItem(mode.wireId, "${mode.label} (${strings.grokAutoUnavailable})", enabled = false)
-                    } else {
-                        OptionItem(mode.wireId, mode.label)
-                    }
+                PermissionModes.forFlavor(agent).map { mode ->
+                    val unavailable = grokAutoUnavailable && mode == PermissionMode.Auto
+                    OptionItem(
+                        value = mode.wireId,
+                        label = mode.label + if (unavailable) " (${strings.grokAutoUnavailable})" else "",
+                        enabled = !unavailable,
+                    )
                 },
                 disabledValues = if (grokAutoUnavailable) setOf("auto") else emptySet(),
                 hint = if (grokAutoUnavailable) strings.grokAutoUnavailableDesc else null,

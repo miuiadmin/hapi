@@ -305,6 +305,13 @@ shared ACP permission bridge: pick a launch mode (`--permission-mode`, or
 stored mode and model. One-shot permission requests auto-approve under
 yolo-style modes and escalate to the standard HAPI permission card otherwise.
 
+HAPI's `$` skill menu for DSH sessions reads the same skill roots DSH's own
+skill filesystem uses: `$DSH_HOME/skills` (`~/.dsh/skills` by default), the
+project's `.dsh/skills`, and the shared `~/.agents/skills` / `.agents/skills`
+directories. Since the ACP composition accepts no client-supplied MCP servers,
+HAPI's `skill_lookup` bridge is not available to DSH sessions; a skill named in
+the prompt is loaded by DSH through its own `skill` tool and catalog.
+
 ## Other agents
 
 - **Claude Code** (`hapi claude`) — local sessions wrap the native TUI, remote sessions drive the Claude Agent SDK. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)

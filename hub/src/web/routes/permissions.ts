@@ -2,6 +2,7 @@ import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import { PermissionRequestNotFoundError, RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -77,8 +78,8 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
                 // milliseconds instead of hanging the request into a 500.
                 return c.json({
                     error: 'Session is not connected to the hub, so the answer cannot be delivered.',
-                    code: 'engine_unreachable'
-                }, 409)
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
             }
             if (error instanceof RpcTimeoutError) {
                 // The socket is still registered but the engine never acked:
@@ -127,8 +128,8 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
             if (error instanceof RpcTargetMissingError) {
                 return c.json({
                     error: 'Session is not connected to the hub, so the answer cannot be delivered.',
-                    code: 'engine_unreachable'
-                }, 409)
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
             }
             if (error instanceof RpcTimeoutError) {
                 return c.json({

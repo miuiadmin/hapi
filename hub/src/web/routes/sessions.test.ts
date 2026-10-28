@@ -4,6 +4,7 @@ import type { Session, SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -75,6 +76,7 @@ function createApp(session: Session, opts?: {
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
+    renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
@@ -190,6 +192,7 @@ function createApp(session: Session, opts?: {
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
+        renameSession: opts?.renameSession ?? (async () => {}),
         updateSessionSummary: opts?.updateSessionSummary ?? (async () => {}),
         callPiRpc: opts?.callPiRpc ?? (async () => ({ success: true }))
     } as Partial<SyncEngine>
@@ -283,6 +286,47 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({ error: 'No Runner online', code: 'no_machine_online' })
         expect(clears).toBe(0)
     })
+    it('accepts a lock-only save without converting a generated title to a manual name', async () => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), { renameSession: async (...args) => { calls.push(args) } })
+        const response = await app.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ titleLocked: true })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([['session-1', undefined, true]])
+    })
+
+    it.each([true, false])('passes explicit title lock %s atomically through both user title routes', async (titleLocked) => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), {
+            renameSession: async (...args) => { calls.push(args) },
+            updateSessionSummary: async (...args) => { calls.push(args) }
+        })
+        for (const [suffix, field] of [['', 'name'], ['/summary', 'text']]) {
+            const response = await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [field]: 'Chosen', titleLocked })
+            })
+            expect(response.status).toBe(200)
+        }
+        expect(calls).toEqual([['session-1', 'Chosen', titleLocked], ['session-1', 'Chosen', titleLocked]])
+    })
+
+    it('rejects invalid lock values and missing-session title saves', async () => {
+        const { app } = createApp(createSession())
+        for (const suffix of ['', '/summary']) {
+            expect((await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'Title', text: 'Title', titleLocked: 'true' })
+            })).status).toBe(400)
+        }
+        const other = createApp(createSession(), { sessionExists: false }).app
+        expect((await other.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Title', titleLocked: false })
+        })).status).toBe(404)
+    })
+
     it('generates a title suggestion without changing session metadata', async () => {
         const suggest = async (sessionId: string) => {
             expect(sessionId).toBe('session-1')
@@ -380,6 +424,24 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({
             success: true,
             models: [{ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }]
+        })
+    })
+
+    it('returns a stable code when the Codex session model RPC target is absent', async () => {
+        const session = createSession()
+        const { app } = createApp(session, {
+            listCodexModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listCodexModels',
+            code: 'rpc_target_missing'
         })
     })
 
@@ -758,6 +820,53 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { model: 'gpt-5.5' }]
         ])
+    })
+
+    it('applies a Claude model and the effort it keeps in one session config change', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
+    it('rejects an effort sent with a model change for Pi, which applies the two separately', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.6-sol', effort: null })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects an effort sent with a model change for a flavor without effort', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort: 'high' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('rejects model changes for local Codex sessions', async () => {
@@ -1161,10 +1270,10 @@ describe('sessions routes', () => {
         ])
     })
 
-    it('rejects Safe Yolo for shared sessions', async () => {
+    it('rejects Safe Yolo for Codex', async () => {
         const session = createSession({
             active: false,
-            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { concurrentClients: true } }
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
         })
         const { app, applySessionConfigCalls } = createApp(session)
 
@@ -1175,7 +1284,7 @@ describe('sessions routes', () => {
         })
 
         expect(response.status).toBe(400)
-        expect(await response.json()).toEqual({ error: 'Safe Yolo is not available for shared sessions' })
+        expect(await response.json()).toEqual({ error: 'Invalid permission mode for session flavor' })
         expect(applySessionConfigCalls).toEqual([])
     })
 
@@ -1784,15 +1893,15 @@ describe('sessions routes', () => {
 // bare 500 (RpcTargetMissingError / the socket.io ack deadline were never
 // mapped). It must fail fast with typed delivery semantics instead.
 describe('session abort delivery errors', () => {
-    it('returns 409 engine_unreachable when the engine socket is gone', async () => {
+    it('returns 503 rpc_target_missing when the engine socket is gone', async () => {
         const { app } = createApp(createSession(), {
             abortSession: async () => { throw new RpcTargetMissingError('session-1:abort', 'handler-not-registered') }
         })
         const res = await app.request('/api/sessions/session-1/abort', { method: 'POST' })
-        expect(res.status).toBe(409)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('not connected to the hub'),
-            code: 'engine_unreachable'
+            code: 'rpc_target_missing'
         })
     })
 
@@ -1821,17 +1930,17 @@ describe('session abort delivery errors', () => {
 })
 
 // The same delivery semantics as abort apply to switch and file uploads: a
-// dead or wedged engine socket must surface as 409/504, not a bare 500.
+// dead or wedged engine socket must surface as 503/504, not a bare 500.
 describe('session switch/upload delivery errors', () => {
-    it('returns 409 engine_unreachable when the engine socket is gone for switch', async () => {
+    it('returns 503 rpc_target_missing when the engine socket is gone for switch', async () => {
         const { app } = createApp(createSession(), {
             switchSession: async () => { throw new RpcTargetMissingError('session-1:switch', 'handler-not-registered') }
         })
         const res = await app.request('/api/sessions/session-1/switch', { method: 'POST' })
-        expect(res.status).toBe(409)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('not connected to the hub'),
-            code: 'engine_unreachable'
+            code: 'rpc_target_missing'
         })
     })
 
@@ -1858,7 +1967,7 @@ describe('session switch/upload delivery errors', () => {
         expect(switched).toBe('session-1')
     })
 
-    it('returns 409 engine_unreachable when the engine socket is gone for upload', async () => {
+    it('returns 503 rpc_target_missing when the engine socket is gone for upload', async () => {
         const { app } = createApp(createSession(), {
             uploadFile: async () => { throw new RpcTargetMissingError('session-1:upload', 'handler-not-registered') }
         })
@@ -1866,11 +1975,11 @@ describe('session switch/upload delivery errors', () => {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename: 'a.txt', content: 'aGVsbG8=', mimeType: 'text/plain' })
         })
-        expect(res.status).toBe(409)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             success: false,
             error: expect.stringContaining('not connected to the hub'),
-            code: 'engine_unreachable'
+            code: 'rpc_target_missing'
         })
     })
 
@@ -1903,12 +2012,12 @@ describe('session switch/upload delivery errors', () => {
 
 // Extends the #1921 error-typing family beyond abort: RPC delivery failures
 // raised through rpcGateway (RpcTargetMissingError / RpcTimeoutError) and the
-// typed error codes surfaced by syncEngine (engine_unreachable /
+// typed error codes surfaced by syncEngine (rpc_target_missing /
 // engine_unresponsive) must map onto honest statuses instead of collapsing
 // into 500s across resume/reopen/clear/archive and the model-list RPCs.
 describe('session RPC delivery error typing', () => {
     it.each([
-        ['engine_unreachable', 409, 'RPC handler not registered: machine-1:spawn-happy-session'],
+        ['rpc_target_missing', 503, 'RPC handler not registered: machine-1:spawn-happy-session'],
         ['engine_unresponsive', 504, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
     ] as const)('maps %s resume results to %s', async (code, status, message) => {
         const { app } = createApp(createSession(), {
@@ -1920,7 +2029,7 @@ describe('session RPC delivery error typing', () => {
     })
 
     it.each([
-        ['engine_unreachable', 409, 'RPC handler not registered: machine-1:spawn-happy-session'],
+        ['rpc_target_missing', 503, 'RPC handler not registered: machine-1:spawn-happy-session'],
         ['engine_unresponsive', 504, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
     ] as const)('maps %s reopen results to %s', async (code, status, message) => {
         const { app } = createApp(createSession(), {
@@ -1956,7 +2065,7 @@ describe('session RPC delivery error typing', () => {
     })
 
     it.each([
-        [409, 'engine_unreachable', new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')],
+        [503, 'rpc_target_missing', new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')],
         [504, 'engine_unresponsive', new RpcTimeoutError('session-1:listCodexModels', 120_000)]
     ] as const)('maps typed delivery failures from the session codex-models RPC to %s (%s)', async (status, code, error) => {
         const { app } = createApp(createSession(), {
@@ -1968,7 +2077,7 @@ describe('session RPC delivery error typing', () => {
     })
 
     it.each([
-        [409, 'engine_unreachable', new RpcTargetMissingError('session-1:listPiModels', 'handler-not-registered')],
+        [503, 'rpc_target_missing', new RpcTargetMissingError('session-1:listPiModels', 'handler-not-registered')],
         [504, 'engine_unresponsive', new RpcTimeoutError('session-1:listPiModels', 120_000)]
     ] as const)('maps typed delivery failures from the session pi-models RPC to %s (%s)', async (status, code, error) => {
         const { app } = createApp(createSession({ metadata: {

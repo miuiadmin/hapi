@@ -610,7 +610,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const getCurrentCodexPermissionMode = () => {
             const mode = session.getPermissionMode();
-            return mode === 'default' || mode === 'read-only' || mode === 'safe-yolo' || mode === 'yolo'
+            return mode === 'default' || mode === 'read-only' || mode === 'yolo'
                 ? mode
                 : undefined;
         };

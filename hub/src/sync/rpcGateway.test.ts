@@ -119,6 +119,45 @@ describe('RpcGateway RPC timeouts', () => {
             })
         }])
     })
+
+    it('uses machine-scoped RPCs for workspace file operations', async () => {
+        const { gateway, calls } = createGateway()
+
+        await gateway.readWorkspaceFile('machine-1', { cwd: '/workspace/project', path: 'src/index.ts' })
+        await gateway.listWorkspaceDirectory('machine-1', { cwd: '/workspace/project', path: 'src' })
+        await gateway.statWorkspaceFiles('machine-1', { cwd: '/workspace/project', paths: ['src/index.ts'] })
+        await gateway.getWorkspaceGitStatus('machine-1', { cwd: '/workspace/project' })
+        await gateway.getWorkspaceGitDiffNumstat('machine-1', { cwd: '/workspace/project', staged: true })
+        await gateway.getWorkspaceGitDiffFile('machine-1', {
+            cwd: '/workspace/project',
+            filePath: 'src/index.ts',
+            staged: false
+        })
+        await gateway.runWorkspaceRipgrep('machine-1', {
+            args: ['--files'],
+            cwd: '/workspace/project',
+            fileSearch: { query: '*.ts', limit: 20 }
+        })
+
+        expect(calls.map((call) => call.method)).toEqual([
+            'machine-1:workspace-read-file',
+            'machine-1:workspace-list-directory',
+            'machine-1:workspace-stat-files',
+            'machine-1:workspace-git-status',
+            'machine-1:workspace-git-diff-numstat',
+            'machine-1:workspace-git-diff-file',
+            'machine-1:workspace-ripgrep'
+        ])
+        expect(JSON.parse(calls[0].params)).toEqual({
+            cwd: '/workspace/project',
+            path: 'src/index.ts'
+        })
+        expect(JSON.parse(calls[5].params)).toEqual({
+            cwd: '/workspace/project',
+            filePath: 'src/index.ts',
+            staged: false
+        })
+    })
 })
 
 // tiann/hapi#916: rpcCall throws a typed `RpcTargetMissingError` when the
@@ -282,7 +321,7 @@ describe('RpcGateway spawnSession delivery-error narrowing', () => {
         return new RpcGateway(io, rpcRegistry)
     }
 
-    it('returns an engine_unreachable error result when no socket serves the spawn method', async () => {
+    it('returns an rpc_target_missing error result when no socket serves the spawn method', async () => {
         const gateway = createSpawnGateway({})
 
         const result = await gateway.spawnSession('machine-1', '/workspace')
@@ -290,7 +329,7 @@ describe('RpcGateway spawnSession delivery-error narrowing', () => {
         expect(result).toEqual({
             type: 'error',
             message: 'RPC handler not registered: machine-1:spawn-happy-session',
-            code: 'engine_unreachable'
+            code: 'rpc_target_missing'
         })
     })
 
