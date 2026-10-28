@@ -21,8 +21,10 @@ import java.time.LocalDate
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
  * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
  * non-owner gating), the General subpage it drills into, the Display subpage
- * (session-list prefs, metadata switches, font tiers), and the Chat subpage
- * (Enter behavior, collapse defaults, surface-color presets).
+ * (session-list prefs, metadata switches, font tiers), the Chat subpage
+ * (Enter behavior, collapse defaults, surface-color presets), and the
+ * expressive choice dialogs the General subpage opens (theme swatches in
+ * light and dark, language cards without swatches).
  */
 
 private fun bucket(
@@ -284,5 +286,67 @@ private fun SettingsGeneralNonOwnerPreview() {
                 onBack = {},
             )
         }
+    }
+}
+
+@Preview(name = "Theme choice dialog", showBackground = true)
+@Composable
+private fun ThemeChoiceDialogPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        ChoiceDialog(
+            title = "Theme",
+            options = ThemeMode.entries.map { mode ->
+                ChoiceOption(
+                    value = mode,
+                    label = mode.name.lowercase().replaceFirstChar { it.uppercase() },
+                    swatch = themeModeSwatch(mode),
+                )
+            },
+            selected = ThemeMode.DARK,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
+    }
+}
+
+@Preview(name = "Theme choice dialog · dark", showBackground = true, backgroundColor = 0xFF1B1B1F)
+@Composable
+private fun ThemeChoiceDialogDarkPreview() {
+    HapiTheme(darkTheme = true, dynamicColor = false) {
+        ChoiceDialog(
+            title = "Theme",
+            options = ThemeMode.entries.map { mode ->
+                ChoiceOption(
+                    value = mode,
+                    label = mode.name.lowercase().replaceFirstChar { it.uppercase() },
+                    swatch = themeModeSwatch(mode),
+                )
+            },
+            selected = ThemeMode.OLED,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
+    }
+}
+
+@Preview(name = "Language choice dialog", showBackground = true)
+@Composable
+private fun LanguageChoiceDialogPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        ChoiceDialog(
+            title = "App language",
+            options = listOf(
+                ChoiceOption(value = AppLanguage.SYSTEM, label = "Follow system"),
+                ChoiceOption(value = AppLanguage.ENGLISH, label = "English"),
+                ChoiceOption(value = AppLanguage.SIMPLIFIED_CHINESE, label = "简体中文"),
+                ChoiceOption(value = AppLanguage.RUSSIAN, label = "Русский"),
+            ),
+            selected = AppLanguage.ENGLISH,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
     }
 }

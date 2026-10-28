@@ -20,12 +20,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -457,55 +457,48 @@ private fun SwitchRow(
 
 // ---------------------------------------------------------------- dialogs --
 
+/** Expressive theme picker: choice cards with fixed light/dark preview swatches. */
 @Composable
 private fun ThemeModeDialog(
     selected: ThemeMode,
     onSelect: (ThemeMode) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.settings_theme)) },
-        text = {
-            Column {
-                ThemeMode.entries.forEach { mode ->
-                    RadioRow(
-                        label = stringResource(themeModeLabelRes(mode)),
-                        selected = mode == selected,
-                        onClick = { onSelect(mode) },
-                    )
-                }
-            }
+    ChoiceDialog(
+        title = stringResource(R.string.settings_theme),
+        options = ThemeMode.entries.map { mode ->
+            ChoiceOption(
+                value = mode,
+                label = stringResource(themeModeLabelRes(mode)),
+                swatch = themeModeSwatch(mode),
+            )
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_cancel)) }
-        },
+        selected = selected,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
     )
 }
 
+/** Expressive language picker: choice cards; names render in their own language. */
 @Composable
 private fun LanguageDialog(
     selected: AppLanguage,
     onSelect: (AppLanguage) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.settings_language)) },
-        text = {
-            Column {
-                AppLanguage.entries.forEach { language ->
-                    RadioRow(
-                        label = languageLabel(language),
-                        selected = language == selected,
-                        onClick = { onSelect(language) },
-                    )
-                }
-            }
+    ChoiceDialog(
+        title = stringResource(R.string.settings_language),
+        options = AppLanguage.entries.map { language ->
+            ChoiceOption(
+                value = language,
+                label = languageLabel(language),
+            )
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_cancel)) }
-        },
+        selected = selected,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
     )
 }
 
