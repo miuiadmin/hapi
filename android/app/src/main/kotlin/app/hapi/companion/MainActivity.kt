@@ -114,6 +114,7 @@ class MainActivity : AppCompatActivity() {
                 darkTheme = darkTheme,
                 dynamicColor = theme.dynamicColor,
                 oled = theme.mode == ThemeMode.OLED,
+                preset = theme.preset,
             ) {
                 // Resolved inside the theme: both surfaces mix their preset
                 // accents onto the live themed neutral (surfaceContainerLow),

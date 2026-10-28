@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.os.LocaleListCompat
 import app.hapi.companion.BuildConfig
 import app.hapi.companion.R
+import app.hapi.companion.ui.theme.ColorThemePreset
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
 import app.hapi.protocol.wire.TranscriptionProviderInfo
 import app.hapi.protocol.wire.UpdateHubSettingsRequest
@@ -49,13 +50,13 @@ import app.hapi.protocol.wire.UpdateHubSettingsRequest
 /**
  * General subpage of the settings hub (P2 IA): the catch-all category for
  * everything without a dedicated category on this branch — Appearance (theme
- * mode + Material You), Language, Dictation (provider + language when the hub
- * offers standard transcription), the Machines entry, the owner-only hub
- * switches (web Settings → General parity: session summaries, per-turn title
- * rewrite and peer-session tools where the hub speaks the fork extension),
- * and About (app/protocol versions + hub health). The former owner-only
- * Usage/Storage rows moved hub-level (see [SettingsHubCatalog]); their owner
- * gate is unchanged.
+ * mode + color theme + Material You), Language, Dictation (provider +
+ * language when the hub offers standard transcription), the Machines entry,
+ * the owner-only hub switches (web Settings → General parity: session
+ * summaries, per-turn title rewrite and peer-session tools where the hub
+ * speaks the fork extension), and About (app/protocol versions + hub
+ * health). The former owner-only Usage/Storage rows moved hub-level (see
+ * [SettingsHubCatalog]); their owner gate is unchanged.
  */
 @Composable
 fun SettingsGeneralScreen(
@@ -89,6 +90,7 @@ fun SettingsGeneralScreen(
         onOpenMachines = onOpenMachines,
         onSetThemeMode = viewModel::setThemeMode,
         onSetDynamicColor = viewModel::setDynamicColor,
+        onSetPreset = viewModel::setPreset,
         onSetLanguage = viewModel::setLanguage,
         onRetryHubInfo = viewModel::retryHubInfo,
         onBack = onBack,
@@ -113,11 +115,13 @@ internal fun SettingsGeneralContent(
     onOpenMachines: () -> Unit,
     onSetThemeMode: (ThemeMode) -> Unit,
     onSetDynamicColor: (Boolean) -> Unit,
+    onSetPreset: (ColorThemePreset) -> Unit,
     onSetLanguage: (AppLanguage) -> Unit,
     onRetryHubInfo: () -> Unit,
     onBack: () -> Unit,
 ) {
     var showThemeDialog by rememberSaveable { mutableStateOf(false) }
+    var showColorThemeDialog by rememberSaveable { mutableStateOf(false) }
     var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
     var showDictationProviderDialog by rememberSaveable { mutableStateOf(false) }
     var showDictationLanguageDialog by rememberSaveable { mutableStateOf(false) }
@@ -151,16 +155,31 @@ internal fun SettingsGeneralContent(
                     value = stringResource(themeModeLabelRes(theme.mode)),
                     onClick = { showThemeDialog = true },
                 )
+                SettingsDivider()
+                SettingsRow(
+                    label = stringResource(R.string.settings_color_theme),
+                    value = stringResource(colorThemePresetLabelRes(theme.preset)),
+                    onClick = { showColorThemeDialog = true },
+                )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    // Material You cannot run under the OLED scheme or a color
+                    // theme preset (both pin their own palettes), so the switch
+                    // reflects that and explains why it is off.
+                    val dynamicColorAvailable =
+                        theme.mode != ThemeMode.OLED && theme.preset == ColorThemePreset.DEFAULT
                     SettingsDivider()
                     SwitchRow(
                         label = stringResource(R.string.settings_dynamic_color),
                         description = stringResource(
-                            if (theme.mode == ThemeMode.OLED) R.string.settings_dynamic_color_oled_note
-                            else R.string.settings_dynamic_color_description
+                            when {
+                                theme.mode == ThemeMode.OLED -> R.string.settings_dynamic_color_oled_note
+                                theme.preset != ColorThemePreset.DEFAULT ->
+                                    R.string.settings_dynamic_color_preset_note
+                                else -> R.string.settings_dynamic_color_description
+                            }
                         ),
-                        checked = theme.dynamicColor && theme.mode != ThemeMode.OLED,
-                        enabled = theme.mode != ThemeMode.OLED,
+                        checked = theme.dynamicColor && dynamicColorAvailable,
+                        enabled = dynamicColorAvailable,
                         onCheckedChange = onSetDynamicColor,
                     )
                 }
@@ -315,6 +334,17 @@ internal fun SettingsGeneralContent(
                 onSetThemeMode(mode)
             },
             onDismiss = { showThemeDialog = false },
+        )
+    }
+
+    if (showColorThemeDialog) {
+        ColorThemeDialog(
+            selected = theme.preset,
+            onSelect = { preset ->
+                showColorThemeDialog = false
+                onSetPreset(preset)
+            },
+            onDismiss = { showColorThemeDialog = false },
         )
     }
 
@@ -585,11 +615,60 @@ private fun DictationLanguageDialog(
 private fun dictationLanguageValue(code: String?): String =
     findDictationLanguage(code)?.label ?: stringResource(R.string.settings_dictation_language_auto)
 
+
+/**
+ * Expressive color-theme picker: each card carries the preset's light/dark
+ * canvas split plus its accent strip, so the options are recognizable at a
+ * glance. Proper nouns stay untranslated on every locale (web parity); only
+ * the default entry localizes.
+ */
+@Composable
+private fun ColorThemeDialog(
+    selected: ColorThemePreset,
+    onSelect: (ColorThemePreset) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ChoiceDialog(
+        title = stringResource(R.string.settings_color_theme),
+        options = ColorThemePreset.entries.map { preset ->
+            ChoiceOption(
+                value = preset,
+                label = stringResource(colorThemePresetLabelRes(preset)),
+                swatch = colorThemePresetSwatch(preset),
+            )
+        },
+        selected = selected,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
+    )
+}
+
 private fun themeModeLabelRes(mode: ThemeMode): Int = when (mode) {
     ThemeMode.SYSTEM -> R.string.settings_theme_system
     ThemeMode.LIGHT -> R.string.settings_theme_light
     ThemeMode.DARK -> R.string.settings_theme_dark
     ThemeMode.OLED -> R.string.settings_theme_oled
+}
+
+private fun colorThemePresetLabelRes(preset: ColorThemePreset): Int = when (preset) {
+    ColorThemePreset.DEFAULT -> R.string.settings_color_theme_default
+    ColorThemePreset.NOTION -> R.string.settings_color_theme_notion
+    ColorThemePreset.ONE -> R.string.settings_color_theme_one
+    ColorThemePreset.PROOF -> R.string.settings_color_theme_proof
+    ColorThemePreset.RAYCAST -> R.string.settings_color_theme_raycast
+    ColorThemePreset.ROSE_PINE -> R.string.settings_color_theme_rose_pine
+    ColorThemePreset.SOLARIZED -> R.string.settings_color_theme_solarized
+    ColorThemePreset.VERCEL -> R.string.settings_color_theme_vercel
+    ColorThemePreset.VS_CODE_PLUS -> R.string.settings_color_theme_vs_code_plus
+    ColorThemePreset.XCODE -> R.string.settings_color_theme_xcode
+    ColorThemePreset.LINEAR -> R.string.settings_color_theme_linear
+    ColorThemePreset.LOBSTER -> R.string.settings_color_theme_lobster
+    ColorThemePreset.MATERIAL -> R.string.settings_color_theme_material
+    ColorThemePreset.MATRIX -> R.string.settings_color_theme_matrix
+    ColorThemePreset.MONOKAI -> R.string.settings_color_theme_monokai
+    ColorThemePreset.NIGHT_OWL -> R.string.settings_color_theme_night_owl
+    ColorThemePreset.NORD -> R.string.settings_color_theme_nord
 }
 
 /**

@@ -3,6 +3,7 @@
 package app.hapi.companion.feature.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import app.hapi.companion.ui.theme.ColorThemePreset
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.HubSettings
 import app.hapi.protocol.wire.UpdateHubSettingsRequest
@@ -282,5 +283,19 @@ class SettingsViewModelTest {
                 scope.coroutineContext[Job]?.cancelAndJoin()
             }
         }
+    }
+
+    @Test
+    fun `color theme preset setter persists through the prefs`() = runWithViewModel(
+        jwt = null,
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+    ) { viewModel ->
+        viewModel.setPreset(ColorThemePreset.NORD)
+        advanceUntilIdle()
+
+        assertEquals(
+            ColorThemePreset.NORD,
+            viewModel.themeSettings.value.preset,
+        )
     }
 }
