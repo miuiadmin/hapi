@@ -91,7 +91,9 @@ import app.hapi.protocol.wire.TodoProgress
  *   summary line, `project · worktree · machine` meta line (machine only
  *   when it disambiguates), relative `updatedAt`, pending-request badge,
  *   todo-progress chip, unread dot; disconnected rows are dimmed —
- *   connected is the resting state, so no presence dot (web parity);
+ *   connected is the resting state, so no presence dot (web parity). The
+ *   icon, stamp, and `worktree`/`machine` meta segments hide per the P2
+ *   Display "session metadata" switches;
  * - long-press → actions sheet: pin (none/project/global), rename (dialog),
  *   reopen (inactive rows; navigates into the possibly-superseding id),
  *   archive, delete (confirm; 409 while active) — optimistic store updates;
@@ -362,8 +364,12 @@ private fun SessionRow(
             .alpha(if (summary.active) 1f else 0.5f),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            AgentFlavorIcon(row.flavor, modifier = Modifier.size(16.dp))
-            Spacer(modifier = Modifier.width(6.dp))
+            // P2 display gates: the flavor icon is the row's agent marker
+            // (`agent` switch); the relative stamp is its `lastActive`.
+            if (row.headerMetadata.agent) {
+                AgentFlavorIcon(row.flavor, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+            }
             // One weighted element only: the title takes ALL leftover
             // width (start-aligned, ellipsis on true overflow). Splitting
             // the slack with a weighted trailing spacer truncated even
@@ -388,12 +394,14 @@ private fun SessionRow(
                 Spacer(modifier = Modifier.width(6.dp))
                 UnreadDot()
             }
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = localizedRelativeAge(summary.updatedAt),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (row.headerMetadata.lastActive) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = localizedRelativeAge(summary.updatedAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         // Summary directly under the title (its prose continuation); the
         // `project · machine` meta closes the row as a footer.
