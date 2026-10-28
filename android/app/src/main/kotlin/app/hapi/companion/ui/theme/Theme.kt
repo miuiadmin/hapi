@@ -60,7 +60,11 @@ private val OledColorScheme = darkColorScheme(
  *
  * [oled] selects the pure-black variant (implies dark, disables dynamic
  * color); the settings screen wires it up later -- callers default to the
- * regular schemes. [typography] defaults to the app-wide scale derived from
+ * regular schemes. [preset] selects a named color theme (web parity, see
+ * [ColorThemePreset]): a preset overrides the dynamic and OLED schemes --
+ * it never derives from the wallpaper -- and OLED mode renders its dark
+ * palette, exactly how the web client layers `data-color-theme` over
+ * `data-theme`. [typography] defaults to the app-wide scale derived from
  * [HapiTypography]'s reading tokens, so every Material widget and every
  * direct token consumer share one type system.
  */
@@ -69,10 +73,17 @@ fun HapiTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     oled: Boolean = false,
+    preset: ColorThemePreset = ColorThemePreset.DEFAULT,
     typography: Typography = HapiTypography.scale,
     content: @Composable () -> Unit,
 ) {
+    val presetPalette = if (preset == ColorThemePreset.DEFAULT) {
+        null
+    } else {
+        preset.palette(dark = darkTheme || oled)
+    }
     val colorScheme = when {
+        presetPalette != null -> presetPalette.colorScheme()
         oled -> OledColorScheme
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
@@ -81,11 +92,12 @@ fun HapiTheme(
         darkTheme -> DarkColorScheme
         else -> LightColorScheme
     }
-    val extendedColors = when {
+    val baseExtendedColors = when {
         oled -> HapiOledExtendedColors
         darkTheme -> HapiDarkExtendedColors
         else -> HapiLightExtendedColors
     }
+    val extendedColors = presetPalette?.extendedColors(baseExtendedColors) ?: baseExtendedColors
 
     CompositionLocalProvider(LocalHapiExtendedColors provides extendedColors) {
         MaterialTheme(
