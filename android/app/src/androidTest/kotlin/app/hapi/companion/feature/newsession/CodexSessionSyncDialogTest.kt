@@ -13,6 +13,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.platform.app.InstrumentationRegistry
 import app.hapi.companion.R
@@ -138,6 +139,15 @@ class CodexSessionSyncDialogTest {
 
         compose.onNodeWithTag("codex-sync-session-list")
             .performScrollToNode(hasTestTag("codex-sync-session-thread-16"))
+        // Composing the row is not enough on the CI's 320x640dp screens: the
+        // capped list extends below the sheet's fold, and performScrollTo
+        // only drives the CLOSEST scrollable — for a row that is the lazy
+        // list itself, which is already at its own end. Scrolling the
+        // Confirm button into view drives the SHEET column to the bottom,
+        // which carries the list's tail (row 16 included) on screen; only
+        // then does the tap land on the row.
+        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
+            .performScrollTo()
         compose.onNodeWithTag("codex-sync-session-thread-16")
             .performClick()
         compose.runOnIdle { assertEquals(listOf("thread-16"), toggled) }
@@ -158,7 +168,16 @@ class CodexSessionSyncDialogTest {
 
         val imported = compose.activity.getString(R.string.codex_sync_imported)
         waitForTag("codex-sync-session-list")
-        compose.onNodeWithText(imported).assertIsDisplayed()
+        // On the CI's 320x640dp screens the capped list starts below the
+        // sheet's fold (see test 1), so the badge row is laid out but not
+        // displayed. Scrolling the LIST node drives the sheet column (the
+        // list's closest scrollable), which brings the single-row list
+        // fully on screen; a row-level performScrollTo would only consult
+        // the lazy list itself and scroll nothing.
+        compose.onNodeWithTag("codex-sync-session-list")
+            .performScrollTo()
+        compose.onNodeWithText(imported)
+            .assertIsDisplayed()
 
         // Hub switch (store swap): the same thread id reads un-imported.
         compose.runOnIdle { state.value = state.value.copy(importedMarkers = emptyMap()) }
@@ -268,11 +287,24 @@ class CodexSessionSyncDialogTest {
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
             .performClick()
         compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
-        compose.onNodeWithTag("codex-sync-session-a").performClick()
-        compose.onNodeWithTag("codex-sync-session-b").performClick()
+        // Bring the two-row list on screen via the sheet column first — a
+        // row-level performScrollTo only reaches the lazy list, which ends
+        // below the sheet's fold on the CI's 320x640dp screens (test 1).
+        compose.onNodeWithTag("codex-sync-session-list")
+            .performScrollTo()
+        compose.onNodeWithTag("codex-sync-session-a")
+            .performScrollTo()
+            .performClick()
+        compose.onNodeWithTag("codex-sync-session-b")
+            .performScrollTo()
+            .performClick()
 
-        // Two rows checked → bulk import, hanging on the gate.
+        // Two rows checked → bulk import, hanging on the gate. The Confirm
+        // button lives below the capped list: on small screens it is below
+        // the fold and a bare tap hits the scrim (dismissing the sheet) —
+        // scroll it into view first.
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
+            .performScrollTo()
             .performClick()
         compose.waitUntil(10_000) { controller.state.value.importing }
 
@@ -387,7 +419,13 @@ class CodexSessionSyncDialogTest {
         // dialog opens directly.
         compose.runOnIdle { controller.openDialog("/data/work", "m1") }
         compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
-        compose.onNodeWithTag("codex-sync-session-a").performClick()
+        // Bring the two-row list on screen via the sheet column first — see
+        // test 1 for why a row-level performScrollTo cannot reach the fold.
+        compose.onNodeWithTag("codex-sync-session-list")
+            .performScrollTo()
+        compose.onNodeWithTag("codex-sync-session-a")
+            .performScrollTo()
+            .performClick()
         compose.waitUntil(10_000) { controller.state.value.dialogSelection == setOf("a") }
 
         // The checked row is archived externally before Confirm: the row
@@ -396,14 +434,20 @@ class CodexSessionSyncDialogTest {
         compose.waitUntil(10_000) { controller.state.value.sessions.size == 1 }
 
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
+            .performScrollTo()
             .performClick()
         compose.waitUntil(10_000) { controller.state.value.confirmSelectionMissing }
 
         // The sheet stays open with the visible notice and the selection
-        // intact — never a silent close with no selection at all.
+        // intact — never a silent close with no selection at all. Confirm
+        // was just scrolled into view, so the sheet sits at its bottom and
+        // the title may legitimately be scrolled off the top: presence (not
+        // on-screen display) is the "still open" proof here — the notice
+        // assert below is itself sheet content and must be displayed.
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
-            .assertIsDisplayed()
+            .assertExists()
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing))
+            .performScrollTo()
             .assertIsDisplayed()
         assertTrue(controller.state.value.dialogSelection == setOf("a"))
     }
