@@ -131,6 +131,24 @@ class CodexSessionSyncDialogTest {
         }
     }
 
+    /** DIAG-only: same dump but collapsed to one line (gradle console truncates multi-line). */
+    private fun diagLine(tag: String, vararg nodes: Pair<String, SemanticsNodeInteraction>): String = buildString {
+        append("DIAGL-$tag ")
+        val dm = compose.activity.resources.displayMetrics
+        append("screen=${dm.widthPixels}x${dm.heightPixels}dpi${dm.densityDpi} ")
+        for ((name, node) in nodes) {
+            append(name).append("=[")
+            append(
+                try {
+                    node.printToString(90).lineSequence()
+                        .filter { it.contains("at (") || it.contains("Tag =") || it.contains("Text =") }
+                        .joinToString(" ~ ")
+                } catch (t: Throwable) { "<absent: ${t.message}>" },
+            )
+            append("] ")
+        }
+    }
+
     /** 1 — the capped history list scrolls: row 16 is past the initial viewport yet selectable. */
     @Test
     fun rowsBeyondTheInitialViewportRemainSelectableByScrolling() {
@@ -158,9 +176,10 @@ class CodexSessionSyncDialogTest {
             .performClick()
         if (toggled.isEmpty()) {
             throw AssertionError(
-                diag(
+                diagLine(
                     "row16-click-missed",
                     "ROW16" to compose.onNodeWithTag("codex-sync-session-thread-16"),
+                    "IMPORTBTN" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import)),
                     "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
                 ),
             )
@@ -187,11 +206,12 @@ class CodexSessionSyncDialogTest {
             compose.onNodeWithText(imported).assertIsDisplayed()
         } catch (t: Throwable) {
             throw AssertionError(
-                diag(
-                    "badge-not-displayed",
+                diagLine(
+                    "badge",
                     "BADGE" to compose.onNodeWithText(imported),
                     "ROW1" to compose.onNodeWithTag("codex-sync-session-thread-1"),
                     "TITLE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title)),
+                    "IMPORTBTN" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import)),
                     "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
                 ),
                 t,
@@ -361,11 +381,11 @@ class CodexSessionSyncDialogTest {
                 .assertIsDisplayed()
         } catch (t: Throwable) {
             throw AssertionError(
-                "DIAG-backdismiss step=$step state=${controller.state.value}\n" +
-                    diag(
-                        "backdismiss",
-                        "SECTION-CHOOSE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose)),
-                    ),
+                diagLine(
+                    "backdismiss step=$step open=${controller.state.value.open} importing=${controller.state.value.importing} sel=${controller.state.value.dialogSelection}",
+                    "SECTION-CHOOSE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose)),
+                    "IMPORTBTN" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import)),
+                ),
                 t,
             )
         }
@@ -492,10 +512,11 @@ class CodexSessionSyncDialogTest {
                 .assertIsDisplayed()
         } catch (t: Throwable) {
             throw AssertionError(
-                diag(
-                    "confirm-notice-not-displayed state=${controller.state.value}",
+                diagLine(
+                    "confirm-notice state-confirmMissing=${controller.state.value.confirmSelectionMissing}",
                     "NOTICE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing)),
                     "TITLE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title)),
+                    "IMPORTBTN" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import)),
                     "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
                 ),
                 t,

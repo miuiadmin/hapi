@@ -80,6 +80,24 @@ class PiSessionImportDialogTest {
         }
     }
 
+    /** DIAG-only: same dump but collapsed to one line (gradle console truncates multi-line). */
+    private fun diagLine(tag: String, vararg nodes: Pair<String, SemanticsNodeInteraction>): String = buildString {
+        append("DIAGL-$tag ")
+        val dm = compose.activity.resources.displayMetrics
+        append("screen=${dm.widthPixels}x${dm.heightPixels}dpi${dm.densityDpi} ")
+        for ((name, node) in nodes) {
+            append(name).append("=[")
+            append(
+                try {
+                    node.printToString(90).lineSequence()
+                        .filter { it.contains("at (") || it.contains("Tag =") || it.contains("Text =") }
+                        .joinToString(" ~ ")
+                } catch (t: Throwable) { "<absent: ${t.message}>" },
+            )
+            append("] ")
+        }
+    }
+
     /** The capped pi history list scrolls: row 16 is past the initial viewport yet selectable. */
     @Test
     fun rowsBeyondTheInitialViewportRemainSelectableByScrolling() {
@@ -107,9 +125,10 @@ class PiSessionImportDialogTest {
             .performClick()
         if (toggled.isEmpty()) {
             throw AssertionError(
-                diag(
+                diagLine(
                     "pi-row16-click-missed",
                     "ROW16" to compose.onNodeWithTag("pi-import-session-pi-16"),
+                    "IMPORTBTN" to compose.onNodeWithText(compose.activity.getString(R.string.pi_import_confirm)),
                     "LIST" to compose.onNodeWithTag("pi-import-session-list"),
                 ),
             )
