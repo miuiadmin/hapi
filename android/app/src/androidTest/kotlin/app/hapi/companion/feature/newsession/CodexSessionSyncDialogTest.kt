@@ -324,21 +324,38 @@ class CodexSessionSyncDialogTest {
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
             .performClick()
         compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
+        // DIAG d34-r5: which step stalls on CI, and where do the nodes sit.
+        val importText = compose.activity.getString(R.string.codex_sync_import)
+        fun diagCenters(): String {
+            fun cy(matcher: SemanticsMatcher, label: String): String = try {
+                val n = compose.onAllNodes(matcher).fetchSemanticsNodes().firstOrNull()
+                if (n != null) "$label=${"%.0f".format(n.positionInRoot.y + n.size.height / 2f)}" else "$label=none"
+            } catch (e: Throwable) { "$label=err" }
+            val st = controller.state.value
+            return "sel=${st.dialogSelection} imp=${st.importing} open=${st.open} " +
+                cy(hasTestTag("codex-sync-session-a"), "a") + " " +
+                cy(hasTestTag("codex-sync-session-b"), "b") + " " +
+                cy(hasText(importText), "btn")
+        }
         // Bring the two-row list and the Confirm button on screen with the
         // real drag gesture (see helper) — their laid-out centers sit below
         // the sheet's fold on the CI's 320x640dp screens (test 1). The rows
         // sit above the button, so a button on screen carries them too.
-        scrollSheetContentUp(hasText(compose.activity.getString(R.string.codex_sync_import)))
+        scrollSheetContentUp(hasText(importText))
         compose.onNodeWithTag("codex-sync-session-a")
             .performClick()
         compose.onNodeWithTag("codex-sync-session-b")
             .performClick()
-
-        // Two rows checked → bulk import, hanging on the gate. The Confirm
-        // button is now on screen after the drag above.
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
-            .performClick()
-        compose.waitUntil(10_000) { controller.state.value.importing }
+        try {
+            compose.onNodeWithText(importText).performClick()
+        } catch (e: Throwable) {
+            throw AssertionError("DIAG import-click-fail ${diagCenters()}", e)
+        }
+        try {
+            compose.waitUntil(10_000) { controller.state.value.importing }
+        } catch (e: Throwable) {
+            throw AssertionError("DIAG importing-timeout ${diagCenters()}", e)
+        }
 
         // Back-dismiss the in-flight sheet: the pending state must not vanish
         // with it — the section's button keeps showing the in-flight label.
@@ -346,7 +363,11 @@ class CodexSessionSyncDialogTest {
         // window consumes it and fires onDismissRequest.
         InstrumentationRegistry.getInstrumentation()
             .sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitUntil(10_000) { !controller.state.value.open }
+        try {
+            compose.waitUntil(10_000) { !controller.state.value.open }
+        } catch (e: Throwable) {
+            throw AssertionError("DIAG back-dismiss-timeout ${diagCenters()}", e)
+        }
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
             .assertDoesNotExist()
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_importing))

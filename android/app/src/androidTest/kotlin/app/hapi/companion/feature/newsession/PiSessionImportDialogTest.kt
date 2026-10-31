@@ -120,12 +120,25 @@ class PiSessionImportDialogTest {
 
         compose.onNodeWithTag("pi-import-session-list")
             .performScrollToNode(hasTestTag("pi-import-session-pi-16"))
-        // Composing the row is not enough on the CI's 320x640dp screens: the
-        // capped list extends below the sheet's fold, so the row's laid-out
-        // center is off screen and a tap there hits nothing. Drag the sheet
-        // content up (see helper) until row 16's center is genuinely on
-        // screen before the tap.
-        scrollSheetContentUp(hasTestTag("pi-import-session-pi-16"))
+        // DIAG d34-r5: per-drag yield curve for the pi sheet column.
+        val screenBottom = compose.activity.resources.displayMetrics.heightPixels.toFloat()
+        val centers = mutableListOf<String>()
+        var drags = 0
+        while (drags < 8) {
+            val c = compose.onAllNodes(hasTestTag("pi-import-session-pi-16"))
+                .fetchSemanticsNodes().firstOrNull()
+                ?.let { it.positionInRoot.y + it.size.height / 2f }
+            centers += "pre$drags=${"%.0f".format(c ?: Float.NaN)}"
+            if (c != null && c < screenBottom - 8f) break
+            compose.onNodeWithText(compose.activity.getString(R.string.pi_import_dialog_title))
+                .performTouchInput { swipe(center, Offset(center.x, center.y - 300f), 400) }
+            drags++
+        }
+        val cAfter = compose.onAllNodes(hasTestTag("pi-import-session-pi-16"))
+            .fetchSemanticsNodes().firstOrNull()
+            ?.let { it.positionInRoot.y + it.size.height / 2f }
+        centers += "post=${"%.0f".format(cAfter ?: Float.NaN)} screenH=$screenBottom"
+        assertTrue("DIAG pi row16 ${centers.joinToString(",")}", cAfter?.let { it < screenBottom - 8f } == true)
         compose.onNodeWithTag("pi-import-session-pi-16")
             .performClick()
         compose.runOnIdle { assertEquals(listOf("pi-16"), toggled) }
