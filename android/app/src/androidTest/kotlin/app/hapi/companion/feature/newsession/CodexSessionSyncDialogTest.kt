@@ -9,11 +9,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import androidx.test.platform.app.InstrumentationRegistry
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
@@ -115,6 +120,33 @@ class CodexSessionSyncDialogTest {
         }
     }
 
+    /**
+     * Scrolls the dialog's sheet content column towards its bottom the way a
+     * user does — repeated drag gestures starting on the (non-scrollable)
+     * title header — until [target]'s center is inside the visible screen.
+     * On the CI's 320x640dp screens the header stack pushes the capped list,
+     * notices and buttons below the fold, `performScrollTo` cannot help (its
+     * ScrollBy dispatch moves nothing in this sheet — verified by dumping
+     * node geometry before/after: identical bounds), and a single 360dp drag
+     * is not enough either (the sheet consumes part of the gesture before
+     * the column scrolls), so the helper loops and re-measures instead of
+     * trusting any one drag distance. Taps at off-screen coordinates hit
+     * nothing (no auto-scroll), so every tap below the fold must be
+     * preceded by scrolling its target genuinely on screen.
+     */
+    private fun scrollSheetContentUp(target: SemanticsMatcher) {
+        val screenBottom = compose.activity.resources.displayMetrics.heightPixels.toFloat()
+        fun targetOnScreen() = compose.onAllNodes(target).fetchSemanticsNodes().firstOrNull()
+            ?.let { it.positionInRoot.y + it.size.height / 2f < screenBottom - 8f } == true
+        var drags = 0
+        while (!targetOnScreen() && drags < 8) {
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
+                .performTouchInput { swipe(center, Offset(center.x, center.y - 300f), 400) }
+            drags++
+        }
+        assertTrue("sheet never scrolled the target on screen after $drags drags", targetOnScreen())
+    }
+
     /** 1 — the capped history list scrolls: row 16 is past the initial viewport yet selectable. */
     @Test
     fun rowsBeyondTheInitialViewportRemainSelectableByScrolling() {
@@ -138,6 +170,11 @@ class CodexSessionSyncDialogTest {
 
         compose.onNodeWithTag("codex-sync-session-list")
             .performScrollToNode(hasTestTag("codex-sync-session-thread-16"))
+        // Composing the row is not enough on the CI's 320x640dp screens: the
+        // capped list extends below the sheet's fold, so the row's laid-out
+        // center is off screen. Drag the sheet content up (see helper) until
+        // row 16's center is genuinely on screen before the tap.
+        scrollSheetContentUp(hasTestTag("codex-sync-session-thread-16"))
         compose.onNodeWithTag("codex-sync-session-thread-16")
             .performClick()
         compose.runOnIdle { assertEquals(listOf("thread-16"), toggled) }
@@ -158,7 +195,12 @@ class CodexSessionSyncDialogTest {
 
         val imported = compose.activity.getString(R.string.codex_sync_imported)
         waitForTag("codex-sync-session-list")
-        compose.onNodeWithText(imported).assertIsDisplayed()
+        // On the CI's 320x640dp screens the capped list starts below the
+        // sheet's fold (see test 1), so the badge row is laid out but not
+        // displayed. Drag the sheet content up to bring it on screen.
+        scrollSheetContentUp(hasText(imported))
+        compose.onNodeWithText(imported)
+            .assertIsDisplayed()
 
         // Hub switch (store swap): the same thread id reads un-imported.
         compose.runOnIdle { state.value = state.value.copy(importedMarkers = emptyMap()) }
@@ -268,10 +310,18 @@ class CodexSessionSyncDialogTest {
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
             .performClick()
         compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
-        compose.onNodeWithTag("codex-sync-session-a").performClick()
-        compose.onNodeWithTag("codex-sync-session-b").performClick()
+        // Bring the two-row list and the Confirm button on screen with the
+        // real drag gesture (see helper) — their laid-out centers sit below
+        // the sheet's fold on the CI's 320x640dp screens (test 1). The rows
+        // sit above the button, so a button on screen carries them too.
+        scrollSheetContentUp(hasText(compose.activity.getString(R.string.codex_sync_import)))
+        compose.onNodeWithTag("codex-sync-session-a")
+            .performClick()
+        compose.onNodeWithTag("codex-sync-session-b")
+            .performClick()
 
-        // Two rows checked → bulk import, hanging on the gate.
+        // Two rows checked → bulk import, hanging on the gate. The Confirm
+        // button is now on screen after the drag above.
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
             .performClick()
         compose.waitUntil(10_000) { controller.state.value.importing }
@@ -387,7 +437,12 @@ class CodexSessionSyncDialogTest {
         // dialog opens directly.
         compose.runOnIdle { controller.openDialog("/data/work", "m1") }
         compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
-        compose.onNodeWithTag("codex-sync-session-a").performClick()
+        // Bring row a on screen with the real drag gesture (see helper) —
+        // its laid-out center sits below the sheet's fold on the CI's
+        // 320x640dp screens (test 1).
+        scrollSheetContentUp(hasTestTag("codex-sync-session-a"))
+        compose.onNodeWithTag("codex-sync-session-a")
+            .performClick()
         compose.waitUntil(10_000) { controller.state.value.dialogSelection == setOf("a") }
 
         // The checked row is archived externally before Confirm: the row
@@ -395,14 +450,23 @@ class CodexSessionSyncDialogTest {
         compose.runOnIdle { controller.archive("a") }
         compose.waitUntil(10_000) { controller.state.value.sessions.size == 1 }
 
+        // The archive shrank the content, so drag again to pin the Confirm
+        // button on screen before tapping it.
+        scrollSheetContentUp(hasText(compose.activity.getString(R.string.codex_sync_import)))
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
             .performClick()
         compose.waitUntil(10_000) { controller.state.value.confirmSelectionMissing }
 
-        // The sheet stays open with the visible notice and the selection
-        // intact — never a silent close with no selection at all.
+        // The armed notice inserts itself above the button, which pushes the
+        // button row back below the fold (the column's scroll position is
+        // top-anchored), so drag once more until the notice itself is on
+        // screen. The sheet sits at its bottom after that drag, so the title
+        // may legitimately be scrolled off the top: presence (not on-screen
+        // display) is the "still open" proof here — the notice assert below
+        // is itself sheet content and must be displayed.
+        scrollSheetContentUp(hasText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing)))
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
-            .assertIsDisplayed()
+            .assertExists()
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing))
             .assertIsDisplayed()
         assertTrue(controller.state.value.dialogSelection == setOf("a"))
