@@ -2,6 +2,8 @@ package app.hapi.companion.di
 
 import android.content.Context
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.newsession.CodexImportedSessionsStore
+import app.hapi.companion.feature.newsession.DataStoreCodexImportedSessionsStore
 import app.hapi.data.HubSession
 import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.CredentialStore
@@ -157,6 +159,16 @@ class HubGraph(
 
     /** Per-session composer drafts, keyed under this hub (process-wide DataStore). */
     val chatDrafts: ChatDrafts = DataStoreChatDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
+
+    /**
+     * Codex import markers for this hub (thread id → imported-at), persisted
+     * under a hub-prefixed key in the process-wide prefs DataStore — the
+     * Android twin of the web's per-origin localStorage, so importing a thread
+     * here never reads as imported on another hub (thread ids are
+     * machine-local, not globally unique).
+     */
+    val codexImportedSessionsStore: CodexImportedSessionsStore =
+        DataStoreCodexImportedSessionsStore(context.hapiDataStore, scope, hubKey = session.hubUrl)
 
     override fun close() {
         networkMonitor.close()

@@ -638,7 +638,7 @@ fun HapiNavigation() {
                     NewSessionViewModelHolder(
                         hubGraph, graph.newSessionPrefs, machineId,
                         newSessionStrings(formContext),
-                        codexImportedSessionsStore = graph.codexImportedSessionsStore,
+                        codexImportedSessionsStore = hubGraph.codexImportedSessionsStore,
                         codexImportStrings = codexImportStrings(formContext),
                     )
                 },
