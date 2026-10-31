@@ -7,6 +7,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -14,6 +15,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.printToString
 import androidx.test.platform.app.InstrumentationRegistry
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
@@ -119,6 +121,16 @@ class CodexSessionSyncDialogTest {
         }
     }
 
+    /** DIAG-only (throwaway branch): dump subtree geometry into the failure message. */
+    private fun diag(tag: String, vararg nodes: Pair<String, SemanticsNodeInteraction>): String = buildString {
+        append("DIAG-$tag\n")
+        for ((name, node) in nodes) {
+            append(name).append(": ")
+            append(try { node.printToString(90) } catch (t: Throwable) { "<absent: ${t.message}>" })
+            append('\n')
+        }
+    }
+
     /** 1 — the capped history list scrolls: row 16 is past the initial viewport yet selectable. */
     @Test
     fun rowsBeyondTheInitialViewportRemainSelectableByScrolling() {
@@ -144,6 +156,15 @@ class CodexSessionSyncDialogTest {
             .performScrollToNode(hasTestTag("codex-sync-session-thread-16"))
         compose.onNodeWithTag("codex-sync-session-thread-16")
             .performClick()
+        if (toggled.isEmpty()) {
+            throw AssertionError(
+                diag(
+                    "row16-click-missed",
+                    "ROW16" to compose.onNodeWithTag("codex-sync-session-thread-16"),
+                    "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
+                ),
+            )
+        }
         compose.runOnIdle { assertEquals(listOf("thread-16"), toggled) }
     }
 
@@ -162,7 +183,20 @@ class CodexSessionSyncDialogTest {
 
         val imported = compose.activity.getString(R.string.codex_sync_imported)
         waitForTag("codex-sync-session-list")
-        compose.onNodeWithText(imported).assertIsDisplayed()
+        try {
+            compose.onNodeWithText(imported).assertIsDisplayed()
+        } catch (t: Throwable) {
+            throw AssertionError(
+                diag(
+                    "badge-not-displayed",
+                    "BADGE" to compose.onNodeWithText(imported),
+                    "ROW1" to compose.onNodeWithTag("codex-sync-session-thread-1"),
+                    "TITLE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title)),
+                    "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
+                ),
+                t,
+            )
+        }
 
         // Hub switch (store swap): the same thread id reads un-imported.
         compose.runOnIdle { state.value = state.value.copy(importedMarkers = emptyMap()) }
@@ -278,37 +312,63 @@ class CodexSessionSyncDialogTest {
             }
         }
 
-        // Open the sheet and load the two sessions.
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
-            .performClick()
-        compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
-        compose.onNodeWithTag("codex-sync-session-a").performClick()
-        compose.onNodeWithTag("codex-sync-session-b").performClick()
+        var step = "start"
+        try {
+            // Open the sheet and load the two sessions.
+            step = "click-choose"
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
+                .performClick()
+            step = "wait-sessions"
+            compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
+            step = "click-a"
+            compose.onNodeWithTag("codex-sync-session-a").performClick()
+            step = "click-b"
+            compose.onNodeWithTag("codex-sync-session-b").performClick()
 
-        // Two rows checked → bulk import, hanging on the gate.
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
-            .performClick()
-        compose.waitUntil(10_000) { controller.state.value.importing }
+            // Two rows checked → bulk import, hanging on the gate.
+            step = "click-import"
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
+                .performClick()
+            step = "wait-importing"
+            compose.waitUntil(10_000) { controller.state.value.importing }
 
-        // Back-dismiss the in-flight sheet: the pending state must not vanish
-        // with it — the section's button keeps showing the in-flight label.
-        // Real Back key event (what a user presses): the sheet's dialog
-        // window consumes it and fires onDismissRequest.
-        InstrumentationRegistry.getInstrumentation()
-            .sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitUntil(10_000) { !controller.state.value.open }
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
-            .assertDoesNotExist()
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_importing))
-            .assertIsDisplayed()
+            // Back-dismiss the in-flight sheet: the pending state must not vanish
+            // with it — the section's button keeps showing the in-flight label.
+            // Real Back key event (what a user presses): the sheet's dialog
+            // window consumes it and fires onDismissRequest.
+            step = "send-back"
+            InstrumentationRegistry.getInstrumentation()
+                .sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            step = "wait-closed"
+            compose.waitUntil(10_000) { !controller.state.value.open }
+            step = "assert-title-gone"
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
+                .assertDoesNotExist()
+            step = "assert-importing-label"
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_importing))
+                .assertIsDisplayed()
 
-        // The hung import now fails: the formatted failure lands on the
-        // section (web toasts it; Android's toast host is this error line).
-        gate.complete(Unit)
-        compose.waitUntil(10_000) { controller.state.value.importError != null }
-        compose.onNodeWithText("Import failed: disk full").assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
-            .assertIsDisplayed()
+            // The hung import now fails: the formatted failure lands on the
+            // section (web toasts it; Android's toast host is this error line).
+            step = "complete-gate"
+            gate.complete(Unit)
+            step = "wait-error"
+            compose.waitUntil(10_000) { controller.state.value.importError != null }
+            step = "assert-error-line"
+            compose.onNodeWithText("Import failed: disk full").assertIsDisplayed()
+            step = "assert-choose"
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
+                .assertIsDisplayed()
+        } catch (t: Throwable) {
+            throw AssertionError(
+                "DIAG-backdismiss step=$step state=${controller.state.value}\n" +
+                    diag(
+                        "backdismiss",
+                        "SECTION-CHOOSE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose)),
+                    ),
+                t,
+            )
+        }
     }
 
     /** 4 — single-row Confirm on an externally archived row keeps the sheet open (PR #2150). */
@@ -425,10 +485,22 @@ class CodexSessionSyncDialogTest {
 
         // The sheet stays open with the visible notice and the selection
         // intact — never a silent close with no selection at all.
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
-            .assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing))
-            .assertIsDisplayed()
+        try {
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
+                .assertIsDisplayed()
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing))
+                .assertIsDisplayed()
+        } catch (t: Throwable) {
+            throw AssertionError(
+                diag(
+                    "confirm-notice-not-displayed state=${controller.state.value}",
+                    "NOTICE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing)),
+                    "TITLE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title)),
+                    "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
+                ),
+                t,
+            )
+        }
         assertTrue(controller.state.value.dialogSelection == setOf("a"))
     }
 }

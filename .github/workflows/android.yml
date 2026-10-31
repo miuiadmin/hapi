@@ -64,4 +64,4 @@ jobs:
                   api-level: ${{ matrix.api-level }}
                   arch: x86_64
                   disable-animations: true
-                  script: cd android && ./gradlew :app:connectedDebugAndroidTest
+                  script: cd android && ./gradlew :app:connectedDebugAndroidTest -PandroidTestInstrumentationRunnerArguments.class=app.hapi.companion.feature.newsession.CodexSessionSyncDialogTest,app.hapi.companion.feature.newsession.PiSessionImportDialogTest

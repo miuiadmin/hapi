@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.printToString
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.wire.PiLocalSessionSummary
@@ -68,6 +70,16 @@ class PiSessionImportDialogTest {
         }
     }
 
+    /** DIAG-only (throwaway branch): dump subtree geometry into the failure message. */
+    private fun diag(tag: String, vararg nodes: Pair<String, SemanticsNodeInteraction>): String = buildString {
+        append("DIAG-$tag\n")
+        for ((name, node) in nodes) {
+            append(name).append(": ")
+            append(try { node.printToString(90) } catch (t: Throwable) { "<absent: ${t.message}>" })
+            append('\n')
+        }
+    }
+
     /** The capped pi history list scrolls: row 16 is past the initial viewport yet selectable. */
     @Test
     fun rowsBeyondTheInitialViewportRemainSelectableByScrolling() {
@@ -93,6 +105,15 @@ class PiSessionImportDialogTest {
             .performScrollToNode(hasTestTag("pi-import-session-pi-16"))
         compose.onNodeWithTag("pi-import-session-pi-16")
             .performClick()
+        if (toggled.isEmpty()) {
+            throw AssertionError(
+                diag(
+                    "pi-row16-click-missed",
+                    "ROW16" to compose.onNodeWithTag("pi-import-session-pi-16"),
+                    "LIST" to compose.onNodeWithTag("pi-import-session-list"),
+                ),
+            )
+        }
         compose.runOnIdle { assertEquals(listOf("pi-16"), toggled) }
     }
 }
