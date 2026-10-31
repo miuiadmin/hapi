@@ -7,6 +7,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -15,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.printToString
 import androidx.test.platform.app.InstrumentationRegistry
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
@@ -116,6 +118,24 @@ class CodexSessionSyncDialogTest {
         }
     }
 
+    /** DIAG-only: single-line node-geometry dump (gradle console truncates multi-line). */
+    private fun diagLine(tag: String, vararg nodes: Pair<String, SemanticsNodeInteraction>): String = buildString {
+        append("DIAGL-$tag ")
+        val dm = compose.activity.resources.displayMetrics
+        append("screen=${dm.widthPixels}x${dm.heightPixels}dpi${dm.densityDpi} ")
+        for ((name, node) in nodes) {
+            append(name).append("=[")
+            append(
+                try {
+                    node.printToString(90).lineSequence()
+                        .filter { it.contains("at (") || it.contains("Tag =") || it.contains("Text =") }
+                        .joinToString(" ~ ")
+                } catch (t: Throwable) { "<absent: ${t.message}>" },
+            )
+            append("] ")
+        }
+    }
+
     /** 1 — the capped history list scrolls: row 16 is past the initial viewport yet selectable. */
     @Test
     fun rowsBeyondTheInitialViewportRemainSelectableByScrolling() {
@@ -176,8 +196,22 @@ class CodexSessionSyncDialogTest {
         // the lazy list itself and scroll nothing.
         compose.onNodeWithTag("codex-sync-session-list")
             .performScrollTo()
-        compose.onNodeWithText(imported)
-            .assertIsDisplayed()
+        try {
+            compose.onNodeWithText(imported)
+                .assertIsDisplayed()
+        } catch (t: Throwable) {
+            throw AssertionError(
+                diagLine(
+                    "badge-post-list-scroll",
+                    "BADGE" to compose.onNodeWithText(imported),
+                    "ROW1" to compose.onNodeWithTag("codex-sync-session-thread-1"),
+                    "TITLE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title)),
+                    "IMPORTBTN" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import)),
+                    "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
+                ),
+                t,
+            )
+        }
 
         // Hub switch (store swap): the same thread id reads un-imported.
         compose.runOnIdle { state.value = state.value.copy(importedMarkers = emptyMap()) }
@@ -446,9 +480,22 @@ class CodexSessionSyncDialogTest {
         // assert below is itself sheet content and must be displayed.
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
             .assertExists()
-        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing))
-            .performScrollTo()
-            .assertIsDisplayed()
+        try {
+            compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing))
+                .performScrollTo()
+                .assertIsDisplayed()
+        } catch (t: Throwable) {
+            throw AssertionError(
+                diagLine(
+                    "confirm-notice state-confirmMissing=${controller.state.value.confirmSelectionMissing}",
+                    "NOTICE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing)),
+                    "TITLE" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title)),
+                    "IMPORTBTN" to compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import)),
+                    "LIST" to compose.onNodeWithTag("codex-sync-session-list"),
+                ),
+                t,
+            )
+        }
         assertTrue(controller.state.value.dialogSelection == setOf("a"))
     }
 }
