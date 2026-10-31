@@ -10,7 +10,11 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.wire.PiLocalSessionSummary
@@ -68,6 +72,31 @@ class PiSessionImportDialogTest {
         }
     }
 
+    /**
+     * Scrolls the dialog's sheet content column towards its bottom the way a
+     * user does — repeated drag gestures starting on the (non-scrollable)
+     * title header — until [target]'s center is inside the visible screen.
+     * On the CI's 320x640dp screens the header stack pushes the capped list
+     * and buttons below the fold, `performScrollTo` is not reliable here, and
+     * a single drag is not enough either (the sheet consumes part of the
+     * gesture before the column scrolls), so the helper loops and re-measures
+     * instead of trusting any one drag distance. Taps at off-screen
+     * coordinates hit nothing (no auto-scroll), so every tap below the fold
+     * must be preceded by scrolling its target genuinely on screen.
+     */
+    private fun scrollSheetContentUp(target: SemanticsMatcher) {
+        val screenBottom = compose.activity.resources.displayMetrics.heightPixels.toFloat()
+        fun targetOnScreen() = compose.onAllNodes(target).fetchSemanticsNodes().firstOrNull()
+            ?.let { it.positionInRoot.y + it.size.height / 2f < screenBottom - 8f } == true
+        var drags = 0
+        while (!targetOnScreen() && drags < 8) {
+            compose.onNodeWithText(compose.activity.getString(R.string.pi_import_dialog_title))
+                .performTouchInput { swipe(center, Offset(center.x, center.y - 300f), 400) }
+            drags++
+        }
+        assertTrue("sheet never scrolled the target on screen after $drags drags", targetOnScreen())
+    }
+
     /** The capped pi history list scrolls: row 16 is past the initial viewport yet selectable. */
     @Test
     fun rowsBeyondTheInitialViewportRemainSelectableByScrolling() {
@@ -91,6 +120,12 @@ class PiSessionImportDialogTest {
 
         compose.onNodeWithTag("pi-import-session-list")
             .performScrollToNode(hasTestTag("pi-import-session-pi-16"))
+        // Composing the row is not enough on the CI's 320x640dp screens: the
+        // capped list extends below the sheet's fold, so the row's laid-out
+        // center is off screen and a tap there hits nothing. Drag the sheet
+        // content up (see helper) until row 16's center is genuinely on
+        // screen before the tap.
+        scrollSheetContentUp(hasTestTag("pi-import-session-pi-16"))
         compose.onNodeWithTag("pi-import-session-pi-16")
             .performClick()
         compose.runOnIdle { assertEquals(listOf("pi-16"), toggled) }
