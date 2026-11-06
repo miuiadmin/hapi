@@ -157,10 +157,30 @@ export type RpcListDshModelsResponse = DshModelsResponse
 export type RpcListPiModelsResponse = PiModelsResponse
 export type RpcListClaudeModelsResponse = ClaudeModelsResponse
 
+/**
+ * Tuning knobs for the RPC stall watchdog. Defaults are aimed at a
+ * self-hosted hub where a wedged runner previously stretched every caller
+ * to a full 30s timeout for 42 straight minutes (2026-11-06 postmortem).
+ */
+export interface RpcStallWatchdogOptions {
+    /** Ack timeout for the liveness probe RPC (default 10s). */
+    probeTimeoutMs?: number
+    /** Minimum spacing between probes on the same socket (default 30s). */
+    probeCooldownMs?: number
+    /** Escape hatch for tests and operators (default enabled). */
+    enabled?: boolean
+    /** Clock for cooldown bookkeeping (default Date.now). */
+    now?: () => number
+}
+
 export class RpcGateway {
+    private readonly probeLastRanAt = new Map<string, number>()
+    private readonly probesInFlight = new Set<string>()
+
     constructor(
         private readonly io: Server,
-        private readonly rpcRegistry: RpcRegistry
+        private readonly rpcRegistry: RpcRegistry,
+        private readonly stallWatchdog: RpcStallWatchdogOptions = {}
     ) {
     }
 
@@ -737,6 +757,10 @@ export class RpcGateway {
             // rethrow as RpcTimeoutError so HTTP layers can distinguish
             // "waited out the deadline" from any other transport failure.
             if (error instanceof Error && error.message.includes('operation has timed out')) {
+                // The ack ran out its full budget. The runner may be wedged
+                // at the app layer while its transport stays alive — probe
+                // before the next caller burns another full window.
+                void this.probeSocketForStall(socketId)
                 throw new RpcTimeoutError(method, timeoutMs)
             }
             throw error
@@ -750,6 +774,69 @@ export class RpcGateway {
             return JSON.parse(response) as unknown
         } catch {
             return response
+        }
+    }
+
+    /**
+     * Production postmortem (2026-11-06): a runner can starve its RPC
+     * handlers while its socket.io transport stays perfectly healthy —
+     * engine.io ping/pong keeps flowing and heartbeats keep advancing, yet
+     * every app-level emitWithAck runs out its full timeout. Nothing below
+     * the HTTP layer notices, so every caller pays a full timeout window
+     * until the runner unwedges itself (observed: 42 minutes).
+     *
+     * After an ack timeout, send one cheap machine-scoped probe
+     * (`agent-availability`, registered unconditionally by every runner) on
+     * the same socket. If even that times out while the socket still reads
+     * connected, the app layer is wedged: force a transport reconnect so the
+     * runner's socket.io client rebuilds the channel (handlers re-register
+     * on reconnect) instead of leaving every subsequent RPC to time out
+     * cold. A probe that answers — or fails fast — proves the app layer is
+     * alive, and the earlier timeout was ordinary load.
+     */
+    private async probeSocketForStall(socketId: string): Promise<void> {
+        const options = this.stallWatchdog
+        if (options.enabled === false) return
+        const now = options.now ?? Date.now
+        const cooldownMs = options.probeCooldownMs ?? 30_000
+        const last = this.probeLastRanAt.get(socketId)
+        if (last !== undefined && now() - last < cooldownMs) return
+        if (this.probesInFlight.has(socketId)) return
+        this.probeLastRanAt.set(socketId, now())
+        this.probesInFlight.add(socketId)
+        try {
+            const socket = this.io.of('/cli').sockets.get(socketId)
+            if (!socket) {
+                this.probeLastRanAt.delete(socketId)
+                return
+            }
+            const probeMethod = this.rpcRegistry
+                .getMethodsForSocket(socketId)
+                .find((registered) => registered.endsWith(':agent-availability'))
+            if (!probeMethod) return
+            const probeTimeoutMs = options.probeTimeoutMs ?? 10_000
+            const started = performance.now()
+            try {
+                await socket.timeout(probeTimeoutMs).emitWithAck('rpc-request', {
+                    method: probeMethod,
+                    params: JSON.stringify({})
+                })
+            } catch {
+                if (performance.now() - started < probeTimeoutMs) {
+                    // The handler answered with an error quickly — the app
+                    // layer is alive; this was not a stall.
+                    return
+                }
+                if (socket.connected) {
+                    console.warn(
+                        `[RPC] Stall watchdog: '${probeMethod}' probe timed out on a connected socket; forcing runner reconnect`,
+                        { socketId }
+                    )
+                    socket.disconnect(true)
+                }
+            }
+        } finally {
+            this.probesInFlight.delete(socketId)
         }
     }
 }
