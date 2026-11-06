@@ -224,7 +224,8 @@ describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
             }
         } as unknown as Server
         const rpcRegistry = {
-            getSocketIdForMethod() { return 'socket-1' }
+            getSocketIdForMethod() { return 'socket-1' },
+            getMethodsForSocket() { return [] }
         } as unknown as RpcRegistry
         return new RpcGateway(io, rpcRegistry)
     }
@@ -275,7 +276,8 @@ describe('RpcGateway ack-deadline wrapping', () => {
             }
         } as unknown as Server
         const rpcRegistry = {
-            getSocketIdForMethod() { return 'socket-1' }
+            getSocketIdForMethod() { return 'socket-1' },
+            getMethodsForSocket() { return [] }
         } as unknown as RpcRegistry
         return new RpcGateway(io, rpcRegistry)
     }
@@ -316,7 +318,8 @@ describe('RpcGateway spawnSession delivery-error narrowing', () => {
             }
         } as unknown as Server
         const rpcRegistry = {
-            getSocketIdForMethod() { return opts.socketId }
+            getSocketIdForMethod() { return opts.socketId },
+            getMethodsForSocket() { return [] }
         } as unknown as RpcRegistry
         return new RpcGateway(io, rpcRegistry)
     }
@@ -390,11 +393,10 @@ describe('RpcGateway RPC stall watchdog', () => {
                                 setTimeout(() => reject(new Error('operation has timed out')), timeoutMs)
                             })
                         }
-                        // A wedged runner: the ack never arrives, the socket.io
-                        // budget expires instead.
-                        return new Promise<never>((_, reject) => {
-                            setTimeout(() => reject(new Error('operation has timed out')), timeoutMs)
-                        })
+                        // A wedged runner: the ack deadline expires. This
+                        // tree's rpcCall narrows on the socket.io message, so
+                        // rejecting with it models the deadline blowing.
+                        return Promise.reject(new Error('operation has timed out'))
                     }
                 }
             },
@@ -421,10 +423,10 @@ describe('RpcGateway RPC stall watchdog', () => {
 
     it('force-reconnects a socket whose probe also times out while connected', async () => {
         const h = createStallHarness({ probeBehavior: 'hang', probeTimeoutMs: 20 })
-        // 30ms stop budget: the ack times out fast, then the 20ms probe
-        // times out too — wedged app layer on a live transport.
+        // The ack deadline blows instantly, then the 20ms probe times out
+        // too — wedged app layer on a live transport.
         await expect(
-            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+            h.gateway.killSession('session-1')
         ).rejects.toThrow()
         // The probe runs fire-and-forget; give its timer a beat to land.
         await new Promise((resolve) => setTimeout(resolve, 80))
@@ -436,7 +438,7 @@ describe('RpcGateway RPC stall watchdog', () => {
     it('does nothing when the probe answers — busy, not wedged', async () => {
         const h = createStallHarness({ probeBehavior: 'answer', probeTimeoutMs: 20 })
         await expect(
-            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+            h.gateway.killSession('session-1')
         ).rejects.toThrow()
         await new Promise((resolve) => setTimeout(resolve, 40))
 
@@ -447,7 +449,7 @@ describe('RpcGateway RPC stall watchdog', () => {
     it('does nothing when the probe fails fast — the handler answered', async () => {
         const h = createStallHarness({ probeBehavior: 'fast-error', probeTimeoutMs: 50 })
         await expect(
-            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+            h.gateway.killSession('session-1')
         ).rejects.toThrow()
         await new Promise((resolve) => setTimeout(resolve, 40))
 
@@ -486,12 +488,12 @@ describe('RpcGateway RPC stall watchdog', () => {
     it('respects the probe cooldown across repeated timeouts', async () => {
         const h = createStallHarness({ probeBehavior: 'hang', probeTimeoutMs: 20, probeCooldownMs: 60_000 })
         await expect(
-            h.gateway.stopRunnerSession('machine-1', 'session-a', { timeoutMs: 30 })
+            h.gateway.killSession('session-a')
         ).rejects.toThrow()
         await new Promise((resolve) => setTimeout(resolve, 80))
         // A second caller times out well inside the cooldown window.
         await expect(
-            h.gateway.stopRunnerSession('machine-1', 'session-b', { timeoutMs: 30 })
+            h.gateway.killSession('session-b')
         ).rejects.toThrow()
         await new Promise((resolve) => setTimeout(resolve, 80))
 
@@ -502,7 +504,7 @@ describe('RpcGateway RPC stall watchdog', () => {
     it('can be disabled entirely', async () => {
         const h = createStallHarness({ probeBehavior: 'hang', enabled: false })
         await expect(
-            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+            h.gateway.killSession('session-1')
         ).rejects.toThrow()
         await new Promise((resolve) => setTimeout(resolve, 40))
 

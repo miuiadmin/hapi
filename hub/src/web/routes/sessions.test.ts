@@ -4,7 +4,6 @@ import type { Session, SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -2141,7 +2140,7 @@ describe('session RPC delivery error typing', () => {
         const { app } = createApp(createSession({ metadata: {
             path: '/tmp/project', host: 'localhost', flavor: 'pi'
         } }), {
-            callPiRpc: async () => { throw error }
+            listPiModelsForSession: async () => { throw error }
         })
         const response = await app.request('/api/sessions/session-1/pi-models')
         expect(response.status).toBe(status)
