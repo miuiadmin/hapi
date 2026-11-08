@@ -319,4 +319,56 @@ describe('automatic first-turn title generation', () => {
             store.close()
         }
     })
+
+    it.each(['error', 'terminated', 'cleared'])('runs the title fallback when the session ends via %s without a turn boundary', async (reason) => {
+        const requests: Request[] = []
+        globalThis.fetch = (async (input, init) => {
+            requests.push(new Request(String(input), init))
+            return new Response(JSON.stringify({
+                choices: [{ message: { content: 'Interrupted workflow' } }]
+            }), { status: 200 })
+        }) as typeof fetch
+
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            { of: () => ({ to: () => ({ emit: () => {} }) }) } as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                `session-end-${reason}`,
+                { path: '/workspace/project', host: 'localhost' },
+                null,
+                'default'
+            )
+            const now = Date.now()
+            // The thinking-true transition opens the turn; the matching
+            // thinking-false transition never arrives (dropped heartbeat), so
+            // the session end below is the only remaining turn boundary.
+            engine.handleSessionAlive({ sid: session.id, time: now, thinking: true })
+            store.messages.addMessage(session.id, {
+                role: 'user',
+                content: { type: 'text', text: 'Summarize the interrupted workflow' }
+            })
+            store.messages.addMessage(session.id, {
+                role: 'assistant',
+                content: { type: 'text', text: 'The workflow was interrupted midway.' }
+            })
+            engine.handleSessionEnd({ sid: session.id, time: now + 1, reason })
+
+            for (let attempt = 0; attempt < 20; attempt += 1) {
+                if (engine.getSession(session.id)?.metadata?.summary?.text) break
+                await new Promise((resolve) => setTimeout(resolve, 0))
+            }
+
+            expect(requests).toHaveLength(1)
+            expect(engine.getSession(session.id)?.metadata?.summary?.text).toBe('Interrupted workflow')
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
 })

@@ -745,10 +745,18 @@ export class SyncEngine {
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
         this.sessionCache.handleSessionEnd(payload)
-        if (payload.reason === 'completed') {
-            this.titleTurnCompletedIds.add(payload.sid)
-            void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
-        }
+        // ACP flavors (dsh, kimi, cursor, copilot, agy) emit no claude-style
+        // ready event, so a turn whose thinking transition was never observed
+        // stays open forever — production traces show a quarter of short-lived
+        // dsh sessions ending with titleSuggestionTurn.completed=false and no
+        // title at all. Ending the session is the last reliable turn boundary,
+        // so run the best-effort title fallback for every reason, not just
+        // clean completions. Generation itself stays gated on the store rows
+        // (answered prompt), so an aborted turn yields no title, not a wrong
+        // one. (Upstream PR #2324 also seeds prompt titles from transcript
+        // echoes; that half rides the next stack sync-merge with #2252.)
+        this.titleTurnCompletedIds.add(payload.sid)
+        void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
         this.eventPublisher.emit({
             type: 'session-ended',
             sessionId: payload.sid,
