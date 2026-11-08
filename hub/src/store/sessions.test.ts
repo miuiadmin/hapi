@@ -577,7 +577,9 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         ['cursorSessionId', 'cursor-thread-x'],
         ['kimiSessionId', 'kimi-thread-x'],
         ['copilotSessionId', 'copilot-thread-x'],
-        ['piSessionId', 'pi-thread-x']
+        ['piSessionId', 'pi-thread-x'],
+        ['dshSessionId', 'dsh-thread-x'],
+        ['hermesSessionId', 'hermes-session-x']
     ])('preserves %s across an archive metadata replacement', (field, value) => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(

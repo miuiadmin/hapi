@@ -91,6 +91,9 @@ export const MetadataSchema = z.object({
     kimiSessionId: z.string().optional(),
     copilotSessionId: z.string().optional(),
     dshSessionId: z.string().optional(),
+    // Native Hermes gateway session id (persisted by the Hermes gateway
+    // daemon in its own state store). Resumed through ACP `session/resume`.
+    hermesSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
     piResumeAttempt: z.object({
         state: z.enum(['resuming', 'terminating', 'quarantined']),

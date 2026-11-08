@@ -2128,11 +2128,13 @@ export function buildCliArgs(
             ? 'opencode'
             : agent === 'dsh'
               ? 'dsh'
-              : agent === 'pi'
-                ? 'pi'
-                : agent === 'agy'
-                  ? 'agy'
-                  : 'claude';
+              : agent === 'hermes'
+                ? 'hermes'
+                : agent === 'pi'
+                  ? 'pi'
+                  : agent === 'agy'
+                    ? 'agy'
+                    : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -2190,7 +2192,9 @@ export function buildCliArgs(
   }
   // Pi RPC mode has no permission switching; never pass these flags to it
   // (the Pi parser rejects --permission-mode and ignores --yolo).
-  if (agent !== 'pi') {
+  // Hermes manages its own approval policy (empty launch catalog); DSH on this
+  // stack carries the four native permission modes, so it keeps the flags.
+  if (agent !== 'pi' && agent !== 'hermes') {
     if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
       args.push('--permission-mode', options.permissionMode);
     } else if (yolo) {
