@@ -41,6 +41,7 @@ export type {
     DshPermissionMode,
     GeminiPermissionMode,
     GrokPermissionMode,
+    HermesPermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode,

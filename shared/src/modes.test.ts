@@ -49,6 +49,10 @@ describe('getPermissionModesForFlavor', () => {
         ])
     })
 
+    test("returns the three Hermes modes (edit-approval axis has no read-only)", () => {
+        expect(getPermissionModesForFlavor('hermes')).toEqual(['default', 'safe-yolo', 'yolo'])
+    })
+
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {
         expect(getPermissionModesForFlavor('pi')).toEqual([])
     })
