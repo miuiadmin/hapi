@@ -115,7 +115,8 @@ public enum SummaryPatching {
             switch AgentFlavor(rawValue: flavor) {
             case .claude: flavorSessionId = metadata.claudeSessionId
             case .codex: flavorSessionId = metadata.codexSessionId
-            case .dsh: flavorSessionId = nil
+            case .dsh: flavorSessionId = metadata.dshSessionId
+            case .hermes: flavorSessionId = metadata.hermesSessionId
             case .gemini: flavorSessionId = metadata.geminiSessionId
             case .opencode: flavorSessionId = metadata.opencodeSessionId
             case .grok: flavorSessionId = metadata.grokSessionId

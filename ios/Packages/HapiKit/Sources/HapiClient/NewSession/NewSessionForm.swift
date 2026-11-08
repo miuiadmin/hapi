@@ -137,7 +137,7 @@ public enum NewSessionLogic {
         case .claude, .grok: return .bypassPermissions
         case .agy: return .alwaysProceed
         case .codex, .copilot, .cursor, .gemini, .kimi, .opencode, .dsh: return .yolo
-        case .pi, .other: return nil
+        case .hermes, .pi, .other: return nil
         }
     }
 

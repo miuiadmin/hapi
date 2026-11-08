@@ -434,7 +434,7 @@ final class NewSessionModel {
 
     var permission: PermissionUI {
         let agent = form.agent
-        if agent == .pi {
+        if agent == .pi || agent == .hermes {
             return .managed
         }
         if NewSessionLogic.usesNativePermissionSelect(agent) {
