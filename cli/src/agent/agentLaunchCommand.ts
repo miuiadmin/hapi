@@ -15,6 +15,7 @@ const DEFAULT_COMMANDS: Record<AgentFlavor, string> = {
     gemini: 'gemini',
     grok: 'grok',
     hermes: 'hermes',
+    berry: 'berry',
     kimi: 'kimi',
     opencode: 'opencode',
     pi: 'pi',
@@ -29,6 +30,7 @@ export function getAgentLaunchCommand(
     if (flavor === 'copilot') return env.COPILOT_CLI_PATH?.trim() || DEFAULT_COMMANDS.copilot
     if (flavor === 'dsh') return env.HAPI_DSH_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.dsh
     if (flavor === 'hermes') return env.HAPI_HERMES_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.hermes
+    if (flavor === 'berry') return env.HAPI_BERRY_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.berry
     return DEFAULT_COMMANDS[flavor]
 }
 

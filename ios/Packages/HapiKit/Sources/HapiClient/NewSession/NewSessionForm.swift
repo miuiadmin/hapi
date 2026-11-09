@@ -136,7 +136,7 @@ public enum NewSessionLogic {
         switch flavor {
         case .claude, .grok: return .bypassPermissions
         case .agy: return .alwaysProceed
-        case .codex, .copilot, .cursor, .gemini, .hermes, .kimi, .opencode, .dsh: return .yolo
+        case .codex, .copilot, .cursor, .gemini, .hermes, .berry, .kimi, .opencode, .dsh: return .yolo
         case .pi, .other: return nil
         }
     }

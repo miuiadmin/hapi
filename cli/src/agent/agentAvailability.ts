@@ -10,6 +10,7 @@ import { getDefaultClaudeCodePath } from '@/claude/sdk/utils'
 import { resolveCodexCommand } from '@/codex/utils/codexExecutable'
 import { resolveDshAcpCommand } from '@/dsh/utils/dshBackend'
 import { resolveHermesAcpCommand } from '@/hermes/utils/hermesBackend'
+import { resolveBerryAcpCommand } from '@/berry/utils/berryBackend'
 import { getAgentLaunchCommand, resolveExecutable } from './agentLaunchCommand'
 
 type LaunchEnvironment = Record<string, string | undefined>
@@ -40,6 +41,11 @@ function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment, context: 
         // The real launch shape is `hermes acp` (subcommand, not a flag), so the
         // generic single-command resolution would probe the wrong argv.
         return resolveHermesAcpCommand(env)
+    }
+    if (agent === 'berry') {
+        // The real launch shape is `berry acp` (subcommand, not a flag), so the
+        // generic single-command resolution would probe the wrong argv.
+        return resolveBerryAcpCommand(env)
     }
     return { command: getAgentLaunchCommand(agent, env), args: [] }
 }

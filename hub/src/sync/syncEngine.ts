@@ -2956,6 +2956,9 @@ export class SyncEngine {
         // through ACP `session/resume`. Never fall through to a stale cross-flavor id.
         if (flavor === 'hermes') return metadata.hermesSessionId ?? null
 
+        // Berry persists sessions in its own SQLite store; same resume shape.
+        if (flavor === 'berry') return metadata.berrySessionId ?? null
+
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }
 

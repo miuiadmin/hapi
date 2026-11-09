@@ -154,13 +154,13 @@ struct CatalogTests {
 
     @Test func knownFlavorsMatchAgentFlavorsOrder() {
         #expect(AgentFlavor.knownFlavors.map(\.rawValue) == [
-            "agy", "claude", "codex", "dsh", "copilot", "cursor",
+            "agy", "berry", "claude", "codex", "dsh", "copilot", "cursor",
             "gemini", "grok", "hermes", "kimi", "opencode", "pi",
         ])
     }
 
     @Test func creatableFlavorsExcludeOnlyGemini() {
-        #expect(AgentFlavor.creatableFlavors.count == 11)
+        #expect(AgentFlavor.creatableFlavors.count == 12)
         #expect(!AgentFlavor.creatableFlavors.contains(.gemini))
         #expect(AgentFlavor.creatableFlavors.contains(.claude))
     }

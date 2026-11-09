@@ -61,6 +61,9 @@ function getAgentConfigDir(flavor?: string): string {
         case 'hermes':
             // Hermes resolves its home from $HERMES_HOME, then ~/.hermes.
             return process.env.HERMES_HOME || join(getHomeDirectory(), '.hermes');
+        case 'berry':
+            // Berry resolves its data dir from $BERRY_AGENT_DATA_DIR, then ~/.berry-agent.
+            return process.env.BERRY_AGENT_DATA_DIR || join(getHomeDirectory(), '.berry-agent');
         default:
             return join(getHomeDirectory(), `.${normalizedFlavor}`);
     }
@@ -88,6 +91,10 @@ function getUserSkillsRoots(flavor?: string): string[] {
             break;
         case 'hermes':
             // Mirrors Hermes' skills dir: $HERMES_HOME/skills.
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+        case 'berry':
+            // Mirrors Berry's user skills layer: <data dir>/skills.
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
     }

@@ -53,6 +53,10 @@ describe('getPermissionModesForFlavor', () => {
         expect(getPermissionModesForFlavor('hermes')).toEqual(['default', 'safe-yolo', 'yolo'])
     })
 
+    test("returns the four Berry modes (sandbox axis covers read-only)", () => {
+        expect(getPermissionModesForFlavor('berry')).toEqual(['default', 'read-only', 'safe-yolo', 'yolo'])
+    })
+
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {
         expect(getPermissionModesForFlavor('pi')).toEqual([])
     })

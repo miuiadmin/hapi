@@ -29,6 +29,8 @@ export function resolveAgentSessionIdFromMetadata(
         // cross-flavor id (the default claude branch would otherwise hide
         // the Reopen affordance for every archived Hermes session).
         case 'hermes': return metadata.hermesSessionId ?? undefined
+        // Berry persists sessions in its own SQLite store; same resume shape.
+        case 'berry': return metadata.berrySessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }

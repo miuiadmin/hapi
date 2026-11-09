@@ -94,6 +94,9 @@ export const MetadataSchema = z.object({
     // Native Hermes gateway session id (persisted by the Hermes gateway
     // daemon in its own state store). Resumed through ACP `session/resume`.
     hermesSessionId: z.string().optional(),
+    // Native Berry Agent session id (persisted in Berry's SQLite sessions.db).
+    // Resumed through ACP `session/resume`.
+    berrySessionId: z.string().optional(),
     piSessionId: z.string().optional(),
     piResumeAttempt: z.object({
         state: z.enum(['resuming', 'terminating', 'quarantined']),

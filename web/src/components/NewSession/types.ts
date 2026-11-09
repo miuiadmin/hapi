@@ -39,6 +39,9 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
         { value: 'auto', label: 'Default' },
     ],
     dsh: [],
+    // Berry models are opaque runtime-discovered ids (ListBerryModels),
+    // so the static launch-time preset list is empty like DSH.
+    berry: [],
     // Hermes models are opaque runtime-discovered ids (ListHermesModels),
     // so the static launch-time preset list is empty like DSH.
     hermes: [],

@@ -166,7 +166,8 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR: Partial<Record<AgentFlavor, keyof Metada
     copilot: 'copilotSessionId',
     pi: 'piSessionId',
     dsh: 'dshSessionId',
-    hermes: 'hermesSessionId'
+    hermes: 'hermesSessionId',
+    berry: 'berrySessionId'
 }
 
 function getSummaryAgentSessionId(metadata: Metadata): string | undefined {

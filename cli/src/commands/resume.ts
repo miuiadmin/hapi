@@ -11,6 +11,7 @@ import type {
     DshPermissionMode,
     GrokPermissionMode,
     HermesPermissionMode,
+    BerryPermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode
@@ -117,6 +118,19 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as HermesPermissionMode | undefined,
+            startingMode: 'remote'
+        })
+        return
+    }
+
+    if (target.flavor === 'berry') {
+        const { runBerry } = await import('@/berry/runBerry')
+        await runBerry({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as BerryPermissionMode | undefined,
             startingMode: 'remote'
         })
         return

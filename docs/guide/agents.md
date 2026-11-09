@@ -21,6 +21,7 @@ agent's integration; their supported syntax varies by agent.
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Hermes | `hapi hermes` | ACP (`hermes acp`) | — | ✓ | `default` `safe-yolo` `yolo` | ✓ |
+| Berry Agent | `hapi berry` | ACP (`berry acp`) | — | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Antigravity (agy) | `hapi agy` | Persistent headless NDJSON over stdio | — | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
@@ -31,7 +32,7 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, DeepSeek Harness, and Hermes remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-session model config via `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Hermes' ACP adapter similarly resumes through `session/resume` (replaying its transcript, which HAPI suppresses in favor of its own Hub history) and exposes models as `category: "model"` config options applied with `session/set_config_option`.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, DeepSeek Harness, Hermes, and Berry Agent remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-session model config via `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Hermes' ACP adapter similarly resumes through `session/resume` (replaying its transcript, which HAPI suppresses in favor of its own Hub history) and exposes models as `category: "model"` config options applied with `session/set_config_option`. Berry Agent's ACP face exposes its SQLite session catalog through `session/list` and `session/resume` without transcript replay, and surfaces models the same config-option way.
 
 ### Permission modes
 
@@ -39,7 +40,7 @@ Permission modes are per-agent — each flavor exposes its own set (see the matr
 
 ### Local and remote mode
 
-Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Hermes, Pi, and Antigravity accept input only through HAPI's remote interface.
+Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Hermes, Berry Agent, Pi, and Antigravity accept input only through HAPI's remote interface.
 
 - **Remote → local:** continue in the terminal. If it shows the remote-control screen, press double-space to return to local input.
 - **Local → remote:** send a message from the web UI or phone; HAPI handles the handoff.
@@ -53,7 +54,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. Pi, Antigravity, and DSH resume with input still controlled from HAPI rather than the terminal. Hermes resume restores the native gateway session through `session/resume`; the history replay it emits is suppressed because the Hub transcript is the UI source.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. Pi, Antigravity, and DSH resume with input still controlled from HAPI rather than the terminal. Hermes resume restores the native gateway session through `session/resume`; the history replay it emits is suppressed because the Hub transcript is the UI source. Berry Agent resume restores the native SQLite session through `session/resume`.
 
 ### Mathematical formulas in HAPI Markdown
 
@@ -346,6 +347,38 @@ itself uses: `$HERMES_HOME/skills` (`~/.hermes/skills` by default), the
 project's `.hermes/skills`, and the shared `~/.agents/skills` / `.agents/skills`
 directories. HAPI does not bridge MCP servers to Hermes in v1; slash commands
 are routed by the Hermes gateway rather than read from files.
+
+## Berry Agent
+
+`hapi berry` uses the shared ACP transport with the `berry` CLI's `acp`
+subcommand (`berry acp`). The Berry CLI (berry-agent, Node.js ≥ 24) carries its
+own plugin runtime, so a normal berry-agent installation on the runner machine
+is the only prerequisite. Configure a different entrypoint with
+`HAPI_BERRY_ACP_COMMAND` or a JSON argument array with
+`HAPI_BERRY_ACP_ARGS_JSON`; an overridden command receives no default
+arguments.
+
+Berry sessions are remote-only. HAPI stores the native Berry session id (Berry
+persists sessions in its own SQLite store) and restores it with
+`session/resume` after a restart or archive; the Hub message history remains
+the source for the chat UI. Model selection is available: Berry's model catalog
+is exposed through the session RPC `ListBerryModels` (ids are opaque
+`provider/model` strings) and applied per turn with ACP
+`session/set_config_option`. Effort pickers are not exposed in v1.
+
+HAPI permission modes map onto Berry's sandbox axis: `default` maps to the
+workspace-write sandbox, `read-only` maps to Berry's read-only sandbox,
+`safe-yolo` maps to `accept_edits`, and `yolo` maps to `dont_ask` (danger).
+Tool approvals always surface as ACP `session/request_permission`; the HAPI
+permission bridge auto-approves them according to the selected mode (`yolo`
+approves for the session, `safe-yolo` one turn at a time). Session titles are
+generated by the Hub, matching other ACP flavors without a native rename tool.
+
+HAPI's `$` skill menu for Berry sessions reads the same skill roots berry-agent
+itself uses: `$BERRY_AGENT_DATA_DIR/skills` (`~/.berry-agent/skills` by
+default) and the shared `~/.agents/skills` / `.agents/skills` directories (the
+project layer is the shared `.agents/skills`). HAPI does not bridge MCP servers
+to Berry in v1.
 
 ## Other agents
 

@@ -99,6 +99,62 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const startingMode = parsed.data.startingMode
         const namespace = c.get('namespace')
 
+
+        const effectiveAgent = parsed.data.agent
+            ?? hubDefaults?.agent
+            ?? STOCK_PEER_SPAWN_DEFAULTS.agent
+        // Validate startingMode against the resolved agent (hub default may be
+        // AGY/DSH even when the request omitted agent).
+        if (
+            (effectiveAgent === 'agy' || effectiveAgent === 'dsh' || effectiveAgent === 'hermes' || effectiveAgent === 'berry')
+            && startingMode
+            && startingMode !== 'remote'
+        ) {
+            return c.json({ error: `${effectiveAgent.toUpperCase()} only supports remote mode` }, 400)
+        }
+        if (
+            parsed.data.permissionMode !== undefined
+            && !getPermissionModesForFlavor(effectiveAgent).includes(parsed.data.permissionMode)
+        ) {
+            return c.json({
+                error: `permission mode ${parsed.data.permissionMode} is not supported by ${effectiveAgent}`,
+                code: 'invalid_permission_mode' as const
+            }, 400)
+        }
+
+        const resolved = resolvePeerSpawnConfig({
+            ...(parsed.data.agent !== undefined ? { agent: parsed.data.agent } : {}),
+            ...(parsed.data.permissionMode !== undefined ? { permissionMode: parsed.data.permissionMode } : {}),
+            ...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
+            ...(parsed.data.effort !== undefined ? { effort: parsed.data.effort } : {})
+        }, hubDefaults)
+
+        // When the caller supplies an explicit yolo boolean without a native
+        // permissionMode, preserve the runner's boolean path — injecting a hub
+        // mode would override yolo:false (runner prioritizes permissionMode).
+        // Flavors with an empty launch catalog (pi/dsh) must omit permissionMode.
+        const permissionModeForSpawn =
+            parsed.data.permissionMode === undefined && parsed.data.yolo !== undefined
+                ? undefined
+                : getPermissionModesForFlavor(resolved.agent).length === 0
+                    ? undefined
+                    : resolved.permissionMode
+
+        // Apply hub model only when the caller omitted agent+model (full defaults
+        // path). An explicit agent with model omitted means native Default —
+        // do not inject the hub model for that flavor.
+        const modelForSpawn = parsed.data.model !== undefined
+            ? parsed.data.model
+            : parsed.data.agent === undefined
+                ? resolved.model
+                : undefined
+        const effortForSpawn = parsed.data.effort !== undefined
+            ? parsed.data.effort
+            : parsed.data.agent === undefined
+                ? resolved.effort
+                : undefined
+
+>>>>>>> b754ab38 (feat(cli): add Berry Agent flavor over ACP)
         const result = await engine.spawnSession(
             machineId,
             parsed.data.directory,
