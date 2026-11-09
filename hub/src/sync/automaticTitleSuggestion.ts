@@ -9,7 +9,7 @@ import type { TitleSuggestionService } from './titleSuggestion'
  * with the flavor system-prompt modules when a flavor gains a native tool.
  */
 export const FLAVORS_WITHOUT_NATIVE_TITLE_TOOLS: ReadonlySet<string> = new Set([
-    'dsh', 'kimi', 'cursor', 'copilot', 'agy', 'hermes'
+    'dsh', 'kimi', 'cursor', 'copilot', 'agy', 'hermes', 'berry'
 ])
 
 type AutomaticTitleSuggestionOptions = {
