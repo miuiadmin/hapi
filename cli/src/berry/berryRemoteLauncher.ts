@@ -317,7 +317,6 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             case 'tool_call':
             case 'tool_result':
             case 'plan':
-            case 'round_summary':
                 break
             default: {
                 const _exhaustive: never = message
