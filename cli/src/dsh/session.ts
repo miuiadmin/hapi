@@ -1,6 +1,7 @@
 import { ApiClient, ApiSessionClient } from '@/lib'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
+import type { SessionModelReasoningEffort } from '@/api/types'
 import type { PermissionMode } from '@hapi/protocol/types'
 import type { DshMode } from './types'
 
@@ -48,6 +49,14 @@ export class DshSession extends AgentSessionBase<DshMode> {
 
     setModel = (model: string | null): void => {
         this.model = model;
+    };
+
+    /** Runtime/rollback updates for the reasoning-effort preference: writes
+     * the inherited field so the keepalive runtime (which the hub picker
+     * mirrors) reports the live value — the launcher's onEffortRollback
+     * corrects a failed switch through here, exactly like setModel. */
+    setModelReasoningEffort = (effort: SessionModelReasoningEffort | undefined): void => {
+        this.modelReasoningEffort = effort;
     };
 
     /** Runtime permission-mode updates (SetSessionConfig RPC). Writes the

@@ -68,6 +68,10 @@ export async function runDsh(opts: {
         const active = sessionRef.current
         if (!active) return
         active.setModel(currentModel ?? null)
+        // Mirror the reasoning-effort tracking into the keepalive runtime so
+        // the hub picker always shows the live preference (in particular the
+        // corrected value after a rollback below).
+        active.setModelReasoningEffort(currentReasoningEffort)
         active.pushKeepAlive()
     }
 
@@ -141,6 +145,14 @@ export async function runDsh(opts: {
         permissionMode: opts.permissionMode,
         onModelRollback: (model) => {
             currentModel = model ?? undefined
+            syncSessionMode()
+        },
+        onEffortRollback: (effort) => {
+            // A failed effort switch never took on the dsh side: reset the
+            // tracking to the launcher's live value and re-sync so the hub
+            // picker drops the failed pick and later turns stop carrying it
+            // (mirror of the model rollback path above).
+            currentReasoningEffort = effort
             syncSessionMode()
         },
         onConfigDiscovered: (model) => {

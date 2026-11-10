@@ -40,8 +40,15 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
     /** Set when abort closed the ACP session (close-path cancels only — the
-     * standard session/cancel notification keeps the session alive). */
+     * standard session/cancel notification keeps the session alive), or when
+     * a terminal session-gone prompt rejection after a cancel is detected as
+     * an implicit session end (see the prompt catch in runMainLoop). */
     private acpSessionEnded = false
+    /** A session/cancel was issued on the current ACP session's life and no
+     * (re)establishment has happened since. Custom dsh wrappers may CLOSE the
+     * session on session/cancel without exiting; this flag is what makes the
+     * next session-gone prompt rejection attributable to that cancel. */
+    private cancelSinceEstablishment = false
     /** In-flight abort; queued prompts await it so none races the session close. */
     private abortCompletion: Promise<void> | null = null
     /** Bumped at the top of every handleAbort; lets the respawn branch detect
@@ -74,6 +81,14 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             permissionMode?: string
             onModelRollback?: (model: string | null) => void
             onConfigDiscovered?: (model: string | null) => void
+            /** A reasoning-effort switch failed (or the model exposes no
+             * thought_level option): the argument is the live effort
+             * preference in the picker's domain — undefined = none tracked,
+             * null = "Default"/provider default, string = a concrete value.
+             * The host resets its tracking and re-syncs so the hub picker
+             * stops showing the failed value and later turns stop
+             * re-requesting it (mirror of onModelRollback). */
+            onEffortRollback?: (effort: string | null | undefined) => void
         } = {}
     ) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -239,7 +254,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // session/resume keeps every prior turn). Only when the
                 // stored id no longer resumes (cleaned ~/.dsh, version
                 // migration) start fresh. (The standard session/cancel
-                // notification keeps the session alive and never lands here.)
+                // notification keeps the official server's session alive;
+                // this branch also serves the implicit session-end detected
+                // after a cancel on custom wrappers that close the session.)
                 // Snapshot the abort generation: an abort landing while the
                 // replacement session is being created targets the old session
                 // id and must also discard the already-dequeued batch (the user
@@ -283,6 +300,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     continue
                 }
                 this.acpSessionEnded = false
+                // The replacement session is live: a later session-gone
+                // rejection cannot be attributed to the earlier cancel.
+                this.cancelSinceEstablishment = false
                 this.messageBuffer.addMessage(resumed ? 'DSH session resumed after abort' : 'DSH session restarted after abort', 'status')
             }
 
@@ -327,7 +347,15 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // reasoning-effort picker drives this via the queued turn's mode.
             const requestedEffort = batch.mode.modelReasoningEffort
             if (requestedEffort !== undefined) {
-                await this.applyReasoningEffort(backend, acpSessionId, requestedEffort)
+                const appliedEffort = await this.applyReasoningEffort(backend, acpSessionId, requestedEffort)
+                if (appliedEffort === null) {
+                    // Same contract as the model switch: the failed
+                    // preference never took, so the host's tracking (and
+                    // through it the hub picker) is corrected back to the
+                    // live value — later turns stop re-requesting the failed
+                    // one, and the respawn below skips it too.
+                    this.opts.onEffortRollback?.(this.liveEffortPreference())
+                }
             }
 
             this.session.onThinkingChange(true)
@@ -401,6 +429,21 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                             }
                         }
                     }
+                } else if (this.cancelSinceEstablishment && isSessionGoneRejection(message)) {
+                    // Implicit session-end detection. The official dsh server
+                    // keeps the session alive across session/cancel, but
+                    // custom wrappers (HAPI_DSH_ACP_COMMAND) may CLOSE the
+                    // session on the notification without exiting — and in
+                    // standard cancel mode there is no event for that (the
+                    // close-path listener below never fires), so every later
+                    // prompt would fail forever on the dead session. The
+                    // terminal unknown/expired-session rejection IS the
+                    // observable signal: mark the session ended so the next
+                    // loop iteration re-enters the resume branch (resume the
+                    // stored id, or start fresh when it no longer resumes).
+                    this.acpSessionEnded = true
+                    this.messageBuffer.addMessage('DSH session ended by the earlier cancel; it will be restarted for the next message', 'status')
+                    failureMessage = `DSH prompt failed (session closed by the earlier cancel; restarting it for the next message): ${message}`
                 } else {
                     failureMessage = `DSH prompt failed: ${message}`
                 }
@@ -459,7 +502,10 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // Any close-path cancellation ends the ACP session — including the
             // permission handler's `abort` decision, which cancels through the
             // backend directly and never enters handleAbort. Track it centrally
-            // so the next message always respawns the session.
+            // so the next message always respawns the session. (Dormant in
+            // production while cancelMode is 'standard' — the backend only
+            // fires this listener on the close-fallback path — but registered
+            // regardless so flipping the mode needs no launcher change.)
             backend.onSessionClosedByCancel(() => {
                 this.acpSessionEnded = true
             })
@@ -495,8 +541,10 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             }
             this.acpSessionId = acpSessionId
             // The (re)established session is live: a close-path cancel that
-            // ended a previous session does not apply to this one.
+            // ended a previous session does not apply to this one, and the
+            // implicit-end detector is disarmed until the next cancel.
             this.acpSessionEnded = false
+            this.cancelSinceEstablishment = false
             // Pin dshSessionId before the main loop so a runner restart can resume
             // (tiann/hapi#913: gate until the metadata write reaches the hub — a
             // SIGTERM before that strands the session). Persist even when the id
@@ -536,10 +584,17 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             await this.applyModelSwitch(backend, acpSessionId, this.currentBackendModel)
         }
         if (opts.respawn && this.currentReasoningEffort !== null) {
-            // Same re-apply contract for the reasoning-effort preference.
-            const effortOption = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')
-            if (effortOption) {
-                await backend.setConfigOption(acpSessionId, effortOption.id, this.currentReasoningEffort)
+            // Same re-apply contract as the model preference, with one
+            // difference: a failure here DROPS the effort preference. The
+            // fresh session is the preference's only chance to re-materialize
+            // (the old session it was proven on is gone), so a value the new
+            // session rejects — e.g. after a model switch to one without that
+            // effort level — is cleared instead of failing every later
+            // respawn; the host is told so the hub picker follows.
+            const reapplied = await this.applyEffortValue(backend, acpSessionId, this.currentReasoningEffort)
+            if (reapplied === null) {
+                this.currentReasoningEffort = null
+                this.opts.onEffortRollback?.(undefined)
             }
         }
         if (this.currentBackendModel) {
@@ -560,9 +615,11 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // Permission 'abort' decisions cancel through the backend directly
             // and never enter handleAbort: record the pending close here so the
             // main loop defers the next message until the session/close response
-            // lands, exactly like a handleAbort-initiated close.
+            // lands, exactly like a handleAbort-initiated close. The cancel it
+            // issues also arms the implicit-end detector, mirroring handleAbort.
             (cancellation) => {
                 this.abortCompletion ??= cancellation
+                this.cancelSinceEstablishment = true
             }
         )
     }
@@ -722,14 +779,35 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
      * Apply a reasoning-effort change through the 'reasoning_effort' config
      * option (category thought_level). DSH's value space is the model's
      * effort ids (off/low/high/max for DeepSeek) with '' = Provider default,
-     * so the picker's null ("Default") maps to ''. No-op (with a status
-     * note) when the model exposes no thought_level option.
+     * so the picker's null ("Default") maps to ''. Returns the applied value,
+     * or null when the switch failed or the model exposes no thought_level
+     * option (the caller keeps the previous effort and corrects the host via
+     * onEffortRollback) — the same contract as applyModelSwitch. A request
+     * that already matches the live value returns it without a wire call.
      */
     private async applyReasoningEffort(
         backend: ReturnType<typeof createDshBackend>,
         acpSessionId: string,
         effort: string | null
-    ): Promise<void> {
+    ): Promise<string | null> {
+        const value = effort ?? ''
+        if (value === this.currentReasoningEffort) return value
+        return this.applyEffortValue(backend, acpSessionId, value)
+    }
+
+    /**
+     * Fire the set_config_option for a concrete effort value without the
+     * preference dedupe — the respawn path re-applies the live preference to
+     * a FRESH session whose server-side thought level is unknown, so even a
+     * value equal to `currentReasoningEffort` must go over the wire.
+     * Only a success updates the tracked preference; on failure the previous
+     * value stands and null is returned.
+     */
+    private async applyEffortValue(
+        backend: ReturnType<typeof createDshBackend>,
+        acpSessionId: string,
+        value: string
+    ): Promise<string | null> {
         const option = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')
         if (!option) {
             logger.warn('[dsh-acp] Cannot set reasoning effort: agent exposes no thought_level config option')
@@ -737,14 +815,13 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 type: 'message',
                 message: 'Cannot set reasoning effort: the current DSH model exposes no thought levels.'
             })
-            return
+            return null
         }
-        const value = effort ?? ''
-        if (value === this.currentReasoningEffort) return
         try {
             await backend.setConfigOption(acpSessionId, option.id, value)
             this.currentReasoningEffort = value
             this.messageBuffer.addMessage(`[EFFORT:${value || 'default'}]`, 'system')
+            return value
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             logger.warn('[dsh-acp] reasoning effort switch failed', { message })
@@ -752,7 +829,16 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 type: 'message',
                 message: `Failed to switch DSH reasoning effort: ${message}`
             })
+            return null
         }
+    }
+
+    /** The live effort preference in the picker's domain: undefined = none
+     * tracked, null = "Default" (DSH's ''), string = a concrete value. This
+     * is what onEffortRollback reports after a failed apply. */
+    private liveEffortPreference(): string | null | undefined {
+        if (this.currentReasoningEffort === null) return undefined
+        return this.currentReasoningEffort === '' ? null : this.currentReasoningEffort
     }
 
     private async handleAbort(): Promise<void> {
@@ -773,7 +859,11 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.abortController = new AbortController()
         this.session.queue.reset()
         // Record the abort synchronously: the main loop awaits
-        // abortCompletion before dequeuing the next message.
+        // abortCompletion before dequeuing the next message. Also arm the
+        // implicit-end detector: this cancel may (on a custom wrapper) close
+        // the session, which is only observable through the next prompt's
+        // terminal session-gone rejection.
+        this.cancelSinceEstablishment = true
         this.abortCompletion ??= this.closeSessionForAbort()
         await this.abortCompletion
         await this.permissionHandler?.cancelAll('User aborted')
@@ -788,10 +878,13 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         // dead transport cannot accept a cancel anyway).
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
-            // The onSessionClosedByCancel listener owns acpSessionEnded for
-            // every close-path cancellation; nothing to do here on the
-            // session/cancel path, which keeps the session alive (verified
-            // against dsh 0.2.2-rc.1).
+            // On the close-fallback path the onSessionClosedByCancel listener
+            // owns acpSessionEnded. On the standard session/cancel path the
+            // official server keeps the session alive (verified against dsh
+            // 0.2.2-rc.1); a custom wrapper that closes it instead surfaces
+            // only through the next prompt's terminal session-gone rejection,
+            // which the prompt catch in runMainLoop detects (the
+            // cancelSinceEstablishment flag armed by the caller).
         }
     }
 
@@ -807,4 +900,28 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
         args: entry.args,
         env: []
     }))
+}
+
+/** Terminal session-gone JSON-RPC rejection phrasings, matched on the error
+ * message: the ACP transport drops the JSON-RPC error code and rejects with
+ * `new Error(message)`, so the phrasing is the only identity available.
+ * These are the answers a server gives when the targeted session no longer
+ * exists — e.g. a custom dsh wrapper (HAPI_DSH_ACP_COMMAND) that closed the
+ * session on session/cancel. Used only for the implicit session-end
+ * detection in runMainLoop, gated on a cancel having been issued earlier in
+ * the same session's life. */
+const SESSION_GONE_REJECTION_PATTERNS = [
+    'session not found',
+    'unknown session',
+    'no such session',
+    'session expired',
+    'expired session',
+    'session has expired',
+    'session already closed',
+    'session is closed'
+]
+
+function isSessionGoneRejection(message: string): boolean {
+    const normalized = message.toLowerCase()
+    return SESSION_GONE_REJECTION_PATTERNS.some((pattern) => normalized.includes(pattern))
 }

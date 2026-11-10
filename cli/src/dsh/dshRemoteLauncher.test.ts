@@ -58,6 +58,9 @@ const harness = vi.hoisted(() => ({
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     configOptionError: null as Error | null,
+    // Per-call set_config_option failures (shifted off the front); a null
+    // slot succeeds — lets tests stage apply-then-fail sequences.
+    setConfigOptionErrorQueue: [] as Array<Error | null>,
     // Mirrors the backend's advertised promptCapabilities.image gate.
     supportsImages: false,
     // Recorded by the buildDshPromptContent mock.
@@ -123,6 +126,10 @@ vi.mock('./utils/dshBackend', () => ({
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
                 harness.setConfigOptionCalls.push({ sessionId, configId, value })
+                if (harness.setConfigOptionErrorQueue.length > 0) {
+                    const error = harness.setConfigOptionErrorQueue.shift()
+                    if (error) throw error
+                }
                 if (harness.configOptionError) throw harness.configOptionError
                 return {}
             }),
@@ -276,8 +283,10 @@ describe('DshRemoteLauncher', () => {
         harness.newSessionBlocker = null
         harness.modelOption = null
         harness.modelsMetadata = null
+        harness.thoughtLevelOption = null
         harness.setConfigOptionCalls = []
         harness.configOptionError = null
+        harness.setConfigOptionErrorQueue = []
         harness.supportsImages = false
         harness.promptContentInputs = []
         harness.newSessionBlocker = null
@@ -598,6 +607,88 @@ describe('DshRemoteLauncher', () => {
         expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-1'])
     })
 
+    it('treats a terminal session-gone prompt rejection after a cancel as an implicit session end', async () => {
+        // Custom dsh wrappers may CLOSE the ACP session on session/cancel
+        // without exiting the process — invisible on the standard-cancel path
+        // (no close event exists there). The next prompt's terminal
+        // unknown/expired-session rejection is the only observable signal:
+        // it must mark the session ended so the following message re-enters
+        // the resume branch instead of failing on the dead session forever.
+        harness.supportsCancel = true
+        harness.supportsResume = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        // Standard cancel (notification, no session-close event); the
+        // wrapper closes the session behind it while the cancelled prompt
+        // itself still resolves normally.
+        const killPromise = launcher.kill()
+        releaseFirstPrompt()
+        await killPromise
+
+        // The next prompt lands on the closed session and is rejected.
+        harness.promptErrorQueue = [new Error('Session not found: dsh-session-1')]
+        queue.push('second', {})
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+
+        queue.push('third', {})
+        queue.close()
+        await done
+
+        // 'second' failed with the implicit-end surfaced...
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH prompt failed (session closed by the earlier cancel; restarting it for the next message): Session not found: dsh-session-1'
+        })
+        // ...and 'third' re-entered the resume branch: the stored id is
+        // resumed and the turn runs on it.
+        expect(harness.resumeCalls).toEqual([{
+            sessionId: 'dsh-session-1',
+            cwd: '/tmp/dsh-test',
+            mcpServers: []
+        }])
+        expect(harness.newSessionCalls).toHaveLength(1)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-1', 'dsh-session-1'])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }],
+            [{ type: 'text', text: 'third' }]
+        ])
+    })
+
+    it('keeps the ordinary failure surface when a session-gone rejection arrives without a prior cancel', async () => {
+        // Without an armed cancel the same rejection is NOT an implicit
+        // session end: attributing it to a cancel that never happened would
+        // restart healthy sessions. Ordinary surface-and-continue only.
+        harness.supportsCancel = true
+        harness.supportsResume = true
+        harness.promptErrorQueue = [new Error('Session not found: dsh-session-1')]
+        // Distinct modes keep the two messages as separate queue batches (an
+        // empty image list is inert here — it only changes the mode hash).
+        const session = createSessionWithBatches([
+            ['first', {}],
+            ['second', { imageAttachments: [] }]
+        ])
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH prompt failed: Session not found: dsh-session-1'
+        })
+        expect(harness.resumeCalls).toEqual([])
+        expect(harness.newSessionCalls).toHaveLength(1)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-1'])
+    })
+
     it('respawns the session after a permission abort cancels through the backend directly', async () => {
         // A permission denied with decision 'abort' cancels through
         // AcpPermissionHandler → backend.cancelPrompt, bypassing handleAbort.
@@ -835,6 +926,88 @@ describe('DshRemoteLauncher', () => {
 
         expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')).toEqual([])
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('keeps the previous effort and rolls back the host tracking when a per-turn switch fails', async () => {
+        // Same contract as the model switch: a failed set_config_option must
+        // not leave the hub picker showing the failed value, and later turns
+        // must stop re-requesting it — the rollback reports the live value.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: '' }
+        const onEffortRollback = vi.fn()
+        const queue = createQueue()
+        queue.push('first', { modelReasoningEffort: 'high' })
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never, { onEffortRollback })
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        // The second pick fails: the model rejects the effort value.
+        harness.configOptionError = new Error('invalid effort value')
+        queue.push('second', { modelReasoningEffort: 'max' })
+        queue.close()
+        await done
+
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Failed to switch DSH reasoning effort: invalid effort value'
+        })
+        // The host is told the LIVE preference ('high' — the last applied
+        // value), not the failed 'max'.
+        expect(onEffortRollback).toHaveBeenCalledWith('high')
+        // Both turns still ran.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('rolls the effort tracking back to unset when no thought_level option exists', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = null
+        const onEffortRollback = vi.fn()
+        const session = createSessionWithBatches([['first', { modelReasoningEffort: 'high' }]])
+        const launcher = new DshRemoteLauncher(session as never, { onEffortRollback })
+
+        await launcher.launch()
+
+        // Nothing was ever applied: the host drops the preference entirely so
+        // subsequent turns stop carrying the effort field (and the repeated
+        // "no thought levels" note stops).
+        expect(onEffortRollback).toHaveBeenCalledWith(undefined)
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('drops the effort preference when the respawn re-apply fails', async () => {
+        // The preference was proven on the dead session, but the fresh one
+        // rejects it (e.g. a model switch): the respawn re-apply drops the
+        // preference instead of failing the establishment or retrying the
+        // stale value on every later respawn, and tells the host.
+        harness.modelOption = null
+        harness.modelsMetadata = null
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: '' }
+        // First apply succeeds, the respawn's re-apply fails.
+        harness.setConfigOptionErrorQueue = [null, new Error('unknown effort value')]
+        harness.promptErrorQueue = [deadTransportError()]
+        const onEffortRollback = vi.fn()
+        const session = createSessionWithBatches([['hello', { modelReasoningEffort: 'high' }]], 'dsh-existing-1')
+        const launcher = new DshRemoteLauncher(session as never, { onEffortRollback })
+
+        await launcher.launch()
+
+        const effortCalls = harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')
+        expect(effortCalls.map((call) => call.value)).toEqual(['high', 'high'])
+        // The failed re-apply surfaced once and dropped the preference.
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Failed to switch DSH reasoning effort: unknown effort value'
+        })
+        expect(onEffortRollback).toHaveBeenCalledWith(undefined)
+        // The respawn still delivered the retried batch.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'hello' }],
+            [{ type: 'text', text: 'hello' }]
+        ])
     })
 
     it('resets to the server default when Default is requested after a spawn-time override', async () => {

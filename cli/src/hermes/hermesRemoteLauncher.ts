@@ -3,7 +3,7 @@ import { RPC_METHODS } from '@hapi/protocol'
 import type { PermissionMode } from '@hapi/protocol/types'
 import { logger } from '@/ui/logger'
 import { convertAgentMessage } from '@/agent/messageConverter'
-import type { AgentMessage, PromptContent } from '@/agent/types'
+import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types'
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -12,6 +12,8 @@ import {
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay'
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler'
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
+import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools'
 import { createHermesBackend } from './utils/hermesBackend'
 import type { HermesSession } from './session'
 
@@ -55,6 +57,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     private modelsReadiness: ModelsReadiness | null = null
     /** Guards against concurrent backend rebuilds (prompt retry vs abort). */
     private respawnInProgress = false
+    /** HAPI MCP bridge HTTP server; mounted into every (re)established session. */
+    private happyServer: { stop: () => void } | null = null
+    /** ACP form of the hapi MCP bridge servers (name/command/args/env). */
+    private acpMcpServers: McpServerStdio[] = []
 
     constructor(
         private readonly session: HermesSession,
@@ -114,6 +120,48 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 currentModelId: this.currentBackendModel ?? metadata.currentModelId
             }
         })
+
+        // Hermes mounts client MCP servers as the session's "editor MCP" on
+        // BOTH session/new and session/resume (verified in the hermes ACP
+        // source) — the old `mcpServers: []` sites pinned a stale claim that
+        // v1 did not bridge MCP, the same class of myth the dsh launcher
+        // carried until v29.3. Bridge the hapi MCP tools exactly like the
+        // dsh/kimi/copilot/grok ACP flavors: the bridge HTTP server is built
+        // ONCE per launcher and every (re)establishment passes the same
+        // server list, so a respawn remounts the tools cleanly (each fresh
+        // `hermes acp` child mounts its own stdio bridge process via
+        // `--tools`, which also gates the exposed tool set). Peer-tools
+        // gating matches the other flavors: the backend env gets the
+        // session's captured preference, and buildHapiMcpBridge itself drops
+        // list_peers from the auto-approved shortlist when disabled.
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(this.session.client, {
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: this.session.path, flavor: 'hermes' },
+            // Hermes's automation-only ACP profile has no native ask-user
+            // tool over the wire (the HAPI user is remote and cannot answer
+            // an interactive prompt inside the child). The MCP bridge
+            // provides `ask_user_question` instead; the questions surface
+            // through the shared permission bridge as the interactive
+            // AskUserQuestion card on every HAPI client, and the answer
+            // batch returns to the model in-band as the tool result. The
+            // closure reads the CURRENT handler: establishBackend swaps it
+            // on every respawn, and the tool can only run once a session
+            // exists. (Auto-approval of the agent-side approval prompt
+            // needs no hermes-specific wiring: the shared layer's exact-name
+            // allowlist already includes ask_user_question and its
+            // mcp__hapi__ alias.)
+            askUserTool: {
+                escalate: async (input) => {
+                    const handler = this.permissionHandler
+                    if (!handler) {
+                        return { status: 'canceled' as const, reason: 'Hermes session is not established' }
+                    }
+                    return await handler.askUser(input)
+                }
+            }
+        })
+        this.happyServer = happyServer
+        this.acpMcpServers = toAcpMcpServers(mcpServers)
 
         await this.establishBackend({ respawn: false })
 
@@ -276,6 +324,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = null
         await this.backend?.disconnect()
         this.backend = null
+        if (this.happyServer) {
+            this.happyServer.stop()
+            this.happyServer = null
+        }
     }
 
     /**
@@ -290,7 +342,9 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
      * keeps the captured default and re-applies the LIVE user preference.
      */
     private async establishBackend(opts: { respawn: boolean }): Promise<void> {
-        const backend = createHermesBackend()
+        const backend = createHermesBackend(
+            withPeerToolsPreference(this.session.client.peerToolsDisabled ?? isPeerToolsDisabled())
+        )
         this.backend = backend
         this.acpSessionId = null
         // Native session_info_update titles are deliberately NOT mirrored:
@@ -335,7 +389,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                         backend.resumeSession({
                             sessionId: resumeSessionId,
                             cwd: this.session.path,
-                            mcpServers: []
+                            // Hermes mounts client MCP servers on resume too:
+                            // same bridge list as session/new so a respawned
+                            // child remounts the hapi tools.
+                            mcpServers: this.acpMcpServers
                         })
                     )
                 } catch (error) {
@@ -346,17 +403,13 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                     })
                     acpSessionId = await backend.newSession({
                         cwd: this.session.path,
-                        // The Hermes ACP server configures its own tools; HAPI
-                        // does not bridge MCP servers for it in v1.
-                        mcpServers: []
+                        mcpServers: this.acpMcpServers
                     })
                 }
             } else {
                 acpSessionId = await backend.newSession({
                     cwd: this.session.path,
-                    // The Hermes ACP server configures its own tools; HAPI
-                    // does not bridge MCP servers for it in v1.
-                    mcpServers: []
+                    mcpServers: this.acpMcpServers
                 })
             }
             this.acpSessionId = acpSessionId
@@ -612,4 +665,13 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     private async handleExitFromUi(): Promise<void> {
         await this.requestExit('exit', () => this.handleAbort())
     }
+}
+
+function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
+    return Object.entries(config).map(([name, entry]) => ({
+        name,
+        command: entry.command,
+        args: entry.args,
+        env: []
+    }))
 }
