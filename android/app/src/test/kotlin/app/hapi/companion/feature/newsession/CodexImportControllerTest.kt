@@ -10,6 +10,7 @@ import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.KimiModelsResponse
 import app.hapi.protocol.wire.OpencodeModelVariantsResponse
 import app.hapi.protocol.wire.OpencodeModelsResponse
+import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.CodexArchiveSessionResponse
 import app.hapi.protocol.wire.CodexDesktopScriptResponse
@@ -108,6 +109,9 @@ class CodexImportControllerTest {
             throw UnsupportedOperationException()
 
         override suspend fun agyModels(machineId: String, refresh: Boolean): AgyModelsResponse =
+            throw UnsupportedOperationException()
+
+        override suspend fun dshModels(machineId: String): DshModelsResponse =
             throw UnsupportedOperationException()
 
         override suspend fun piModels(machineId: String): PiModelsResponse =
