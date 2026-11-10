@@ -25,6 +25,10 @@ export function isAskUserQuestionToolName(toolName: string): boolean {
     return toolName === 'AskUserQuestion'
         || toolName === 'ask_user_question'
         || toolName === 'CursorAskQuestion'
+        // DSH surfaces hapi MCP bridge tools under mcp__<server>__<name>; the
+        // transcript card renders the questions read-only while the pending
+        // AskUserQuestion permission card carries the interactive footer.
+        || toolName === 'mcp__hapi__ask_user_question'
 }
 
 export function parseAskUserQuestionInput(input: unknown): { questions: AskUserQuestionQuestion[] } {

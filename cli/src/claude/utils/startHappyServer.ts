@@ -31,6 +31,30 @@ import {
 import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
 import { applySessionDisplayRename, normalizeSessionDisplayTitle } from "@/agent/sessionDisplayRename";
 
+type AskUserQuestionOption = {
+    label: string;
+    description?: string;
+};
+
+type AskUserQuestionInput = {
+    questions: Array<{
+        id?: string;
+        question: string;
+        header?: string;
+        options?: AskUserQuestionOption[];
+        multi_select?: boolean;
+    }>;
+};
+
+/**
+ * Outcome the MCP `ask_user_question` tool handler resolves with; mirrors
+ * `AcpAskUserOutcome` without importing from the permission module (the
+ * claude-side MCP server stays flavor-agnostic — callers translate).
+ */
+export type HappyAskUserOutcome =
+    | { status: 'answered'; answers: Array<{ id: string; selected: string[]; custom?: string }> }
+    | { status: 'denied' | 'canceled'; reason?: string };
+
 type StartHappyServerOptions = {
     /**
      * When true (default), change_title writes metadata.name (web rename
@@ -42,6 +66,19 @@ type StartHappyServerOptions = {
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
+    };
+    /**
+     * Register the MCP `ask_user_question` tool for agents whose own flavor
+     * has no native ask-user tool over the wire (DSH's automation-only ACP
+     * profile omits it). The escalate callback surfaces the questions to the
+     * HAPI client as an interactive AskUserQuestion permission card and
+     * resolves with the user's answer batch. The result text follows DSH's
+     * native tool contract ({"answers":[{id,selected,custom?}]}; empty
+     * selected without custom = skipped) so model behavior is identical to
+     * flavors that ship the tool natively.
+     */
+    askUserTool?: {
+        escalate: (input: AskUserQuestionInput) => Promise<HappyAskUserOutcome>;
     };
 };
 
@@ -69,7 +106,8 @@ function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
-    skillLookup: StartHappyServerOptions['skillLookup']
+    skillLookup: StartHappyServerOptions['skillLookup'],
+    askUserTool: StartHappyServerOptions['askUserTool']
 ): McpServer {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
@@ -496,6 +534,68 @@ function createHapiMcpServer(
         });
     }
 
+    if (askUserTool) {
+        const askUserInputSchema: z.ZodTypeAny = z.object({
+            questions: z.array(z.object({
+                id: z.string().min(1).max(64).describe('Stable id for this question; echoed in the answer'),
+                question: z.string().min(1).describe('The specific question to ask the user'),
+                header: z.string().min(1).max(64).optional().describe('Optional short heading, such as "Confirm" or "Choose Mode"'),
+                options: z.array(z.object({
+                    label: z.string().min(1).describe('Short user-facing option label'),
+                    description: z.string().optional().describe('One sentence explaining the tradeoff or impact'),
+                })).optional().describe('Optional choices; put the recommended one first and append "(Recommended)"'),
+                multi_select: z.boolean().optional().describe('Whether more than one option may be selected; defaults to false'),
+            })).min(1).max(8).describe('Questions to ask the user before continuing'),
+        });
+
+        mcp.registerTool<any, any>('ask_user_question', {
+            description: 'Ask brief, direct, self-contained questions about missing information, preferences, or decisions when you need a human answer before proceeding. Use user-facing terms; assume no knowledge of background work or internal names. The user answers through the HAPI chat UI (interactive option cards). The result is an answer batch with one item per question id; an item with empty selected and no custom means the user skipped that question: continue without it, do not ask it again, and do not treat the skip as permission.',
+            title: 'Ask User Question',
+            inputSchema: askUserInputSchema,
+        }, async (args: AskUserQuestionInput) => {
+            logger.debug('[hapiMCP] ask_user_question:', JSON.stringify(args.questions?.length ?? 0), 'question(s)');
+            try {
+                const outcome = await askUserTool.escalate(args);
+                if (outcome.status === 'answered') {
+                    return {
+                        content: [
+                            {
+                                type: 'text' as const,
+                                text: JSON.stringify({ answers: outcome.answers }),
+                            },
+                        ],
+                        isError: false,
+                    };
+                }
+                // Denied / canceled map onto DSH's skip semantics, not an
+                // error: the model is instructed to continue without
+                // re-asking and never to treat the skip as permission.
+                const detail = outcome.reason ? ` (${outcome.reason})` : '';
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `User did not answer${detail}. Treat every question as skipped: continue useful work without asking again, and do not treat the skip as permission.`,
+                        },
+                    ],
+                    isError: false,
+                };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.debug('[hapiMCP] ask_user_question failed:', message);
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Failed to surface the questions: ${message}`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+        });
+    }
+
     return mcp;
 }
 
@@ -517,7 +617,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     const mcps = new Map<string, McpServer>();
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup);
+        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup, options.askUserTool);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
@@ -581,6 +681,9 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     ];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
+    }
+    if (options.askUserTool) {
+        toolNames.push('ask_user_question');
     }
 
     return {

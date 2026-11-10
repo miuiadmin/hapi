@@ -8,6 +8,15 @@ describe('cursorAskQuestion', () => {
         expect(isAskUserQuestionToolName('CursorAskQuestion')).toBe(true);
     });
 
+    it('recognizes the DSH MCP-bridged tool name', () => {
+        // DSH surfaces hapi MCP bridge tools as mcp__<server>__<name>; the
+        // transcript card renders the questions read-only while the pending
+        // permission card carries the interactive footer.
+        expect(isAskUserQuestionToolName('mcp__hapi__ask_user_question')).toBe(true);
+        expect(isAskUserQuestionToolName('mcp__hapi__ask_user_questio')).toBe(false);
+        expect(isAskUserQuestionToolName('other__ask_user_question')).toBe(false);
+    });
+
     it('parses Cursor ask_question payload shape', () => {
         const parsed = parseCursorAskQuestionInput({
             toolCallId: 'q-1',
