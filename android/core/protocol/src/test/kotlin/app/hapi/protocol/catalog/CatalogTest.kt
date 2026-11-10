@@ -61,6 +61,20 @@ class CatalogTest {
         assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("kimi"))
         assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("copilot"))
         assertEquals(
+            listOf("default", "read-only", "safe-yolo", "yolo"),
+            PermissionModes.forFlavor("dsh").map { it.wireId }
+        )
+        // Hermes's ACP mode axis is edit-approval only — no read-only mode.
+        assertEquals(
+            listOf("default", "safe-yolo", "yolo"),
+            PermissionModes.forFlavor("hermes").map { it.wireId }
+        )
+        // Berry maps the modes onto its native sandbox axis (read-only offered).
+        assertEquals(
+            listOf("default", "read-only", "safe-yolo", "yolo"),
+            PermissionModes.forFlavor("berry").map { it.wireId }
+        )
+        assertEquals(
             listOf("default", "auto", "plan", "bypassPermissions"),
             PermissionModes.forFlavor("grok").map { it.wireId }
         )
@@ -93,7 +107,10 @@ class CatalogTest {
     @Test
     fun `agent flavors match AGENT_FLAVORS and CREATABLE excludes gemini`() {
         assertEquals(
-            listOf("agy", "claude", "codex", "dsh", "copilot", "cursor", "gemini", "grok", "kimi", "opencode", "pi"),
+            listOf(
+                "agy", "berry", "claude", "codex", "dsh", "copilot", "cursor",
+                "gemini", "grok", "hermes", "kimi", "opencode", "pi",
+            ),
             AgentFlavor.KNOWN.map { it.id }
         )
         assertFalse(AgentFlavor.CREATABLE.contains(AgentFlavor.Gemini))
@@ -112,13 +129,17 @@ class CatalogTest {
         assertTrue(Flavors.supportsEffort("pi"))
         assertFalse(Flavors.supportsEffort("codex"))
         assertFalse(Flavors.supportsEffort(null))
-        assertTrue(AgentFlavor.KNOWN.filter { it != AgentFlavor.Dsh }.all { Flavors.supportsModelChange(it.id) })
-        assertFalse(Flavors.supportsModelChange("dsh"))
+        // Every known flavor supports model change (dsh included — shared
+        // FLAVOR_CAPS grants it ModelChange).
+        assertTrue(AgentFlavor.KNOWN.all { Flavors.supportsModelChange(it.id) })
+        assertTrue(Flavors.supportsModelChange("dsh"))
         assertFalse(Flavors.supportsModelChange("unknown"))
         assertEquals("Antigravity", Flavors.label("agy"))
         assertEquals("Grok Build", Flavors.label("grok"))
         assertEquals("OpenCode", Flavors.label("opencode"))
         assertEquals("DeepSeek Harness", Flavors.label("dsh"))
+        assertEquals("Hermes", Flavors.label("hermes"))
+        assertEquals("Berry Agent", Flavors.label("berry"))
         assertEquals("Unknown", Flavors.label("mystery"))
         assertTrue(Flavors.isCodexFamily("copilot"))
         assertFalse(Flavors.isCodexFamily("claude"))

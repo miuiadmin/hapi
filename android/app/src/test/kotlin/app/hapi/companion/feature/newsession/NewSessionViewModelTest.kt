@@ -554,6 +554,39 @@ class SpawnBodyTest {
     }
 
     @Test
+    fun `hermes forwards chosen permission mode and omits yolo`() {
+        // Hermes joined the codex-family native select (web
+        // `codexFamilyPermissionAgents.ts`), so the create form sends its
+        // permissionMode instead of the legacy YOLO toggle.
+        val body = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "hermes", yolo = true, permissionMode = "safe-yolo"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "permissionMode", "sessionType"), body.keys)
+        assertEquals("safe-yolo", body["permissionMode"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `berry stays on the legacy yolo toggle and sends no model`() {
+        // Berry is not a codex-family permission agent (web parity): the
+        // YOLO toggle maps to the `yolo` wire field, and its runtime-discovered
+        // models mean no launch-time model is sent.
+        val body = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "berry", yolo = true, model = "auto"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(
+            setOf("directory", "agent", "yolo", "sessionType"),
+            body.keys,
+        )
+        assertEquals(true, body["yolo"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
     fun `codex default selections send no optional fields, fast tier hidden sends no serviceTier`() {
         val body = encode(
             NewSessionLogic.buildSpawnRequest(
@@ -1457,6 +1490,25 @@ class NewSessionViewModelTest {
             listOf("default", "read-only", "safe-yolo", "yolo"),
             (dshSelect as PermissionUi.NativeSelect).options.map { it.value },
         )
+
+        // Hermes shares the codex-family native select but with its own
+        // (edit-approval only) mode list — no read-only row.
+        vm.setAgent("hermes")
+        advanceUntilIdle()
+        val hermesSelect = vm.uiState.value.permission
+        assertTrue(hermesSelect is PermissionUi.NativeSelect)
+        assertEquals(
+            listOf("default", "safe-yolo", "yolo"),
+            (hermesSelect as PermissionUi.NativeSelect).options.map { it.value },
+        )
+
+        // Berry is not a codex-family permission agent; it keeps the legacy
+        // YOLO toggle (web parity) with the native yolo mode as its label.
+        vm.setAgent("berry")
+        advanceUntilIdle()
+        val berryToggle = vm.uiState.value.permission
+        assertTrue(berryToggle is PermissionUi.YoloToggle)
+        assertEquals("Yolo", (berryToggle as PermissionUi.YoloToggle).nativeModeLabel)
 
         vm.setAgent("claude")
         advanceUntilIdle()

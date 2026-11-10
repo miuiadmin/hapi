@@ -24,7 +24,9 @@ fun isCursorChatStoreProbeApplicable(
  * Port of `resolveAgentSessionIdFromMetadata` (`web/src/lib/sessionResume.ts`):
  * cross-flavor ids are ignored so this layer cannot claim a session is
  * resumable when the hub will only honor the current flavor's id. Unknown or
- * missing flavors resolve as claude; dsh deliberately has no resume id.
+ * missing flavors resolve as claude. Hermes persists gateway sessions in its
+ * daemon state store and Berry in its own SQLite store; both resume through
+ * ACP `session/resume` keyed by their per-flavor id, same as dsh.
  */
 fun resolveAgentSessionIdFromMetadata(metadata: SessionMetadata?): String? {
     if (metadata == null) return null
@@ -39,7 +41,9 @@ fun resolveAgentSessionIdFromMetadata(metadata: SessionMetadata?): String? {
         "kimi" -> metadata.kimiSessionId
         "copilot" -> metadata.copilotSessionId
         "pi" -> metadata.piSessionId
-        "dsh" -> null
+        "dsh" -> metadata.dshSessionId
+        "hermes" -> metadata.hermesSessionId
+        "berry" -> metadata.berrySessionId
         else -> metadata.claudeSessionId
     }
 }

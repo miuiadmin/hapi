@@ -209,6 +209,43 @@ class SummaryPatchingTest {
         assertNull(piOnly?.agentSessionId)
     }
 
+    @Test
+    fun `agentSessionId resolves dsh hermes and berry via their own flavor fields`() {
+        // `AGENT_SESSION_ID_FIELD_BY_FLAVOR` (shared/src/sessionSummary.ts):
+        // known flavor → only that flavor's id counts (trimmed), stale
+        // cross-flavor ids are ignored.
+        val dsh = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path = "/p", host = "h", flavor = "dsh",
+                dshSessionId = " dsh-1 ", claudeSessionId = "cl-stale",
+            )
+        )
+        assertEquals("dsh-1", dsh?.agentSessionId)
+
+        val hermes = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path = "/p", host = "h", flavor = "hermes",
+                hermesSessionId = "hermes-1", codexSessionId = "cx-stale",
+            )
+        )
+        assertEquals("hermes-1", hermes?.agentSessionId)
+
+        val berry = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(path = "/p", host = "h", flavor = "berry", berrySessionId = "berry-1")
+        )
+        assertEquals("berry-1", berry?.agentSessionId)
+
+        // The legacy fallback chain (missing/unknown flavor) never reads the
+        // dsh/hermes/berry fields — replicated from the shared source.
+        val unknown = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path = "/p", host = "h", flavor = "newagent",
+                dshSessionId = "dsh-1", hermesSessionId = "hermes-1", berrySessionId = "berry-1",
+            )
+        )
+        assertNull(unknown?.agentSessionId)
+    }
+
     // ------------------------------------------------- patch application --
 
     @Test

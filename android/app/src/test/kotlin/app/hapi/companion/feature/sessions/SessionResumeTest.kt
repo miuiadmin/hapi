@@ -29,6 +29,9 @@ class SessionResumeTest {
         cursorSessionId: String? = null,
         kimiSessionId: String? = null,
         copilotSessionId: String? = null,
+        dshSessionId: String? = null,
+        hermesSessionId: String? = null,
+        berrySessionId: String? = null,
         piSessionId: String? = null,
     ): SessionMetadata = SessionMetadata(
         path = path,
@@ -43,6 +46,9 @@ class SessionResumeTest {
         cursorSessionId = cursorSessionId,
         kimiSessionId = kimiSessionId,
         copilotSessionId = copilotSessionId,
+        dshSessionId = dshSessionId,
+        hermesSessionId = hermesSessionId,
+        berrySessionId = berrySessionId,
         piSessionId = piSessionId,
     )
 
@@ -112,6 +118,41 @@ class SessionResumeTest {
     }
 
     @Test
+    fun `resolveAgentSessionIdFromMetadata returns dshSessionId for dsh flavor`() {
+        assertEquals(
+            "acp-session-1",
+            resolveAgentSessionIdFromMetadata(metadata(flavor = "dsh", dshSessionId = "acp-session-1")),
+        )
+    }
+
+    @Test
+    fun `resolveAgentSessionIdFromMetadata returns hermesSessionId for hermes flavor`() {
+        assertEquals(
+            "hermes-daemon-session-1",
+            resolveAgentSessionIdFromMetadata(
+                metadata(flavor = "hermes", hermesSessionId = "hermes-daemon-session-1"),
+            ),
+        )
+    }
+
+    @Test
+    fun `resolveAgentSessionIdFromMetadata does not infer a Hermes resume id from stale cross-flavor metadata`() {
+        assertNull(
+            resolveAgentSessionIdFromMetadata(
+                metadata(flavor = "hermes", claudeSessionId = "stale-claude-id"),
+            ),
+        )
+    }
+
+    @Test
+    fun `resolveAgentSessionIdFromMetadata returns berrySessionId for berry flavor`() {
+        assertEquals(
+            "berry-1",
+            resolveAgentSessionIdFromMetadata(metadata(flavor = "berry", berrySessionId = "berry-1")),
+        )
+    }
+
+    @Test
     fun `resolveAgentSessionIdFromMetadata returns piSessionId when flavor is pi and prefers it over other ids`() {
         assertEquals(
             "pi-1",
@@ -135,6 +176,9 @@ class SessionResumeTest {
             Triple("cursor", "cu-1", metadata(flavor = "cursor", cursorSessionId = "cu-1")),
             Triple("kimi", "ki-1", metadata(flavor = "kimi", kimiSessionId = "ki-1")),
             Triple("copilot", "cp-1", metadata(flavor = "copilot", copilotSessionId = "cp-1")),
+            Triple("dsh", "dsh-1", metadata(flavor = "dsh", dshSessionId = "dsh-1")),
+            Triple("hermes", "hm-1", metadata(flavor = "hermes", hermesSessionId = "hm-1")),
+            Triple("berry", "be-1", metadata(flavor = "berry", berrySessionId = "be-1")),
             Triple("claude", "cl-1", metadata(flavor = "claude", claudeSessionId = "cl-1")),
         )
         for ((label, expected, meta) in cases) {
@@ -172,6 +216,51 @@ class SessionResumeTest {
                 userMessageCount = 5,
             ),
         )
+    }
+
+    @Test
+    fun `canResume allows dsh resume when dshSessionId exists`() {
+        assertTrue(
+            canResume(
+                metadata = metadata(flavor = "dsh", dshSessionId = "acp-session-1"),
+                userMessageCount = 5,
+            ),
+        )
+    }
+
+    @Test
+    fun `canResume rejects dsh with messages but no dshSessionId`() {
+        assertFalse(canResume(metadata = metadata(flavor = "dsh"), userMessageCount = 3))
+    }
+
+    @Test
+    fun `canResume allows hermes resume when hermesSessionId exists`() {
+        assertTrue(
+            canResume(
+                metadata = metadata(flavor = "hermes", hermesSessionId = "hermes-daemon-session-1"),
+                userMessageCount = 5,
+            ),
+        )
+    }
+
+    @Test
+    fun `canResume rejects hermes with messages but no hermesSessionId`() {
+        assertFalse(canResume(metadata = metadata(flavor = "hermes"), userMessageCount = 3))
+    }
+
+    @Test
+    fun `canResume allows berry resume when berrySessionId exists`() {
+        assertTrue(
+            canResume(
+                metadata = metadata(flavor = "berry", berrySessionId = "berry-1"),
+                userMessageCount = 5,
+            ),
+        )
+    }
+
+    @Test
+    fun `canResume rejects berry with messages but no berrySessionId`() {
+        assertFalse(canResume(metadata = metadata(flavor = "berry"), userMessageCount = 3))
     }
 
     @Test
