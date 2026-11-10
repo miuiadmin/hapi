@@ -875,9 +875,12 @@ export class AcpSdkBackend implements AgentBackend {
      *
      * Always true for standard adapters (ACP v1 requires `session/cancel`
      * baseline behavior unconditionally — there is no capability field to
-     * gate it on). For `close-fallback` adapters (dsh), false when the agent
-     * advertises `close`: the notification would exit its process, so
-     * cancellation goes through `session/close` instead.
+     * gate it on; dsh since 0.2.2-rc.1 uses `standard` cancellation). Only
+     * a `close-fallback` adapter (legacy opt-in for agents that exit their
+     * whole process on `session/cancel`, e.g. an early dsh 0.2.0 build)
+     * returns false when the agent advertises `close`: the notification
+     * would exit its process, so cancellation goes through `session/close`
+     * instead.
      */
     supportsCancelNotification(): boolean {
         if (this.options.cancelMode !== 'close-fallback') {
@@ -897,10 +900,13 @@ export class AcpSdkBackend implements AgentBackend {
             return;
         }
 
-        // close-fallback (dsh): verified against dsh 0.2.0-rc.2, session/close
-        // returns immediately, resolves the in-flight session/prompt with
-        // end_turn, cancels the underlying work, and leaves the process alive
-        // for future sessions — unlike session/cancel, which kills the process.
+        // close-fallback (legacy opt-in, verified against dsh 0.2.0-rc.2;
+        // no current flavor uses it — dsh 0.2.2-rc.1+ cancels through the
+        // standard session/cancel notification above): session/close returns
+        // immediately, resolves the in-flight session/prompt with end_turn,
+        // cancels the underlying work, and leaves the process alive for
+        // future sessions — unlike session/cancel on that old build, which
+        // killed the process.
         try {
             await this.transport.sendRequest('session/close', { sessionId }, { timeoutMs: 5000 });
         } catch (error) {

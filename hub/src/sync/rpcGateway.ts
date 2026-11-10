@@ -22,7 +22,6 @@ import type {
     DirectoryEntry,
     DshModelsResponse,
     HermesModelsResponse,
-    BerryModelsResponse,
     FileReadResponse,
     GeneratedImageResponse,
     ImplementCodexPlanResult,
@@ -157,7 +156,6 @@ export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEff
 export type RpcListAgyModelsResponse = AgyModelsResponse
 export type RpcListDshModelsResponse = DshModelsResponse
 export type RpcListHermesModelsResponse = HermesModelsResponse
-export type RpcListBerryModelsResponse = BerryModelsResponse
 export type RpcListPiModelsResponse = PiModelsResponse
 export type RpcListClaudeModelsResponse = ClaudeModelsResponse
 
@@ -604,10 +602,6 @@ export class RpcGateway {
 
     async listHermesModelsForSession(sessionId: string): Promise<RpcListHermesModelsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListHermesModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListHermesModelsResponse
-    }
-
-    async listBerryModelsForSession(sessionId: string): Promise<RpcListBerryModelsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListBerryModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListBerryModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

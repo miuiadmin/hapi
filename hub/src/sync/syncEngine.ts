@@ -58,7 +58,6 @@ import {
     type RpcListGrokModelsResponse,
     type RpcListDshModelsResponse,
     type RpcListHermesModelsResponse,
-    type RpcListBerryModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -100,7 +99,6 @@ export type {
     RpcListGrokModelsResponse,
     RpcListDshModelsResponse,
     RpcListHermesModelsResponse,
-    RpcListBerryModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListKimiModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -4696,14 +4694,6 @@ export class SyncEngine {
             () => this.rpcGateway.listHermesModelsForSession(sessionId),
             SyncEngine.modelListCacheable
         ) as RpcListHermesModelsResponse
-    }
-
-    async listBerryModelsForSession(sessionId: string): Promise<RpcListBerryModelsResponse> {
-        return await this.modelListCache.get(
-            `${sessionId}|berry-models`,
-            () => this.rpcGateway.listBerryModelsForSession(sessionId),
-            SyncEngine.modelListCacheable
-        ) as RpcListBerryModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

@@ -70,6 +70,16 @@ describe('getToolGroupActionKind', () => {
         expect(getToolGroupActionKind(makeToolBlock('web-1', 'FetchURL'))).toBe('web')
     })
 
+    it('classifies the berry builtin find tool as search by name', () => {
+        // berry's builtin 'find' reports nativeKind 'other', so only the
+        // name-based bucket can route it — it is present in
+        // SEARCH_NATIVE_KINDS but must also match by plain name.
+        const block = makeToolBlock('find-1', 'find', { pattern: 'TODO' })
+        block.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(block)).toBe('search')
+        expect(getToolGroupActionKind(makeToolBlock('find-2', 'Find'))).toBe('search')
+    })
+
     it('uses native kinds when an ACP agent exposes a title as the tool name', () => {
         const read = makeToolBlock('native-read', 'src/grok.ts')
         read.tool.nativeKind = 'read'

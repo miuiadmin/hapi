@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { resolveToolAutoApprovalDecision } from './BasePermissionHandler'
+import {
+    isUnclassifiablePermissionRequest,
+    resolveToolAutoApprovalDecision
+} from './BasePermissionHandler'
 import { deriveToolName } from '@/agent/utils'
 
 describe('resolveToolAutoApprovalDecision skill_lookup', () => {
@@ -148,5 +151,101 @@ describe('resolveToolAutoApprovalDecision read-only fail-closed (unclassifiable 
             rawInput: { command: 'cat /etc/hosts' }
         })
         expect(resolveToolAutoApprovalDecision('read-only', correlatedName, 'call_dsh_1')).toBe('approved')
+    })
+})
+
+describe('resolveToolAutoApprovalDecision read-only fail-closed (title-only unclassifiable requests)', () => {
+    // berry shape: request_permission carries a human-summary title only —
+    // its APPROVAL-* toolCallId never correlates, so no kind and no rawInput
+    // survive the fill. The title is prose, not a tool classification.
+    it('does not auto-approve a title-only request in read-only mode even when the title lacks write-words', () => {
+        // 'Prepare the config for review' reads read-only-ish but says
+        // nothing about the underlying tool — it may well be a write.
+        expect(resolveToolAutoApprovalDecision(
+            'read-only',
+            'Prepare the config for review',
+            'APPROVAL-1',
+            undefined,
+            { unclassifiable: true }
+        )).toBeNull()
+    })
+
+    it('keeps denying title-only write summaries in read-only mode', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'read-only',
+            'Write config file',
+            'APPROVAL-2',
+            undefined,
+            { unclassifiable: true }
+        )).toBeNull()
+    })
+
+    it('still auto-approves title-only requests in yolo mode', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'yolo',
+            'Prepare the config for review',
+            'APPROVAL-3',
+            undefined,
+            { unclassifiable: true }
+        )).toBe('approved_for_session')
+    })
+
+    it('still auto-approves title-only requests in safe-yolo mode', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'safe-yolo',
+            'Prepare the config for review',
+            'APPROVAL-4',
+            undefined,
+            { unclassifiable: true }
+        )).toBe('approved')
+    })
+
+    it('keeps prompting (not auto-approving) for title-only requests in default mode', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'Prepare the config for review',
+            'APPROVAL-5',
+            undefined,
+            { unclassifiable: true }
+        )).toBeNull()
+    })
+
+    it('keeps the explicit safe-name allowlist ahead of the unclassifiable gate', () => {
+        // The exact allowlist is an explicit safety list, not a heuristic:
+        // ask_user_question must stay auto-approved (a deny would surface a
+        // second prompt under the question card) even for a title-only
+        // request.
+        expect(resolveToolAutoApprovalDecision(
+            'read-only',
+            'ask_user_question',
+            'APPROVAL-6',
+            undefined,
+            { unclassifiable: true }
+        )).toBe('approved')
+    })
+
+    it('leaves classifiable requests on the existing title semantics in read-only mode', () => {
+        // Flavors that DO fill the request fields keep the title write-hint
+        // classification: no classification signal, identical outcomes.
+        expect(resolveToolAutoApprovalDecision('read-only', 'Prepare the config for review', 'call-1')).toBe('approved')
+        expect(resolveToolAutoApprovalDecision('read-only', 'Prepare the config for review', 'call-1', undefined, {})).toBe('approved')
+        expect(resolveToolAutoApprovalDecision('read-only', 'Prepare the config for review', 'call-1', undefined, { unclassifiable: false })).toBe('approved')
+    })
+})
+
+describe('isUnclassifiablePermissionRequest', () => {
+    it('marks requests with neither kind nor rawInput as unclassifiable', () => {
+        expect(isUnclassifiablePermissionRequest({})).toBe(true)
+        expect(isUnclassifiablePermissionRequest({ kind: undefined, rawInput: undefined })).toBe(true)
+        expect(isUnclassifiablePermissionRequest({ kind: '   ', rawInput: null })).toBe(true)
+    })
+
+    it('treats any kind or rawInput presence as classifiable', () => {
+        // 'other' is a real (placeholder) kind the correlated dsh requests
+        // carry — presence is what matters, the value feeds the name lookup.
+        expect(isUnclassifiablePermissionRequest({ kind: 'other' })).toBe(false)
+        expect(isUnclassifiablePermissionRequest({ kind: 'edit' })).toBe(false)
+        expect(isUnclassifiablePermissionRequest({ rawInput: { command: 'ls' } })).toBe(false)
+        expect(isUnclassifiablePermissionRequest({ kind: undefined, rawInput: {} })).toBe(false)
     })
 })

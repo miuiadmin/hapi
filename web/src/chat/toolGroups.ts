@@ -107,6 +107,7 @@ const READ_TOOL_NAMES = new Set([
 const SEARCH_TOOL_NAMES = new Set([
     'search',
     'grep',
+    'find',
     'glob',
     'ls',
     'listdir',
