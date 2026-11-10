@@ -94,7 +94,12 @@ struct PermissionApprovalView: View {
     }
 }
 
-/// UI projection of the existing flavor/tool gates, not a new permission policy.
+/// UI projection of the existing flavor/tool gates, not a new permission
+/// policy. The dsh gate mirrors web `PermissionFooter.isDshSession`: DSH's
+/// request_permission carries exactly allow-once/reject-once (one-shot, no
+/// durable grants), so its sessions never offer "Allow for this session" /
+/// "Allow all edits" — those would promise a durability the agent cannot
+/// express.
 struct PermissionActionOptions: Equatable {
     let denyAction: PermissionAction
     let canAllowForSession: Bool
@@ -104,9 +109,12 @@ struct PermissionActionOptions: Equatable {
 
     init(flavor: String?, toolName: String) {
         let codex = isCodexPermissionUX(flavor: flavor, toolName: toolName)
+        let dsh = flavor == "dsh"
         denyAction = codex ? .abort : .deny
-        canAllowForSession = codex || !PermissionGates.hideAllowForSession.contains(toolName)
-        canAllowAllEdits = flavor == "claude" && PermissionGates.editTools.contains(toolName)
+        canAllowForSession = !dsh && (codex || !PermissionGates.hideAllowForSession.contains(toolName))
+        // All-edits is already claude-only; the explicit !dsh keeps that
+        // invariant local instead of relying on the claude gate.
+        canAllowAllEdits = !dsh && flavor == "claude" && PermissionGates.editTools.contains(toolName)
     }
 }
 

@@ -32,6 +32,40 @@ class ToolContentPresentationTest {
         assertNull(toolSourceInput(json("""{"unknown":true}"""), listOf("patch")))
     }
 
+    @Test fun dshLowercaseSnakeNamesResolveOntoTheirCapitalizedTwins() {
+        // Web `knownTools.tsx` + the `_all`/`_results` registries alias DSH's
+        // raw lowercase names onto the same views as their twins; the
+        // presentation-name alias is the mobile equivalent.
+        for ((raw, twin) in listOf(
+            "bash" to "Bash", "read" to "Read", "edit" to "Edit", "write" to "Write",
+            "grep" to "Grep", "glob" to "Glob", "web_fetch" to "WebFetch",
+            "web_search" to "WebSearch", "todo_write" to "TodoWrite",
+            "functions.apply_patch" to "CodexPatch", "functions.exec_command" to "Bash",
+        )) {
+            assertEquals(twin, toolPresentationName(raw), raw)
+        }
+        // Foreign names stay untouched (no forced casing or prefix strip).
+        assertEquals("read_image", toolPresentationName("read_image"))
+        assertEquals("Bash", toolPresentationName("Bash"))
+        assertEquals("update_plan", toolPresentationName("update_plan"))
+    }
+
+    @Test fun aliasedResultStylesMatchTheirTwinsAndDegradeOnForeignShapes() {
+        // Result-view selection follows the alias: dsh web results render
+        // markdown, reads render source, bash renders terminal — while empty
+        // or foreign inputs fall back through the generic paths instead of
+        // crashing on the twin's expected keys.
+        assertEquals(ToolResultStyle.Markdown, toolResultStyle(tool("web_fetch")))
+        assertEquals(ToolResultStyle.Markdown, toolResultStyle(tool("web_search")))
+        assertEquals(ToolResultStyle.Code(null), toolResultStyle(tool("read")))
+        assertEquals(ToolResultStyle.Terminal, toolResultStyle(tool("bash")))
+        assertEquals(ToolResultStyle.Terminal, toolResultStyle(tool("read", state = "error")))
+        // A foreign `read`-shaped input still yields the twin's code style;
+        // the bodies degrade to the generic JSON view for missing keys.
+        assertEquals(ToolResultStyle.Code("kotlin"), toolResultStyle(tool("read", input = json("""{"file_path":"a.kt"}"""))))
+        assertEquals(ToolResultStyle.Terminal, toolResultStyle(tool("grep", input = json("""{"pattern":"x"}"""))))
+    }
+
     @Test fun planProposalsReadInputAndPreserveTheCompleteDocument() {
         val plan = "\n# 计划 👩🏽‍💻\n\n" + "- Inspect **input.plan**  \n".repeat(1_000) + "last  \n"
         for (name in listOf("ExitPlanMode", "exit_plan_mode")) {

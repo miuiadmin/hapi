@@ -33,9 +33,13 @@ struct AgentModelCatalogTests {
         #expect(AgentModelCatalog.scope(for: .pi) == .machine)
         #expect(AgentModelCatalog.scope(for: .grok) == .directory)
         #expect(AgentModelCatalog.scope(for: .opencode) == .directory)
+        #expect(AgentModelCatalog.scope(for: .hermes) == .session)
         #expect(AgentModelCatalog.scope(for: .claude) == nil)
         #expect(AgentModelCatalog.scope(for: .codex) == nil)
         #expect(AgentModelCatalog.scope(for: .gemini) == nil)
+        // Berry has no model surface: its only lever is the spawn-time
+        // BERRY_AGENT_MODEL env — no probe, no in-session switching.
+        #expect(AgentModelCatalog.scope(for: .berry) == nil)
     }
 
     @Test func newSessionRowsPerFlavor() throws {

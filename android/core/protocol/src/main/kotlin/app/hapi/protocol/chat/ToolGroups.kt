@@ -117,6 +117,9 @@ private val SEARCH_TOOL_NAMES = setOf(
     "search",
     "grep",
     "glob",
+    // Berry's `find` arrives with kind 'other' (not its native search kind),
+    // so only the name fallback classifies it — kept in the search bucket.
+    "find",
     "ls",
     "listdir",
     "listfiles",

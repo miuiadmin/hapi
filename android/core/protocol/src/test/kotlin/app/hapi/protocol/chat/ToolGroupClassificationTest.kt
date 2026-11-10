@@ -44,6 +44,11 @@ class ToolGroupClassificationTest {
         assertEquals(ToolGroupActionKind.MUTATION, getToolGroupActionKind(tool("apply_patch")))
         assertEquals(ToolGroupActionKind.WEB, getToolGroupActionKind(tool("web_fetch")))
         assertEquals(ToolGroupActionKind.WEB, getToolGroupActionKind(tool("web_search")))
+        // Berry's `find` carries kind 'other', so only the name fallback
+        // bucket can classify it (the native-kind set already knows `find`).
+        assertEquals(ToolGroupActionKind.SEARCH, getToolGroupActionKind(tool("find")))
+        assertEquals(ToolGroupActionKind.SEARCH, getToolGroupActionKind(tool("find", nativeKind = "other")))
+        assertEquals(ToolGroupActionKind.SEARCH, getToolGroupActionKind(tool("Find", nativeKind = "other")))
         // Not in any web table — stays OTHER (web parity).
         assertEquals(ToolGroupActionKind.OTHER, getToolGroupActionKind(tool("read_image")))
     }
@@ -98,6 +103,7 @@ class ToolGroupClassificationTest {
     @Test fun `ordinary tools remain eligible`() {
         assertTrue(isEligibleForToolGrouping(tool("bash")))
         assertTrue(isEligibleForToolGrouping(tool("read")))
+        assertTrue(isEligibleForToolGrouping(tool("find")))
         assertTrue(isEligibleForToolGrouping(tool("apply_patch")))
         assertTrue(isEligibleForToolGrouping(tool("WebFetch")))
     }

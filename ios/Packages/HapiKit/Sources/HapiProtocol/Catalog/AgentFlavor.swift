@@ -115,10 +115,11 @@ extension AgentFlavor {
     }
 
     /// `hasCapability(flavor, 'model-change')` — false for DSH's server-owned
-    /// model selection and unknown flavors.
+    /// model selection, Berry's spawn-time-only model lever
+    /// (`BERRY_AGENT_MODEL` env; no runtime switching), and unknown flavors.
     public var supportsModelChange: Bool {
         switch self {
-        case .dsh, .other: return false
+        case .dsh, .berry, .other: return false
         default: return true
         }
     }
