@@ -12,6 +12,21 @@ type RpcHandlerManagerLike = {
 
 export type AutoApprovalDecision = 'approved' | 'approved_for_session';
 
+/**
+ * Auto-approval classification context for a permission request.
+ *
+ * `unclassifiable` marks a request that, after the backend-side v29.3
+ * toolCallId correlation, still carries NEITHER a tool `kind` NOR a
+ * `rawInput` (see {@link isUnclassifiablePermissionRequest}). The only
+ * identity left is the human-facing title — for berry (`APPROVAL-*`
+ * toolCallIds never correlate; the title is a human summary) that title is
+ * prose, not a tool classification, so the title-derived write-hint
+ * heuristic below must not be trusted to auto-approve it.
+ */
+export type AutoApprovalClassification = {
+    unclassifiable?: boolean;
+};
+
 export type AutoApprovalRuleSet = {
     alwaysToolNameHints?: string[];
     alwaysToolIdHints?: string[];
@@ -67,11 +82,34 @@ const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     ...SENSITIVE_TOOL_NAME_HINTS
 ];
 
+/**
+ * Whether a permission request carries any machine-readable tool identity
+ * (a non-empty `kind`, or any `rawInput`) after backend-side correlation.
+ *
+ * Flavors that fill request fields (codex/cursor/opencode, dsh post-v29.3
+ * correlated requests) keep their existing classification. A request whose
+ * ONLY identity is the human-facing title — berry's `request_permission`
+ * summaries — is unclassifiable: a berry write whose summary lacks
+ * write-words would otherwise be auto-approved in read-only by the
+ * title write-hint heuristic.
+ */
+export function isUnclassifiablePermissionRequest(request: {
+    kind?: string;
+    rawInput?: unknown;
+}): boolean {
+    const kind = typeof request.kind === 'string' ? request.kind.trim() : '';
+    if (kind.length > 0) {
+        return false;
+    }
+    return request.rawInput === undefined || request.rawInput === null;
+}
+
 export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
     toolName: string,
     toolCallId: string,
-    ruleOverrides?: AutoApprovalRuleSet
+    ruleOverrides?: AutoApprovalRuleSet,
+    classification?: AutoApprovalClassification
 ): AutoApprovalDecision | null {
     const rules = {
         alwaysToolNameHints: ruleOverrides?.alwaysToolNameHints ?? AUTO_APPROVE_TOOL_NAME_HINTS,
@@ -110,7 +148,13 @@ export function resolveToolAutoApprovalDecision(
         // auto-approved in read-only. It might be anything, including a
         // sandbox-escalating write, so surface it to the user instead.
         // Other modes keep their existing behavior.
-        if (isPlaceholderToolName(toolName)) {
+        //
+        // Unclassifiable requests (kind+rawInput both absent, title is the
+        // only identity) fail closed the same way even when the title is
+        // real prose: berry's human summaries are not a tool classification,
+        // so a write whose summary lacks write-words must not slip through
+        // the write-hint heuristic below.
+        if (classification?.unclassifiable || isPlaceholderToolName(toolName)) {
             return null;
         }
         const isWriteTool = rules.writeToolNameHints.some((name) => lowerTool.includes(name));
@@ -181,9 +225,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         mode: PermissionMode | undefined,
         toolName: string,
         toolCallId: string,
-        ruleOverrides?: AutoApprovalRuleSet
+        ruleOverrides?: AutoApprovalRuleSet,
+        classification?: AutoApprovalClassification
     ): AutoApprovalDecision | null {
-        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides);
+        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides, classification);
     }
 
     protected addPendingRequest(

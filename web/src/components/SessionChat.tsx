@@ -122,7 +122,7 @@ import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
-import { useBerryModelsForSession, useHermesModelsForSession } from '@/hooks/queries/useAcpSessionModels'
+import { useHermesModelsForSession } from '@/hooks/queries/useAcpSessionModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1171,8 +1171,10 @@ function SessionChatInner(props: SessionChatProps) {
         () => agentFlavor === 'dsh' ? getDshReasoningEffortSourceOptions() : undefined,
         [agentFlavor]
     )
-    // hermes/berry ride the same rail: catalogs arrive through the session's
-    // ACP config options (ListHermesModels / ListBerryModels RPCs).
+    // hermes rides the same rail: catalogs arrive through the session's
+    // ACP config options (ListHermesModels RPC). Berry has no runtime model
+    // face at all (its only lever is the spawn-time BERRY_AGENT_MODEL env,
+    // owned by the CLI agent), so no picker is offered for it.
     const hermesModelsState = useHermesModelsForSession({
         api: props.api,
         sessionId: props.session.id,
@@ -1189,22 +1191,6 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, hermesModelsState.availableModels])
-    const berryModelsState = useBerryModelsForSession({
-        api: props.api,
-        sessionId: props.session.id,
-        enabled: agentFlavor === 'berry' && props.session.active
-    })
-    const berryModelOptions = useMemo(() => (
-        agentFlavor === 'berry' && berryModelsState.availableModels.length > 0
-            ? [
-                { value: null, label: 'Default' },
-                ...berryModelsState.availableModels.map((model) => ({
-                    value: model.modelId,
-                    label: model.name ?? model.modelId
-                }))
-            ]
-            : undefined
-    ), [agentFlavor, berryModelsState.availableModels])
     const machineCursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId: sessionMachineId,
@@ -2246,8 +2232,13 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? dshModelOptions
                                             : agentFlavor === 'hermes'
                                                 ? hermesModelOptions
-                                            : agentFlavor === 'berry'
-                                                ? berryModelOptions
+                                        // Berry intentionally has no runtime
+                                        // model options (no ACP config-option
+                                        // face; spawn-time BERRY_AGENT_MODEL is
+                                        // the only lever), so it falls through
+                                        // to claudeModelOptions, which is
+                                        // undefined for berry and keeps the
+                                        // composer's model picker hidden.
                                         // Pi gets its provider-qualified model list from the piModels prop;
                                         // feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,

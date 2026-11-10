@@ -6,6 +6,7 @@ import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import {
     BasePermissionHandler,
+    isUnclassifiablePermissionRequest,
     type AutoApprovalDecision,
     type PendingPermissionRequest,
     type PermissionCompletion
@@ -81,10 +82,19 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             rawInput: request.rawInput
         })
         const toolInput = deriveToolInput(request)
+        // Fail closed on unclassifiable requests: when the request still has
+        // neither a kind nor a rawInput after the backend-side toolCallId
+        // correlation (berry's APPROVAL-* ids never correlate, so its
+        // human-summary title is the only identity), the title write-hints
+        // must not drive read-only auto-approval. Flavors that fill the
+        // request fields are classified exactly as before.
+        const unclassifiable = isUnclassifiablePermissionRequest(request)
         const autoDecision = this.resolveAutoApprovalDecision(
             this.getPermissionMode(),
             toolName,
-            request.toolCallId
+            request.toolCallId,
+            undefined,
+            { unclassifiable }
         )
         if (autoDecision) {
             void this.autoApprove(request, toolName, toolInput, autoDecision)

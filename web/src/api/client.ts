@@ -43,7 +43,6 @@ import type {
     DeleteUploadResponse,
     DshModelsResponse,
     HermesModelsResponse,
-    BerryModelsResponse,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
@@ -1021,12 +1020,6 @@ export class ApiClient {
     async getSessionHermesModels(sessionId: string): Promise<HermesModelsResponse> {
         return await this.request<HermesModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/hermes-models`
-        )
-    }
-
-    async getSessionBerryModels(sessionId: string): Promise<BerryModelsResponse> {
-        return await this.request<BerryModelsResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/berry-models`
         )
     }
 
