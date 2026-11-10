@@ -198,12 +198,14 @@ struct CatalogTests {
     }
 
     @Test func modelChangeIsSupportedByEveryModelConfigFlavor() {
-        // Berry is out with dsh: its only model lever is the spawn-time
-        // BERRY_AGENT_MODEL env — no runtime switching surface.
-        for flavor in AgentFlavor.knownFlavors where flavor != .dsh && flavor != .berry {
+        // Berry is the only known flavor without one: its only model lever
+        // is the spawn-time BERRY_AGENT_MODEL env — no runtime switching
+        // surface (dsh/hermes switch through their session catalogs).
+        for flavor in AgentFlavor.knownFlavors where flavor != .berry {
             #expect(flavor.supportsModelChange, "\(flavor.rawValue) should support model change")
         }
-        #expect(!AgentFlavor.dsh.supportsModelChange)
+        #expect(AgentFlavor.dsh.supportsModelChange)
+        #expect(AgentFlavor.hermes.supportsModelChange)
         #expect(!AgentFlavor.berry.supportsModelChange)
         #expect(!AgentFlavor.other("x").supportsModelChange)
         #expect(!supportsModelChange(forFlavor: nil))

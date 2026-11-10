@@ -147,6 +147,9 @@ private class LeanApi : ChatSessionApi {
     override suspend fun getSessionDshModels(sessionId: String): app.hapi.protocol.wire.DshModelsResponse =
         app.hapi.protocol.wire.DshModelsResponse(success = false)
 
+    override suspend fun getSessionHermesModels(sessionId: String): app.hapi.protocol.wire.HermesModelsResponse =
+        app.hapi.protocol.wire.HermesModelsResponse(success = false)
+
     override suspend fun getSessionCursorModels(sessionId: String): app.hapi.protocol.wire.CursorModelsResponse =
         app.hapi.protocol.wire.CursorModelsResponse(success = false)
 

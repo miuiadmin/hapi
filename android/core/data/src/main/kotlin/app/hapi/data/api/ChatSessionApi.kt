@@ -8,6 +8,7 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
 import app.hapi.protocol.wire.DshModelsResponse
+import app.hapi.protocol.wire.HermesModelsResponse
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.ForkConversationResponse
 import app.hapi.protocol.wire.GrokReasoningEffortResponse
@@ -150,6 +151,13 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
      * back verbatim when switching.
      */
     suspend fun getSessionDshModels(sessionId: String): DshModelsResponse
+
+    /**
+     * `GET /api/sessions/:id/hermes-models` (RPC-wrapped) — the active
+     * Hermes session's model catalog (ListHermesModels). Ids are opaque
+     * `provider:model` picker values sent back verbatim when switching.
+     */
+    suspend fun getSessionHermesModels(sessionId: String): HermesModelsResponse
 
     /** `GET /api/sessions/:id/cursor-models` (RPC-wrapped) — ACP wires + CLI skus. */
     suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse

@@ -44,6 +44,7 @@ import app.hapi.protocol.wire.OpencodeModelVariantsResponse
 import app.hapi.protocol.wire.OpencodeReasoningEffortResponse
 import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.DshModelsResponse
+import app.hapi.protocol.wire.HermesModelsResponse
 import app.hapi.protocol.wire.PiImportSessionsRequest
 import app.hapi.protocol.wire.PiImportSessionsResponse
 import app.hapi.protocol.wire.PiLocalSessionsResponse
@@ -597,6 +598,14 @@ class HapiApi internal constructor(
      */
     override suspend fun getSessionDshModels(sessionId: String): DshModelsResponse =
         request("GET", url("api", "sessions", sessionId, "dsh-models").build())
+
+    /**
+     * `GET /api/sessions/:id/hermes-models` — the active Hermes session's
+     * model catalog (RPC-wrapped). Ids are opaque `provider:model` picker
+     * values that must be sent back verbatim when switching.
+     */
+    override suspend fun getSessionHermesModels(sessionId: String): HermesModelsResponse =
+        request("GET", url("api", "sessions", sessionId, "hermes-models").build())
 
     /** `GET /api/sessions/:id/cursor-models` — ACP wires + CLI skus of the active cursor session. */
     override suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse =
