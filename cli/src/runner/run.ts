@@ -1779,6 +1779,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             if (sid === sessionId) pids.add(pid);
         }
         for (const pid of pids) {
+            // Bootstrap-window guard: a pid still awaiting its first session
+            // confirmation has not installed the SIGUSR2 wake handler yet —
+            // signalling it now kills the child (the crash surfaces as the
+            // bare "An unknown error occurred (Unexpected)" pre-init fatal).
+            // The socket reconnects on its own once the session attaches, so
+            // skipping is safe.
+            if (pidToAwaiter.has(pid)) {
+                logger.debug(`[RUNNER RUN] Skipping session-wake for pid ${pid} (session ${sessionId}): still in bootstrap window`);
+                continue;
+            }
             try {
                 process.kill(pid, 'SIGUSR2');
                 logger.debug(`[RUNNER RUN] Sent session-wake signal to pid ${pid} for session ${sessionId}`);
