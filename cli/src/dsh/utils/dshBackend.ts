@@ -55,10 +55,17 @@ export function createDshBackend(env: NodeJS.ProcessEnv = process.env): AcpSdkBa
         command,
         args,
         env: filterEnv(env),
-        flavor: 'dsh',
-        // dsh 0.2.x exits its process on the standard session/cancel
-        // notification; cancel by closing the session instead (the launcher
-        // respawns the ACP session for the next message).
-        cancelMode: 'close-fallback'
+        flavor: 'dsh'
+        // Cancel mode: standard `session/cancel` notification, deliberately
+        // NOT 'close-fallback'. dsh ≥0.2.2 implements session/cancel as a
+        // regular ACP notification (cancel the in-flight turn, keep the
+        // process AND the ACP session alive — verified against 0.2.2-rc.1).
+        // session/close, by contrast, DESTROYS the session on 0.2.2: a later
+        // session/resume of the closed id "succeeds" but restores an EMPTY
+        // context (empirically verified) — every user Stop silently cost the
+        // whole conversation. Legacy dsh 0.2.0/0.2.1 exits its process on
+        // session/cancel; that path stays recoverable too because the
+        // persisted on-disk session survives the process death and the
+        // launcher respawns + resumes it on the next message.
     })
 }
