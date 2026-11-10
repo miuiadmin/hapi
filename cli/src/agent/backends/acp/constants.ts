@@ -5,7 +5,10 @@ export const ACP_SESSION_UPDATE_TYPES = {
     toolCallUpdate: 'tool_call_update',
     plan: 'plan',
     usageUpdate: 'usage_update',
-    sessionInfoUpdate: 'session_info_update'
+    sessionInfoUpdate: 'session_info_update',
+    /** dsh 0.2.x pushes a refreshed configOptions catalog mid-session
+     * (e.g. after llm/adapters-updated); captured like an RPC echo. */
+    configOptionUpdate: 'config_option_update'
 } as const;
 
 /** OpenCode v2 client capability (`_meta` key) that enables child session updates. */

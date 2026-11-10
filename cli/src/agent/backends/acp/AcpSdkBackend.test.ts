@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentMessage } from '@/agent/types';
+import type { AgentMessage, PermissionRequest } from '@/agent/types';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { AcpMessageHandler } from './AcpMessageHandler';
 import { buildAcpStdioSpawnOptions } from './AcpStdioTransport';
@@ -2306,5 +2306,213 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
         await sleep(60);
 
         expect(texts(messages)).toEqual([]);
+    });
+});
+
+describe('AcpSdkBackend dsh parity (bare request_permission + config_option_update)', () => {
+    type BackendInternal = {
+        handleSessionUpdate: (params: unknown) => void;
+        handlePermissionRequest: (params: unknown, requestId: string | number | null) => Promise<unknown>;
+    };
+
+    function makeDshBackend() {
+        return new AcpSdkBackend({ command: 'dsh', args: ['--profile', 'acp'], flavor: 'dsh' });
+    }
+
+    it('correlates a bare request_permission with the drained tool_call update', async () => {
+        const backend = makeDshBackend();
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        // DSH drains the full tool_call update BEFORE asking; the capture is
+        // synchronous so this also holds when both lines arrive in the same
+        // stdout chunk (no await between the two calls).
+        internal.handleSessionUpdate({
+            sessionId: 'session-dsh',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'call-dsh-1',
+                title: 'bash',
+                kind: 'other',
+                rawInput: { command: 'cat /etc/hosts' },
+                status: 'in_progress'
+            }
+        });
+        await internal.handlePermissionRequest({
+            sessionId: 'session-dsh',
+            // dsh 0.2.x sends ONLY {toolCallId} — no title/kind/rawInput.
+            toolCall: { toolCallId: 'call-dsh-1' },
+            options: [
+                { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+                { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' }
+            ]
+        }, 'req-1');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0]).toMatchObject({
+            id: 'call-dsh-1',
+            sessionId: 'session-dsh',
+            toolCallId: 'call-dsh-1',
+            title: 'bash',
+            kind: 'other'
+        });
+        expect(captured[0].rawInput).toEqual({ command: 'cat /etc/hosts' });
+    });
+
+    it('correlates a request_permission that hoists toolCallId to the params level', async () => {
+        const backend = makeDshBackend();
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        internal.handleSessionUpdate({
+            sessionId: 'session-dsh',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'call-dsh-2',
+                title: 'write',
+                kind: 'other',
+                rawInput: { file_path: '/tmp/x.txt', content: 'hi' },
+                status: 'in_progress'
+            }
+        });
+        await internal.handlePermissionRequest({
+            sessionId: 'session-dsh',
+            toolCallId: 'call-dsh-2',
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        }, 'req-2');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0].title).toBe('write');
+        expect(captured[0].rawInput).toEqual({ file_path: '/tmp/x.txt', content: 'hi' });
+    });
+
+    it('keeps request-carried fields over correlated values (flavors that fill toolCall)', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        internal.handleSessionUpdate({
+            sessionId: 'session-oc',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'call-oc-1',
+                title: 'bash',
+                kind: 'execute',
+                rawInput: { command: 'ls' },
+                status: 'in_progress'
+            }
+        });
+        await internal.handlePermissionRequest({
+            sessionId: 'session-oc',
+            toolCall: {
+                toolCallId: 'call-oc-1',
+                title: 'Shell',
+                kind: 'execute',
+                rawInput: { cmd: 'echo from-request' }
+            },
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        }, 'req-3');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0].title).toBe('Shell');
+        expect(captured[0].kind).toBe('execute');
+        expect(captured[0].rawInput).toEqual({ cmd: 'echo from-request' });
+    });
+
+    it('leaves an uncorrelatable bare permission request anonymous (read-only then fails closed)', async () => {
+        const backend = makeDshBackend();
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        // No tool_call update was drained for this id — the request must stay
+        // anonymous (title/kind/rawInput undefined) so the permission bridge's
+        // read-only auto-approval fails closed instead of approving 'Tool'.
+        await internal.handlePermissionRequest({
+            sessionId: 'session-dsh',
+            toolCall: { toolCallId: 'call-dsh-unknown' },
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        }, 'req-4');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0].toolCallId).toBe('call-dsh-unknown');
+        expect(captured[0].title).toBeUndefined();
+        expect(captured[0].kind).toBeUndefined();
+        expect(captured[0].rawInput).toBeUndefined();
+    });
+
+    it('refreshes sessionConfigOptions and model metadata from config_option_update', () => {
+        const backend = makeDshBackend();
+        const internal = backend as unknown as BackendInternal;
+
+        const sendConfigOptionUpdate = (modelValue: string, effortValue: string) => {
+            internal.handleSessionUpdate({
+                sessionId: 'session-dsh',
+                update: {
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.configOptionUpdate,
+                    configOptions: [
+                        {
+                            id: 'model',
+                            name: 'Model',
+                            category: 'model',
+                            type: 'select',
+                            currentValue: modelValue,
+                            options: [
+                                {
+                                    group: 'deepseek-official',
+                                    name: 'DeepSeek',
+                                    options: [
+                                        { value: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+                                        { value: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            id: 'reasoning_effort',
+                            category: 'thought_level',
+                            currentValue: effortValue,
+                            options: [
+                                { value: 'off', name: 'Off' },
+                                { value: 'low', name: 'Low' },
+                                { value: 'high', name: 'High' }
+                            ]
+                        }
+                    ]
+                }
+            });
+        };
+
+        sendConfigOptionUpdate('["deepseek-official","deepseek-flash"]', 'high');
+        expect(backend.getSessionConfigOptions('session-dsh')?.map((option) => option.id))
+            .toEqual(['model', 'reasoning_effort']);
+        expect(backend.getSessionModelsMetadata('session-dsh')?.currentModelId)
+            .toBe('["deepseek-official","deepseek-flash"]');
+        expect(backend.getThoughtLevelConfigOption('session-dsh')?.currentValue).toBe('high');
+
+        // dsh pushes a fresh catalog mid-session (llm/adapters-updated).
+        sendConfigOptionUpdate('["deepseek-official","deepseek-v4-pro"]', 'low');
+        expect(backend.getSessionModelsMetadata('session-dsh')?.currentModelId)
+            .toBe('["deepseek-official","deepseek-v4-pro"]');
+        expect(backend.getThoughtLevelConfigOption('session-dsh')?.currentValue).toBe('low');
+        expect(backend.getConfigOptionByCategory('session-dsh', 'model')?.options).toEqual([
+            { value: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+            { value: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+        ]);
     });
 });

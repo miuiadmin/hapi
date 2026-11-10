@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { resolveToolAutoApprovalDecision } from './BasePermissionHandler'
+import { deriveToolName } from '@/agent/utils'
 
 describe('resolveToolAutoApprovalDecision skill_lookup', () => {
     it.each([
@@ -99,5 +100,53 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
             'list_peers_and_write',
             'call-1'
         )).toBeNull()
+    })
+})
+
+describe('resolveToolAutoApprovalDecision read-only fail-closed (unclassifiable tools)', () => {
+    it.each(['Tool', 'Unknown', 'Other', 'other', 'unknown', ''])(
+        'does not auto-approve the placeholder name %j in read-only mode',
+        (toolName) => {
+            expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
+        }
+    )
+
+    it('keeps prompting (not auto-approving) for unclassifiable tools in default mode', () => {
+        expect(resolveToolAutoApprovalDecision('default', 'Tool', 'call-1')).toBeNull()
+    })
+
+    it('keeps safe-yolo auto-approval for unclassifiable tools', () => {
+        expect(resolveToolAutoApprovalDecision('safe-yolo', 'Tool', 'call-1')).toBe('approved')
+    })
+
+    it('keeps yolo session approval for unclassifiable tools', () => {
+        expect(resolveToolAutoApprovalDecision('yolo', 'Tool', 'call-1')).toBe('approved_for_session')
+    })
+
+    it('still auto-approves classifiable read/execute tools in read-only mode', () => {
+        expect(resolveToolAutoApprovalDecision('read-only', 'Read', 'call-1')).toBe('approved')
+        expect(resolveToolAutoApprovalDecision('read-only', 'bash', 'call-2')).toBe('approved')
+    })
+
+    it('still denies write-looking tools in read-only mode', () => {
+        expect(resolveToolAutoApprovalDecision('read-only', 'edit', 'call-1')).toBeNull()
+        expect(resolveToolAutoApprovalDecision('read-only', 'apply_patch', 'call-2')).toBeNull()
+    })
+
+    it('fails closed for an uncorrelated dsh permission request but approves the correlated one', () => {
+        // dsh session/request_permission carries only {toolCallId}; without
+        // correlation the derived name is the anonymous placeholder.
+        const uncorrelatedName = deriveToolName({ title: undefined, kind: undefined, rawInput: undefined })
+        expect(uncorrelatedName).toBe('Tool')
+        expect(resolveToolAutoApprovalDecision('read-only', uncorrelatedName, 'call_dsh_1')).toBeNull()
+
+        // Correlated against the drained tool_call, the request is classifiable
+        // again and read-only keeps its existing semantics (non-write tool).
+        const correlatedName = deriveToolName({
+            title: 'bash',
+            kind: 'other',
+            rawInput: { command: 'cat /etc/hosts' }
+        })
+        expect(resolveToolAutoApprovalDecision('read-only', correlatedName, 'call_dsh_1')).toBe('approved')
     })
 })

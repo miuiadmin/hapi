@@ -2,7 +2,7 @@ import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
-import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
+import { AcpMessageHandler, isUsableRawInput, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
 import { logger } from '@/ui/logger';
@@ -103,6 +103,13 @@ type AcpInitializeResult = {
     };
 };
 
+/** Presentation fields of a drained tool_call, keyed by toolCallId. */
+type ObservedToolCall = {
+    title?: string;
+    kind?: string;
+    rawInput?: unknown;
+};
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
@@ -111,6 +118,15 @@ export class AcpSdkBackend implements AgentBackend {
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
+    /**
+     * toolCallId → title/kind/rawInput of the tool_call updates this backend
+     * has drained, used to correlate bare `session/request_permission`
+     * payloads (dsh 0.2.x sends ONLY `{toolCallId}`) back to the tool they
+     * belong to. Populated synchronously in handleSessionUpdate so a
+     * permission request arriving in the same stdout chunk as its tool_call
+     * update still correlates. Bounded FIFO — see MAX_OBSERVED_TOOL_CALLS.
+     */
+    private readonly observedToolCalls = new Map<string, ObservedToolCall>();
     private readonly sessionInfoRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private readonly initialAvailableCommands = new Set<string>();
     private readonly sessionAvailableCommands = new Map<string, Set<string>>();
@@ -186,6 +202,13 @@ export class AcpSdkBackend implements AgentBackend {
     private static readonly LATE_FLUSH_INTERVAL_MS = 50;
     private static readonly LATE_FLUSH_QUIET_PERIOD_MS = 250;
     private static readonly LATE_FLUSH_WINDOW_MS = 6000;
+    /**
+     * Cap for {@link observedToolCalls}. Permission requests follow their
+     * tool_call update immediately (dsh drains updates before asking), so a
+     * small recent-window suffices; the cap bounds memory pinned by large
+     * write-tool rawInputs.
+     */
+    private static readonly MAX_OBSERVED_TOOL_CALLS = 32;
 
     constructor(private readonly options: {
         command: string;
@@ -1133,6 +1156,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.foregroundPromptRequests = 0;
         this.isProcessingMessage = false;
         this.sessionModelsMetadata.clear();
+        this.observedToolCalls.clear();
         this.initialAvailableCommands.clear();
         this.sessionAvailableCommands.clear();
         this.autoPermissionModeEnabled = null;
@@ -1272,6 +1296,8 @@ export class AcpSdkBackend implements AgentBackend {
         if (sessionId) {
             this.captureAvailableCommands(sessionId, update);
         }
+        this.captureObservedToolCall(update);
+        this.captureConfigOptionUpdate(sessionId, update);
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);
         this.notifyAgentActivity(update);
@@ -1346,6 +1372,66 @@ export class AcpSdkBackend implements AgentBackend {
             return;
         }
         this.sessionInfoUpdateListener?.({ sessionId, title: update.title });
+    }
+
+    /**
+     * Records the presentation fields of a drained tool_call /
+     * tool_call_update so a later `session/request_permission` that carries
+     * only `{toolCallId}` (dsh 0.2.x — no title/kind/rawInput) can be
+     * correlated back to the tool it belongs to.
+     *
+     * Synchronous on purpose: `handleUpdate` runs on the sessionUpdateQueue
+     * microtask chain, while `handlePermissionRequest` executes synchronously
+     * when its JSON-RPC line is parsed — when both lines arrive in the same
+     * stdout chunk the queued handler work has not run yet, so the
+     * correlation must already be captured here.
+     *
+     * Merging rules: later updates only enrich — an empty `rawInput: {}`
+     * (OpenCode tool-start) never clobbers a previously captured usable input.
+     */
+    private captureObservedToolCall(update: unknown): void {
+        if (!isObject(update)) return;
+        const sessionUpdate = asString(update.sessionUpdate);
+        if (
+            sessionUpdate !== ACP_SESSION_UPDATE_TYPES.toolCall
+            && sessionUpdate !== ACP_SESSION_UPDATE_TYPES.toolCallUpdate
+        ) {
+            return;
+        }
+        const toolCallId = asString(update.toolCallId);
+        if (!toolCallId) return;
+
+        const previous = this.observedToolCalls.get(toolCallId);
+        const next: ObservedToolCall = {
+            title: asString(update.title) ?? previous?.title,
+            kind: asString(update.kind) ?? previous?.kind,
+            rawInput: isUsableRawInput(update.rawInput) ? update.rawInput : previous?.rawInput
+        };
+        if (next.title === undefined && next.kind === undefined && next.rawInput === undefined) {
+            return;
+        }
+        this.observedToolCalls.set(toolCallId, next);
+        while (this.observedToolCalls.size > AcpSdkBackend.MAX_OBSERVED_TOOL_CALLS) {
+            const oldestId = this.observedToolCalls.keys().next().value;
+            if (oldestId === undefined) break;
+            this.observedToolCalls.delete(oldestId);
+        }
+    }
+
+    /**
+     * dsh 0.2.x pushes `session/update { sessionUpdate: 'config_option_update' }`
+     * whenever its model catalog changes (llm/adapters-updated). Route it
+     * through the same capture path RPC-response configOptions use so
+     * sessionConfigOptions / sessionModelsMetadata refresh live and the dsh
+     * ListDshModels RPC serves a fresh catalog without a new session.
+     */
+    private captureConfigOptionUpdate(sessionId: string | null, update: unknown): void {
+        if (!isObject(update) || update.sessionUpdate !== ACP_SESSION_UPDATE_TYPES.configOptionUpdate) {
+            return;
+        }
+        const targetSessionId = sessionId ?? this.activeSessionId;
+        if (!targetSessionId) return;
+        this.captureSessionMetadata(targetSessionId, update);
     }
 
     private captureUsageUpdate(update: unknown): void {
@@ -1481,10 +1567,27 @@ export class AcpSdkBackend implements AgentBackend {
 
         const sessionId = asString(params.sessionId) ?? this.activeSessionId ?? 'unknown';
         const toolCall = isObject(params.toolCall) ? params.toolCall : {};
-        const toolCallId = asString(toolCall.toolCallId) ?? `tool-${Date.now()}`;
-        const title = asString(toolCall.title) ?? undefined;
-        const kind = asString(toolCall.kind) ?? undefined;
-        const rawInput = 'rawInput' in toolCall ? toolCall.rawInput : undefined;
+        // dsh 0.2.x sends the toolCall object with ONLY {toolCallId} (no
+        // title/kind/rawInput); some shapes may hoist it to the params level.
+        // Resolve both, then correlate against the tool_call updates this
+        // backend already drained (DSH drains updates before asking) so the
+        // permission card keeps its tool identity. Fields the request DOES
+        // carry always win — flavors that fill title/kind/rawInput are
+        // unaffected by the correlation.
+        const toolCallId = asString(toolCall.toolCallId)
+            ?? asString(params.toolCallId)
+            ?? `tool-${Date.now()}`;
+        const correlated = this.observedToolCalls.get(toolCallId);
+        const title = asString(toolCall.title) ?? correlated?.title ?? undefined;
+        const kind = asString(toolCall.kind) ?? correlated?.kind ?? undefined;
+        let rawInput: unknown;
+        if ('rawInput' in toolCall) {
+            rawInput = toolCall.rawInput;
+        } else if (correlated !== undefined && isUsableRawInput(correlated.rawInput)) {
+            rawInput = correlated.rawInput;
+        } else {
+            rawInput = undefined;
+        }
         const rawOutput = 'rawOutput' in toolCall ? toolCall.rawOutput : undefined;
         const options = Array.isArray(params.options)
             ? params.options
