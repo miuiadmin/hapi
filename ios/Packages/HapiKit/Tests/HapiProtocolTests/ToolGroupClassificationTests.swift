@@ -93,6 +93,21 @@ struct ToolGroupClassificationTests {
         #expect(!isEligibleForToolGrouping(tool("agy_error")))
     }
 
+    // MARK: - Ask-user matcher (DSH MCP bridge alias)
+
+    @Test func askUserQuestionNamesIncludeDshMcpBridgeAlias() {
+        #expect(isAskUserQuestionToolName("AskUserQuestion"))
+        #expect(isAskUserQuestionToolName("ask_user_question"))
+        #expect(isAskUserQuestionToolName("CursorAskQuestion"))
+        #expect(isAskUserQuestionToolName("mcp__hapi__ask_user_question"))
+        #expect(!isAskUserQuestionToolName("mcp__hapi__ask_user_questio"))
+        #expect(!isAskUserQuestionToolName("other__ask_user_question"))
+        // Interactive question cards never fold into tool groups (web
+        // toolGroups.test.ts `excludes interactive, subagent, and plan cards`).
+        #expect(!isEligibleForToolGrouping(tool("AskUserQuestion")))
+        #expect(!isEligibleForToolGrouping(tool("mcp__hapi__ask_user_question")))
+    }
+
     @Test func ordinaryToolsRemainEligible() {
         #expect(isEligibleForToolGrouping(tool("bash")))
         #expect(isEligibleForToolGrouping(tool("read")))

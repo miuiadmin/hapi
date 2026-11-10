@@ -100,6 +100,16 @@ class ToolGroupClassificationTest {
         assertFalse(isEligibleForToolGrouping(tool("agy_error")))
     }
 
+    @Test fun `ask user question names include dsh mcp bridge alias`() {
+        assertTrue(isAskUserQuestionToolName("mcp__hapi__ask_user_question"))
+        assertFalse(isAskUserQuestionToolName("mcp__hapi__ask_user_questio"))
+        assertFalse(isAskUserQuestionToolName("other__ask_user_question"))
+        // Interactive question cards never fold into tool groups (web
+        // toolGroups.test.ts `excludes interactive, subagent, and plan cards`).
+        assertFalse(isEligibleForToolGrouping(tool("AskUserQuestion")))
+        assertFalse(isEligibleForToolGrouping(tool("mcp__hapi__ask_user_question")))
+    }
+
     @Test fun `ordinary tools remain eligible`() {
         assertTrue(isEligibleForToolGrouping(tool("bash")))
         assertTrue(isEligibleForToolGrouping(tool("read")))
