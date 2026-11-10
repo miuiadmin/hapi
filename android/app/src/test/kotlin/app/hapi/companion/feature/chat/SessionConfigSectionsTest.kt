@@ -115,6 +115,29 @@ class SessionConfigSectionsTest {
     // ------------------------------------------------- opencode / grok rows --
 
     @Test
+    fun `dsh rows are the fixed preset set with the current injected`() {
+        // off/low/high/max presets, Default first (web DSH_REASONING_EFFORT_PRESETS).
+        val rows = SessionConfigSections.dshReasoningEffortOptions("high")
+        assertEquals(
+            listOf(null to "Default", "off" to "Off", "low" to "Low", "high" to "High", "max" to "Max"),
+            rows.map { it.value to it.label },
+        )
+        // '' (Provider default) and blank normalize onto the Default row.
+        assertEquals(
+            rows.map { it.value },
+            SessionConfigSections.dshReasoningEffortOptions("").map { it.value },
+        )
+        assertEquals(
+            rows.map { it.value },
+            SessionConfigSections.dshReasoningEffortOptions(null).map { it.value },
+        )
+        // An out-of-list current stays visible, injected after Default.
+        val injected = SessionConfigSections.dshReasoningEffortOptions("medium")
+        assertEquals(listOf(null, "medium", "off", "low", "high", "max"), injected.map { it.value })
+        assertEquals("Medium", injected[1].label)
+    }
+
+    @Test
     fun `opencode rows hide on empty rpc list and prefer provider names`() {
         assertNull(SessionConfigSections.opencodeReasoningEffortOptions("high", null))
         assertNull(SessionConfigSections.opencodeReasoningEffortOptions("high", emptyList()))

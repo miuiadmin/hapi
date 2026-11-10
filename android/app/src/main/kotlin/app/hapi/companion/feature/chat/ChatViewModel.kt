@@ -320,8 +320,8 @@ data class SessionConfigUi(
     /** True while the codex model catalog loads (sheet shows a spinner row). */
     val modelOptionsLoading: Boolean,
     /**
-     * Claude `effort`, codex/opencode `modelReasoningEffort`, grok/pi `effort`,
-     * whichever applies.
+     * Claude `effort`, codex/opencode/dsh `modelReasoningEffort`, grok/pi
+     * `effort`, whichever applies.
      */
     val effort: String?,
     /** null → hide the effort section. */
@@ -2556,12 +2556,16 @@ class ChatViewModel(
     }
 
     /**
-     * Effort switch, flavor-routed: claude → `POST /effort`; codex/opencode →
-     * `POST /model-reasoning-effort`. Null clears. Pi's rows toggle off by
-     * posting null when the clicked row is already selected (web parity).
+     * Effort switch, flavor-routed: claude → `POST /effort`; codex/opencode/
+     * dsh → `POST /model-reasoning-effort` (the hub accepts dsh since the
+     * v29.3 web rail). Null clears. Pi's rows toggle off by posting null
+     * when the clicked row is already selected (web parity). Changes apply
+     * on the next turn, like every flavor.
      */
     fun setEffort(effort: String?) {
-        val usesReasoningEffort = currentFlavor() == "codex" || currentFlavor() == "opencode"
+        val usesReasoningEffort = currentFlavor() == "codex" ||
+            currentFlavor() == "opencode" ||
+            currentFlavor() == "dsh"
         runConfigChange(
             optimistic = {
                 if (usesReasoningEffort) it.copy(modelReasoningEffort = effort) else it.copy(effort = effort)
@@ -2839,6 +2843,11 @@ class ChatViewModel(
                     listOf(CatalogOption(null, "Default")) +
                         dshModels.map { CatalogOption(it.modelId, it.name ?: it.modelId) }
                 }
+                // Fixed off/low/high/max presets ('' = Provider default maps
+                // onto the null Default row); no catalog dependency, so the
+                // section shows even while the model list loads (web parity).
+                effort = detail?.modelReasoningEffort?.trim()?.takeIf { it.isNotEmpty() }
+                effortOptions = SessionConfigSections.dshReasoningEffortOptions(effort)
             }
             "cursor" -> {
                 modelOptions = null

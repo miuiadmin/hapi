@@ -25,6 +25,9 @@ import app.hapi.protocol.wire.PiSelectedModelRef
  *   advertises a fast tier;
  * - opencode: reasoning effort only while the dynamic RPC list is non-empty;
  * - grok: effort only while the dynamic RPC list is non-empty;
+ * - dsh: reasoning effort always (fixed off/low/high/max presets — the
+ *   agent's `reasoning_effort` config option advertises a fixed value set,
+ *   '' meaning "Provider default");
  * - pi: thinking levels only while the selected model is resolved and
  *   `reasoning != false`;
  * - cursor: variant rows (exact wire ids) while the current base has >1
@@ -83,6 +86,14 @@ object SessionConfigSections {
         "max" to "Max",
         "ultra" to "Ultra",
     )
+
+    /**
+     * `DSH_REASONING_EFFORT_PRESETS` — the agent's single session-wide
+     * `reasoning_effort` config option (category thought_level) advertises
+     * a fixed value set: off/low/high/max plus `''` meaning "Provider
+     * default", which the composer maps onto the null Default entry.
+     */
+    private val DSH_EFFORT_PRESETS = listOf("off", "low", "high", "max")
 
     /** `normalizeCodexComposerReasoningEffort` — blank/`default` → null. */
     fun normalizeCodexReasoningEffort(effort: String?): String? {
@@ -149,6 +160,18 @@ object SessionConfigSections {
         }
         return options
     }
+
+    /**
+     * DSH rows (`getCodexComposerReasoningEffortOptions`, flavor `dsh`): the
+     * fixed thought_level preset set with Default first and an out-of-list
+     * current injected — never hidden (web parity; the presets are static,
+     * no catalog dependency).
+     */
+    fun dshReasoningEffortOptions(currentEffort: String?): List<CatalogOption> =
+        dynamicReasoningEffortOptions(
+            currentEffort,
+            DSH_EFFORT_PRESETS.map { OpencodeReasoningEffortOption(it) },
+        )
 
     /**
      * Opencode rows — hidden entirely (null) while there are no dynamic

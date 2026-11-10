@@ -118,6 +118,15 @@ class ShareTurnMetadataTest {
         assertNull(ShareTurnMetadata.reasoningEffortForFlavor("claude", "high", "max"))
     }
 
+    @Test fun dshReportsTheReasoningEffortExceptProviderDefault() {
+        // Web parity: dsh publishes `modelReasoningEffort`; the unset value
+        // is '' (Provider default) which drops the whole fact.
+        assertEquals("high", ShareTurnMetadata.reasoningEffortForFlavor("dsh", "high", null))
+        assertEquals("off", ShareTurnMetadata.reasoningEffortForFlavor("dsh", "off", "max"))
+        assertNull(ShareTurnMetadata.reasoningEffortForFlavor("dsh", "", null))
+        assertNull(ShareTurnMetadata.reasoningEffortForFlavor("dsh", null, "max"))
+    }
+
     @Test fun reasoningLabelPrefixFollowsTheLabelSwitch() {
         assertEquals("reasoning low", ShareTurnMetadata.formatReasoningLabel("low", showLabels = true))
         assertEquals("low", ShareTurnMetadata.formatReasoningLabel("low", showLabels = false))

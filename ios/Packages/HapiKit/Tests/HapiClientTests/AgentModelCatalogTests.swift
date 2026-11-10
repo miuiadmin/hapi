@@ -233,6 +233,43 @@ struct AgentSessionConfigTests {
         #expect(ready.effortOptions?.map(\.value) == [nil, "low", "max"])
     }
 
+    @Test func dshEffortsAreTheFixedPresetsWithProviderDefaultOnDefault() {
+        // Fixed off/low/high/max presets — no catalog dependency, so the
+        // rows exist for an active session even while the model list idles.
+        let dsh = buildSessionConfigState(
+            detail: detail(flavor: "dsh", modelReasoningEffort: "high"), summary: nil,
+            codexModels: .idle, agentModels: .idle
+        )
+        #expect(dsh.effort == "high")
+        #expect(dsh.effortOptions == [
+            CatalogOption(value: nil, label: "Default"),
+            CatalogOption(value: "off", label: "Off"),
+            CatalogOption(value: "low", label: "Low"),
+            CatalogOption(value: "high", label: "High"),
+            CatalogOption(value: "max", label: "Max"),
+        ])
+
+        // '' (Provider default) normalizes onto the nil Default row.
+        let unset = buildSessionConfigState(
+            detail: detail(flavor: "dsh", modelReasoningEffort: ""), summary: nil,
+            codexModels: .idle, agentModels: .idle
+        )
+        #expect(unset.effort == nil)
+        #expect(unset.effortOptions?.map(\.value) == [nil, "off", "low", "high", "max"])
+
+        // An out-of-list current stays visible, injected after Default.
+        let injected = AgentModelCatalog.dshSessionEffortOptions(currentValue: " Medium ")
+        #expect(injected.map(\.value) == [nil, "medium", "off", "low", "high", "max"])
+        #expect(injected[1].label == "Medium")
+
+        // Inactive sessions hide the discovered-agent sections entirely.
+        let inactive = buildSessionConfigState(
+            detail: detail(flavor: "dsh", active: false), summary: nil,
+            codexModels: .idle, agentModels: .idle
+        )
+        #expect(inactive.effortOptions == nil)
+    }
+
     @Test func piResolvesTheProviderAndItsThinkingLevels() {
         let response = AgentModelsResponse(success: true, availableModels: [
             AgentModelSummary(modelId: "m", name: "M", provider: "a", reasoning: true, thinkingLevelMap: ["off": nil]),

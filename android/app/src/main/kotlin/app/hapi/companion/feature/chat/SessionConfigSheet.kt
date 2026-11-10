@@ -157,7 +157,9 @@ internal fun SessionConfigSheetContent(
 
         val effortOptions = config.effortOptions
         if (effortOptions != null) {
-            val reasoningFlavor = config.flavor == "codex" || config.flavor == "opencode"
+            val reasoningFlavor = config.flavor == "codex" ||
+                config.flavor == "opencode" ||
+                config.flavor == "dsh"
             SectionTitle(
                 stringResource(
                     if (reasoningFlavor) R.string.chat_config_reasoning_effort else R.string.chat_config_effort,
