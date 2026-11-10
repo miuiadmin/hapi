@@ -941,6 +941,38 @@ struct ChatInteractorTests {
         #expect(harness.store.detail(for: chatSessionID)?.modelReasoningEffort == "medium")
     }
 
+    @Test func dshEffortRoutesToModelReasoningEffort() async throws {
+        // dsh's unset effort is '' (Provider default); the picker maps it
+        // onto the nil Default row and posts through the shared rail.
+        var detail = chatDetail(flavor: "dsh")
+        detail.modelReasoningEffort = ""
+        let harness = try await ChatInteractionHarness(detail: detail)
+
+        // Fixed presets show without any catalog load ('' normalizes to nil).
+        #expect(harness.interactor.config.effort == nil)
+        #expect(harness.interactor.config.effortOptions?.map(\.value) == [nil, "off", "low", "high", "max"])
+
+        harness.interactor.setEffort("high")
+
+        // Wait out the pending op so the clear post can't be dropped.
+        #expect(await eventually {
+            await harness.performer.count("POST", pathSuffix: "/model-reasoning-effort") == 1
+                && !harness.interactor.configOpPending
+        })
+        let bodies = await harness.performer.bodies("POST", pathSuffix: "/model-reasoning-effort")
+        #expect(bodies == [#"{"modelReasoningEffort":"high"}"#])
+        #expect(harness.store.detail(for: chatSessionID)?.modelReasoningEffort == "high")
+
+        // Clearing posts null (back to the Provider default).
+        harness.interactor.setEffort(nil)
+        #expect(await eventually {
+            await harness.performer.count("POST", pathSuffix: "/model-reasoning-effort") == 2
+                && harness.store.detail(for: chatSessionID)?.modelReasoningEffort == nil
+        })
+        let cleared = await harness.performer.bodies("POST", pathSuffix: "/model-reasoning-effort")
+        #expect(cleared.last == #"{"modelReasoningEffort":null}"#)
+    }
+
     @Test func codexModelOptionsLoadThroughTheSessionCatalogEndpoint() async throws {
         let harness = try await ChatInteractionHarness(
             detail: chatDetail(flavor: "codex", model: "gpt-5.3-codex")

@@ -73,8 +73,8 @@ extension APIClient {
         )
     }
 
-    /// `POST /api/sessions/:id/model-reasoning-effort` — codex, opencode
-    /// (remote-only).
+    /// `POST /api/sessions/:id/model-reasoning-effort` — codex, opencode,
+    /// dsh (remote-only; the hub accepts dsh since the v29.3 web rail).
     public func setModelReasoningEffort(sessionId: String, modelReasoningEffort: String?) async throws {
         struct SetModelReasoningEffortRequest: Encodable {
             let modelReasoningEffort: String?

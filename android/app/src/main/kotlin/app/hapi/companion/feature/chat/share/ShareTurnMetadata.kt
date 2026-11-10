@@ -98,14 +98,16 @@ object ShareTurnMetadata {
     /**
      * Reasoning effort a flavor reports: code agents and pi report one
      * only when it is set (an unset effort drops the whole fact); other
-     * flavors report none.
+     * flavors report none. Web truth (`getReasoningEffortForFlavor`):
+     * Codex/OpenCode/DSH publish model reasoning effort, Pi publishes
+     * effort.
      */
     fun reasoningEffortForFlavor(
         flavor: String?,
         modelReasoningEffort: String?,
         effort: String?,
     ): String? = when (flavor) {
-        "codex", "opencode" -> modelReasoningEffort?.trim()?.takeIf { it.isNotEmpty() }
+        "codex", "opencode", "dsh" -> modelReasoningEffort?.trim()?.takeIf { it.isNotEmpty() }
         "pi" -> effort?.trim()?.takeIf { it.isNotEmpty() }
         else -> null
     }

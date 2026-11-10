@@ -1739,6 +1739,38 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `dsh effort rows are fixed presets riding the model-reasoning-effort rail`() = runTest {
+        // 'high' is persisted; the row set is the fixed off/low/high/max
+        // presets of the agent's `reasoning_effort` config option.
+        val harness = InteractionHarness(
+            this,
+            detail(flavor = "dsh").copy(modelReasoningEffort = "high"),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        // No catalog dependency — the rows exist before loadModelOptions().
+        val config = harness.viewModel.config.first { it.effortOptions != null }
+        assertEquals(
+            listOf(null to "Default", "off" to "Off", "low" to "Low", "high" to "High", "max" to "Max"),
+            config.effortOptions?.map { it.value to it.label },
+        )
+        assertEquals("high", config.effort)
+
+        // dsh posts through the same rail as codex/opencode (hub accepts it
+        // since the v29.3 web picker).
+        harness.viewModel.setEffort("max")
+        harness.api.configCalls.first { "modelReasoningEffort:max" in it }
+        assertEquals("max", harness.sessionStore.currentDetail(IX_SESSION)?.modelReasoningEffort)
+
+        // '' (Provider default) normalizes onto the null Default row, so the
+        // clear post sends null (web maps `''` the same way).
+        harness.viewModel.setEffort(null)
+        harness.api.configCalls.first { "modelReasoningEffort:null" in it }
+        assertNull(harness.sessionStore.currentDetail(IX_SESSION)?.modelReasoningEffort)
+    }
+
+    @Test
     fun `cursor variant rows merge machine skus and post the clicked wire`() = runTest {
         val cursorDetail = detail(flavor = "cursor", model = "composer-2.5[fast=true]").copy(
             metadata = SessionMetadata(path = "/repo/app", host = "devbox", flavor = "cursor", machineId = "m-1"),

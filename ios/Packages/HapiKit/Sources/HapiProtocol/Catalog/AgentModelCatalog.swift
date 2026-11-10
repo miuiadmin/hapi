@@ -259,6 +259,23 @@ public enum AgentModelCatalog {
         }
     }
 
+    /// DSH in-session reasoning efforts: the agent's single session-wide
+    /// `reasoning_effort` config option (category thought_level) advertises
+    /// a fixed value set — off/low/high/max plus `''` meaning "Provider
+    /// default", which maps onto the nil Default row (web
+    /// `DSH_REASONING_EFFORT_PRESETS` + `buildDynamicReasoningEffortOptions`).
+    /// An out-of-list current stays visible, injected after Default.
+    public static func dshSessionEffortOptions(currentValue: String?) -> [CatalogOption] {
+        let trimmed = currentValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let normalized = (trimmed.isEmpty || trimmed == "default") ? nil : trimmed
+        let presets = ["off", "low", "high", "max"]
+        var options = [CatalogOption(value: nil, label: "Default")]
+        if let normalized, !presets.contains(normalized) {
+            options.append(CatalogOption(value: normalized, label: ModelCatalog.capitalizedFirst(normalized)))
+        }
+        return options + presets.map { CatalogOption(value: $0, label: ModelCatalog.capitalizedFirst($0)) }
+    }
+
     // MARK: - Pi thinking levels (`shared/src/piThinkingLevel.ts`)
 
     public static let piThinkingLevelOrder = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]

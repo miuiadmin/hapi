@@ -261,7 +261,7 @@ public struct SessionConfigState: Equatable, Sendable {
     /// The catalog request failed (sheet offers Retry).
     public let modelLoadFailed: Bool
     /// `effort` (claude, grok, pi) or `modelReasoningEffort` (codex,
-    /// opencode), whichever applies.
+    /// opencode, dsh), whichever applies.
     public let effort: String?
     /// nil → hide the effort section.
     public let effortOptions: [CatalogOption]?
@@ -388,6 +388,15 @@ public func buildSessionConfigState(
                     currentValue: effort
                 )
             }
+        case .dsh:
+            // dsh advertises a fixed thought_level set (off/low/high/max +
+            // '' = Provider default) through its `reasoning_effort` config
+            // option; '' normalizes onto the nil "Default" row (web prop
+            // mapping in SessionChat). No catalog dependency.
+            let rawEffort = detail?.modelReasoningEffort?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            effort = rawEffort.isEmpty ? nil : rawEffort
+            effortOptions = AgentModelCatalog.dshSessionEffortOptions(currentValue: effort)
         case .pi:
             effort = detail?.effort
             if case .loaded(let response) = agentModels {
