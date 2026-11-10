@@ -48,6 +48,7 @@ const harness = vi.hoisted(() => ({
     // pending.
     newSessionBlocker: null as null | Promise<void>,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
+    thoughtLevelOption: null as { id: string; category?: string; currentValue?: string } | null,
     modelsMetadata: null as {
         availableModels: Array<{ modelId: string; name?: string }>
         currentModelId: string | null
@@ -114,7 +115,8 @@ vi.mock('./utils/dshBackend', () => ({
             }),
             supportsCancelNotification: vi.fn(() => harness.supportsCancel),
             supportsImagePrompts: vi.fn(() => harness.supportsImages),
-            getConfigOptionByCategory: vi.fn(() => harness.modelOption),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) =>
+                category === 'thought_level' ? harness.thoughtLevelOption : harness.modelOption),
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
                 harness.setConfigOptionCalls.push({ sessionId, configId, value })
@@ -787,6 +789,41 @@ describe('DshRemoteLauncher', () => {
             value: PRO
         }])
         // The prompt still ran after the switch.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('applies reasoning effort through the thought_level config option, mapping Default to empty string', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: '' }
+        const session = createSessionWithBatches([
+            ['first', { modelReasoningEffort: 'high' }],
+            ['second', { modelReasoningEffort: null }]
+        ])
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        const effortCalls = harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')
+        expect(effortCalls).toEqual([
+            { sessionId: 'dsh-session-1', configId: 'reasoning_effort', value: 'high' },
+            // null ("Default" in the picker) maps to DSH's '' = Provider default.
+            { sessionId: 'dsh-session-1', configId: 'reasoning_effort', value: '' }
+        ])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('skips reasoning effort with a status note when the model exposes no thought_level option', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = null
+        const session = createSessionWithBatches([['first', { modelReasoningEffort: 'high' }]])
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')).toEqual([])
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
     })
 

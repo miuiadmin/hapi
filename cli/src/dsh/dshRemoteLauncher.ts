@@ -48,6 +48,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
      *  an abort that landed while the replacement session was being created. */
     private abortGeneration = 0
     private currentBackendModel: string | null = null
+    /** Live reasoning-effort preference ('' = Provider default); re-applied on respawn. */
+    private currentReasoningEffort: string | null = null
     /** Server default captured at session creation, before any override. */
     private initialBackendModel: string | null = null
     /** ACP session id on the CURRENT backend — swapped by every respawn so
@@ -303,6 +305,14 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            // DSH surfaces reasoning effort as the 'reasoning_effort' config
+            // option (category thought_level; '' = Provider default). The web
+            // reasoning-effort picker drives this via the queued turn's mode.
+            const requestedEffort = batch.mode.modelReasoningEffort
+            if (requestedEffort !== undefined) {
+                await this.applyReasoningEffort(backend, acpSessionId, requestedEffort)
+            }
+
             this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
             // Image attachments are read once here (authorized per session)
@@ -508,6 +518,13 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // the model the session is showing.
             await this.applyModelSwitch(backend, acpSessionId, this.currentBackendModel)
         }
+        if (opts.respawn && this.currentReasoningEffort !== null) {
+            // Same re-apply contract for the reasoning-effort preference.
+            const effortOption = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')
+            if (effortOption) {
+                await backend.setConfigOption(acpSessionId, effortOption.id, this.currentReasoningEffort)
+            }
+        }
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
         }
@@ -681,6 +698,43 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 message: `Failed to switch DSH model: ${message}`
             })
             return null
+        }
+    }
+
+    /**
+     * Apply a reasoning-effort change through the 'reasoning_effort' config
+     * option (category thought_level). DSH's value space is the model's
+     * effort ids (off/low/high/max for DeepSeek) with '' = Provider default,
+     * so the picker's null ("Default") maps to ''. No-op (with a status
+     * note) when the model exposes no thought_level option.
+     */
+    private async applyReasoningEffort(
+        backend: ReturnType<typeof createDshBackend>,
+        acpSessionId: string,
+        effort: string | null
+    ): Promise<void> {
+        const option = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')
+        if (!option) {
+            logger.warn('[dsh-acp] Cannot set reasoning effort: agent exposes no thought_level config option')
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: 'Cannot set reasoning effort: the current DSH model exposes no thought levels.'
+            })
+            return
+        }
+        const value = effort ?? ''
+        if (value === this.currentReasoningEffort) return
+        try {
+            await backend.setConfigOption(acpSessionId, option.id, value)
+            this.currentReasoningEffort = value
+            this.messageBuffer.addMessage(`[EFFORT:${value || 'default'}]`, 'system')
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn('[dsh-acp] reasoning effort switch failed', { message })
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Failed to switch DSH reasoning effort: ${message}`
+            })
         }
     }
 

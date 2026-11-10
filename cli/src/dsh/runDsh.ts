@@ -60,6 +60,9 @@ export async function runDsh(opts: {
     // turns carry no model field), null = the picker's explicit "Default"
     // reset, string = a concrete model. Only the config RPC ever sets null.
     let currentModel: string | null | undefined = opts.model
+    // Reasoning-effort preference (undefined until the picker is used; null =
+    // the "Default" reset, mapped to DSH's '' = Provider default).
+    let currentReasoningEffort: string | null | undefined = undefined
 
     const syncSessionMode = () => {
         const active = sessionRef.current
@@ -76,6 +79,7 @@ export async function runDsh(opts: {
             formatDshUserMessage(message.content.text, message.content.attachments),
             {
                 ...dshModeForPreference(currentModel),
+                ...(currentReasoningEffort !== undefined ? { modelReasoningEffort: currentReasoningEffort } : {}),
                 ...dshImageAttachmentsFor(message.content.attachments)
             },
             localId
@@ -87,10 +91,11 @@ export async function runDsh(opts: {
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'dsh',
         modelMode: 'nullable',
-        modelReasoningEffortMode: 'ignore',
+        modelReasoningEffortMode: 'nullable',
         effortMode: 'ignore',
         onApply: (config) => {
             if (config.model !== undefined) currentModel = config.model
+            if (config.modelReasoningEffort !== undefined) currentReasoningEffort = config.modelReasoningEffort
             // Runtime permission-mode switching (mode picker in the web/mobile
             // UI); the applied mode is what the ACP permission bridge consults
             // per request.
