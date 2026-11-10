@@ -32,7 +32,7 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, DeepSeek Harness, Hermes, and Berry Agent remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-session model config via `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Hermes' ACP adapter similarly resumes through `session/resume` (replaying its transcript, which HAPI suppresses in favor of its own Hub history) and exposes models as `category: "model"` config options applied with `session/set_config_option`. Berry Agent's ACP face exposes its SQLite session catalog through `session/list` and `session/resume` without transcript replay, and surfaces models the same config-option way.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, DeepSeek Harness, Hermes, and Berry Agent remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, per-session model config via `session/set_config_option`, and — since 0.2.2 — client MCP server mounts at `session/new`, which HAPI uses to bridge its own MCP tools into DSH sessions; it does not provide live tool/reasoning telemetry. Hermes' ACP adapter similarly resumes through `session/resume` (replaying its transcript, which HAPI suppresses in favor of its own Hub history) and exposes models as `category: "model"` config options applied with `session/set_config_option`. Berry Agent's ACP face exposes its SQLite session catalog through `session/list` and `session/resume` without transcript replay, and surfaces models the same config-option way.
 
 ### Permission modes
 
@@ -310,9 +310,9 @@ yolo-style modes and escalate to the standard HAPI permission card otherwise.
 HAPI's `$` skill menu for DSH sessions reads the same skill roots DSH's own
 skill filesystem uses: `$DSH_HOME/skills` (`~/.dsh/skills` by default), the
 project's `.dsh/skills`, and the shared `~/.agents/skills` / `.agents/skills`
-directories. Since the ACP composition accepts no client-supplied MCP servers,
-HAPI's `skill_lookup` bridge is not available to DSH sessions; a skill named in
-the prompt is loaded by DSH through its own `skill` tool and catalog.
+directories. The MCP bridge HAPI mounts at session creation carries the
+`skill_lookup` tool, so a skill named in the prompt resolves through those
+same roots for DSH sessions too, exactly like the other ACP flavors.
 
 ## Hermes
 
@@ -345,8 +345,14 @@ without a native rename tool.
 HAPI's `$` skill menu for Hermes sessions reads the same skill roots Hermes
 itself uses: `$HERMES_HOME/skills` (`~/.hermes/skills` by default), the
 project's `.hermes/skills`, and the shared `~/.agents/skills` / `.agents/skills`
-directories. HAPI does not bridge MCP servers to Hermes in v1; slash commands
-are routed by the Hermes gateway rather than read from files.
+directories. HAPI bridges its MCP server into Hermes sessions: the bridge is
+mounted on both `session/new` and `session/resume`, and every respawned
+`hermes acp` child remounts the same server list. Through it, `ask_user_question`
+surfaces as the interactive question card on every HAPI client (Hermes's
+automation-only ACP profile has no native ask-user tool), `skill_lookup`
+resolves named skills from those same roots, and the peer tools ride along
+behind the peer-tools toggle. Slash commands are routed by the Hermes gateway
+rather than read from files.
 
 ## Berry Agent
 

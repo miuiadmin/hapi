@@ -50,6 +50,9 @@ const harness = vi.hoisted(() => ({
     // the respawn window, or query the catalog RPC while session/new is still
     // pending.
     newSessionBlocker: null as null | Promise<void>,
+    // When set, disconnect() parks on this promise — lets tests query the
+    // catalog RPC while a respawn is still tearing the dead backend down.
+    disconnectBlocker: null as null | Promise<void>,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
     thoughtLevelOption: null as { id: string; category?: string; currentValue?: string } | null,
     modelsMetadata: null as {
@@ -138,7 +141,11 @@ vi.mock('./utils/dshBackend', () => ({
                 harness.sessionClosedHandler = handler
             }),
             onPermissionRequest: vi.fn(),
-            disconnect: vi.fn(async () => {})
+            disconnect: vi.fn(async () => {
+                if (harness.disconnectBlocker) {
+                    await harness.disconnectBlocker
+                }
+            })
         }
         harness.backends.push(backend)
         harness.backend = backend
@@ -211,6 +218,16 @@ function deadTransportError(message = 'ACP process exited (code=1, signal=null)'
     return error
 }
 
+/** Whether `promise` settled within a short window (true) or is still parked
+ * (false) — proves a catalog query parks through a blocked window instead of
+ * answering a terminal error immediately. */
+async function settlesQuickly(promise: Promise<unknown>): Promise<boolean> {
+    return await Promise.race([
+        promise.then(() => true, () => true),
+        new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 25) })
+    ])
+}
+
 function createQueue() {
     const queue = new MessageQueue2<DshMode>((mode) => JSON.stringify(mode))
     return queue
@@ -281,6 +298,7 @@ describe('DshRemoteLauncher', () => {
         harness.promptBlocker = null
         harness.cancelBlocker = null
         harness.newSessionBlocker = null
+        harness.disconnectBlocker = null
         harness.modelOption = null
         harness.modelsMetadata = null
         harness.thoughtLevelOption = null
@@ -1217,6 +1235,101 @@ describe('DshRemoteLauncher', () => {
             ],
             currentModelId: FLASH
         })
+    })
+
+    it('parks a ListDshModels query that arrives during the MCP bridge build, then answers it', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.modelsMetadata = {
+            availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
+            currentModelId: FLASH
+        }
+        // Park the bridge build: the picker's catalog query arrives while the
+        // bridge HTTP server is still being created — before the first
+        // establishment has run at all.
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        let releaseBridge!: () => void
+        const bridgeBlocker = new Promise<void>((resolve) => { releaseBridge = resolve })
+        vi.mocked(buildHapiMcpBridge).mockImplementationOnce(async () => {
+            await bridgeBlocker
+            return {
+                server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
+                mcpServers: {}
+            }
+        })
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        const registered = await vi.waitFor(() => {
+            const call = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
+                .find((c) => c[0] === 'listDshModels')
+            expect(call).toBeTruthy()
+            return call!
+        })
+
+        // While the bridge build is pending the query must PARK on the
+        // seeded placeholder readiness — the pre-fix launcher answered a
+        // terminal 'DSH session is not available' error in this window.
+        const pending = (registered[1] as () => Promise<unknown>)()
+        await expect(settlesQuickly(pending)).resolves.toBe(false)
+        releaseBridge()
+        await done
+
+        // The first establishment adopts the placeholder and settles it: the
+        // parked query now answers with the discovered catalog.
+        await expect(pending).resolves.toEqual({
+            success: true,
+            availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
+            currentModelId: FLASH
+        })
+    })
+
+    it('parks a ListDshModels query that arrives during respawn teardown, then answers from the replacement', async () => {
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.supportsResume = true
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.modelsMetadata = {
+            availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
+            currentModelId: FLASH
+        }
+        // The first prompt dies with the transport marker; the dead backend's
+        // disconnect parks, so the respawn is mid-teardown (readiness already
+        // swapped, replacement not yet established) when the query arrives.
+        let releaseDisconnect!: () => void
+        harness.disconnectBlocker = new Promise<void>((resolve) => { releaseDisconnect = resolve })
+        const session = createSessionWithBatches([['hello', {}]], 'dsh-existing-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        const registered = await vi.waitFor(() => {
+            const call = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
+                .find((c) => c[0] === 'listDshModels')
+            expect(call).toBeTruthy()
+            return call!
+        })
+        await vi.waitFor(() => {
+            const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+            expect(events.some((call) =>
+                String((call[0] as { message?: string } | undefined)?.message ?? '').includes('reconnecting'))).toBe(true)
+        })
+
+        // Mid-teardown the query must PARK on the fresh pending handshake
+        // armed at the top of the respawn — the pre-fix launcher served the
+        // settled handshake's dead backend here.
+        const pending = (registered[1] as () => Promise<unknown>)()
+        await expect(settlesQuickly(pending)).resolves.toBe(false)
+        releaseDisconnect()
+        await done
+
+        await expect(pending).resolves.toEqual({
+            success: true,
+            availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
+            currentModelId: FLASH
+        })
+        // The answer was served from the REPLACEMENT backend's metadata,
+        // never from the corpse.
+        expect(harness.backends[1].getSessionModelsMetadata).toHaveBeenCalledWith('dsh-existing-1')
+        expect(harness.backends[0].getSessionModelsMetadata).not.toHaveBeenCalled()
     })
 
     it('drops the dequeued message when a user stop lands while it waits for a pending close', async () => {

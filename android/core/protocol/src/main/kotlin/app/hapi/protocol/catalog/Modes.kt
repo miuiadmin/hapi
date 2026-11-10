@@ -82,9 +82,11 @@ object PermissionModes {
     )
 
     /**
-     * `BERRY_PERMISSION_MODES` — Berry maps HAPI modes onto its sandbox axis
-     * (read-only / workspace-write / danger); it has a native read-only
-     * sandbox, so the conservative mode is offered.
+     * `BERRY_PERMISSION_MODES` — Berry has NO agent-side mode RPC (no
+     * `session/set_mode`); the HAPI permission bridge is the only
+     * enforcement, deciding every `session/request_permission` by the live
+     * mode. All four modes are offered because the bridge — not the agent —
+     * realizes read-only.
      */
     val BERRY = listOf(
         PermissionMode.Default, PermissionMode.ReadOnly,
