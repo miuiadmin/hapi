@@ -279,6 +279,41 @@ describe('startHappyServer ask_user_question', () => {
         expect(result.content![0]!.text).toContain('user dismissed')
     })
 
+
+    it('raceAskUserEscalation settles skip semantics when the MCP cancel signal fires', async () => {
+        // dsh cannot raise its 60s per-call MCP timeout; on expiry the client
+        // sends notifications/cancelled and the handler's extra.signal aborts
+        // (SDK chain verified: client cancel -> transport notification ->
+        // server _oncancel -> request AbortController). The race must settle
+        // immediately on abort — before, during, and after the escalation.
+        const { raceAskUserEscalation } = await import('./startHappyServer')
+        const parked = Promise.withResolvers<{ status: string }>()
+
+        // Signal aborts while the escalation is parked (the 60s-timeout path).
+        const controller = new AbortController()
+        const outcome = raceAskUserEscalation(parked.promise, controller.signal)
+        controller.abort()
+        await expect(outcome).resolves.toEqual({
+            status: 'canceled',
+            reason: 'the question was cancelled (agent timeout or retry)'
+        })
+
+        // Signal already aborted at entry.
+        const preAborted = raceAskUserEscalation(parked.promise, AbortSignal.abort())
+        await expect(preAborted).resolves.toMatchObject({ status: 'canceled' })
+
+        // No signal: the escalation's own result passes through untouched.
+        const answered = raceAskUserEscalation(
+            Promise.resolve({ status: 'answered', answers: [] } as { status: string }),
+            undefined
+        )
+        await expect(answered).resolves.toEqual({ status: 'answered', answers: [] })
+
+        // A late rejection from the parked escalation no longer matters.
+        parked.reject(new Error('late'))
+        await new Promise((resolve) => setTimeout(resolve, 10))
+    })
+
     it('does not register the tool without the option', async () => {
         const mcp = await connect({})
         const listed = await mcp.listTools()

@@ -175,6 +175,22 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
      */
     askUser(input: unknown): Promise<AcpAskUserOutcome> {
         return new Promise<AcpAskUserOutcome>((resolve) => {
+            // Supersede: dsh enforces a 60s per-call MCP timeout it cannot
+            // raise, so an unanswered question times out and the model retries
+            // the tool call — escalating a SECOND question while the first
+            // card is still pending. Without this, retry cycles stack
+            // interactive cards and the turn-end cancelAll silently settles
+            // cards the user is mid-way through filling. At most ONE
+            // ask-user card may be pending: resolve every prior one as
+            // canceled (state entry moves to completedRequests with the
+            // reason) the instant a newer question arrives.
+            if (this.askUserResolvers.size > 0) {
+                this.cancelPendingRequests({
+                    completedReason: 'Superseded by a newer question',
+                    rejectMessage: 'Superseded by a newer question',
+                    filter: (toolName) => toolName === 'ask_user_question'
+                });
+            }
             const id = `askuser-${randomUUID()}`
             this.askUserResolvers.set(id, resolve)
             this.addPendingRequest(id, 'ask_user_question', input, {

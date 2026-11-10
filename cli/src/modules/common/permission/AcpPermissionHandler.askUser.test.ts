@@ -135,6 +135,44 @@ describe('AcpPermissionHandler.askUser', () => {
         await expect(pendingPromise).resolves.toMatchObject({ status: 'canceled' })
     })
 
+    it('supersedes a prior pending ask-user card when a newer question escalates', async () => {
+        // dsh's 60s MCP timeout makes the model retry the tool call; each
+        // retry escalates a new question while the old card is still pending.
+        // Only the newest card may stay interactive — the prior one resolves
+        // canceled (state moves to completedRequests) the instant the new
+        // question arrives, so dialogs never stack and nothing gets silently
+        // answered out from under the user.
+        const first = handler.askUser(QUESTIONS_INPUT)
+        const firstPending = pendingEntryAfter(handler)!
+
+        const second = handler.askUser(QUESTIONS_INPUT)
+        const secondPending = pendingEntryAfter(handler)!
+
+        // The first escalation resolved as superseded; only the second id is
+        // still answerable.
+        await expect(first).resolves.toMatchObject({ status: 'canceled' })
+        const firstOutcome = await first
+        expect(firstOutcome.status === 'canceled' && firstOutcome.reason).toContain('Superseded')
+
+        // Late approval for the superseded id must not disturb anything.
+        await permissionRpcRespond(harness, {
+            id: firstPending.id,
+            approved: true,
+            answers: { '0': ['Staging'] }
+        })
+        // Answering the superseded id is a no-op for the second promise.
+        await permissionRpcRespond(harness, {
+            id: secondPending.id,
+            approved: true,
+            answers: { '0': ['Production'] }
+        })
+        await expect(second).resolves.toEqual({
+            status: 'answered',
+            answers: [{ id: 'target', selected: ['Production'] }]
+        })
+        expect(harness.backend.respondToPermission).not.toHaveBeenCalled()
+    })
+
     it('coexists with backend permission requests on the same RPC channel', async () => {
         // A real ACP request_permission (e.g. a gated write tool) and a
         // synthetic ask-user can be pending simultaneously; each response
