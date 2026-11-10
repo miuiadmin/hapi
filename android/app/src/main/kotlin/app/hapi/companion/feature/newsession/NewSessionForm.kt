@@ -51,9 +51,12 @@ object NewSessionLogic {
     /**
      * Flavors sharing the codex-style native permission select
      * (`web/src/lib/codexFamilyPermissionAgents.ts`). Gemini is listed for
-     * completeness though it is not creatable.
+     * completeness though it is not creatable. Hermes renders through the
+     * same select with its own option list (`HERMES_PERMISSION_MODES`);
+     * without this entry it would fall back to the legacy YOLO toggle and
+     * safe-yolo would be unreachable at create time.
      */
-    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "kimi", "copilot", "opencode", "dsh")
+    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "kimi", "copilot", "opencode", "dsh", "hermes")
 
     fun usesCodexFamilyPermissionModes(flavor: String?): Boolean =
         flavor in CODEX_FAMILY_PERMISSION_AGENTS

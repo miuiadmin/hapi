@@ -123,6 +123,9 @@ object SummaryPatching {
                 "kimi" -> metadata.kimiSessionId
                 "copilot" -> metadata.copilotSessionId
                 "pi" -> metadata.piSessionId
+                "dsh" -> metadata.dshSessionId
+                "hermes" -> metadata.hermesSessionId
+                "berry" -> metadata.berrySessionId
                 else -> null
             }
             return flavorSessionId?.trim()?.takeIf { it.isNotEmpty() }

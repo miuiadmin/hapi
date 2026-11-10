@@ -72,6 +72,25 @@ object PermissionModes {
         PermissionMode.SafeYolo, PermissionMode.Yolo,
     )
 
+    /**
+     * `HERMES_PERMISSION_MODES` — Hermes has no read-only equivalent (its ACP
+     * mode axis is edit-approval only), so the conservative mode is not
+     * offered.
+     */
+    val HERMES = listOf(
+        PermissionMode.Default, PermissionMode.SafeYolo, PermissionMode.Yolo,
+    )
+
+    /**
+     * `BERRY_PERMISSION_MODES` — Berry maps HAPI modes onto its sandbox axis
+     * (read-only / workspace-write / danger); it has a native read-only
+     * sandbox, so the conservative mode is offered.
+     */
+    val BERRY = listOf(
+        PermissionMode.Default, PermissionMode.ReadOnly,
+        PermissionMode.SafeYolo, PermissionMode.Yolo,
+    )
+
     /** `GROK_PERMISSION_MODES`. */
     val GROK = listOf(
         PermissionMode.Default, PermissionMode.Auto,
@@ -100,6 +119,8 @@ object PermissionModes {
         "grok" -> GROK
         "opencode" -> OPENCODE
         "dsh" -> DSH
+        "hermes" -> HERMES
+        "berry" -> BERRY
         "agy" -> AGY
         "cursor" -> CURSOR
         "pi" -> emptyList()

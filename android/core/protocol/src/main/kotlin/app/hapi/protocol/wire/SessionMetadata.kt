@@ -44,6 +44,9 @@ data class SessionMetadata(
     val cursorSessionId: String? = null,
     val kimiSessionId: String? = null,
     val copilotSessionId: String? = null,
+    val dshSessionId: String? = null,
+    val hermesSessionId: String? = null,
+    val berrySessionId: String? = null,
     val piSessionId: String? = null,
     /**
      * `cursorMigrationState` (`MetadataSchema`, tiann/hapi#873) — drives the
