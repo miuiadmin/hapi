@@ -35,6 +35,9 @@ const harness = vi.hoisted(() => ({
     // Captured 4th constructor arg of AcpPermissionHandler: the synchronous
     // pending-close handoff for permission 'abort' decisions.
     permissionAbortClose: null as ((cancellation: Promise<void>) => void) | null,
+    // askUser escalations routed through the permission handler mock.
+    askUserCalls: [] as unknown[],
+    askUserOutcome: null as unknown,
     // Captured 3rd constructor arg: the live permission-mode getter consulted
     // by the ACP permission bridge on every permission request.
     permissionGetMode: null as (() => string | undefined) | null,
@@ -177,6 +180,11 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
             harness.permissionGetMode = getPermissionMode
             harness.permissionAbortClose = onAbortClose ?? null
         }
+        // Captured instances: the askUserTool MCP callback routes here.
+        async askUser(input: unknown): Promise<unknown> {
+            harness.askUserCalls.push(input)
+            return harness.askUserOutcome ?? { status: 'canceled', reason: 'mock' }
+        }
         async cancelAll(): Promise<void> {}
     }
 }))
@@ -261,6 +269,8 @@ describe('DshRemoteLauncher', () => {
         harness.sessionClosedHandler = null
         harness.permissionAbortClose = null
         harness.permissionGetMode = null
+        harness.askUserCalls = []
+        harness.askUserOutcome = null
         harness.promptBlocker = null
         harness.cancelBlocker = null
         harness.newSessionBlocker = null
@@ -1220,7 +1230,8 @@ describe('DshRemoteLauncher', () => {
 
         expect(buildHapiMcpBridge).toHaveBeenCalledWith(session.client, {
             enableChangeTitle: false,
-            skillLookup: { workingDirectory: '/tmp/dsh-test', flavor: 'dsh' }
+            skillLookup: { workingDirectory: '/tmp/dsh-test', flavor: 'dsh' },
+            askUserTool: { escalate: expect.any(Function) }
         })
         expect(harness.newSessionCalls[0]).toEqual({
             cwd: '/tmp/dsh-test',
@@ -1233,6 +1244,44 @@ describe('DshRemoteLauncher', () => {
         })
         // The bridge server is torn down with the launcher.
         expect(stop).toHaveBeenCalled()
+    })
+
+    it('routes the MCP ask_user_question escalation through the permission bridge', async () => {
+        // DSH's ACP profile ships no native ask-user tool; the bridge tool
+        // escalates through the CURRENT permission handler so every client
+        // renders the interactive AskUserQuestion card. The captured
+        // askUserTool callback is what the MCP server invokes.
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        let escalate: ((input: unknown) => Promise<unknown>) | undefined
+        vi.mocked(buildHapiMcpBridge).mockImplementationOnce(
+            async (_client: unknown, options?: { askUserTool?: { escalate: (input: unknown) => Promise<unknown> } }) => {
+                escalate = options?.askUserTool?.escalate
+                return {
+                    server: { url: 'http://127.0.0.1:9/mcp', stop: vi.fn() },
+                    mcpServers: {}
+                } as never
+            }
+        )
+        harness.askUserOutcome = { status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] }
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        // Keep the launcher alive: cleanup() drops the permission handler at
+        // session end, so the escalation is exercised mid-flight like the
+        // real MCP tool call would be.
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        expect(escalate).toBeInstanceOf(Function)
+        const questions = { questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }] }
+        const outcome = await escalate!(questions)
+        expect(harness.askUserCalls).toEqual([questions])
+        expect(outcome).toEqual({ status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] })
+
+        queue.close()
+        await done
     })
 
     it('threads the spawn-time permission mode into createDshBackend', async () => {

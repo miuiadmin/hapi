@@ -136,7 +136,24 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         // drops list_peers from the auto-approved shortlist when disabled.
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(this.session.client, {
             enableChangeTitle: false,
-            skillLookup: { workingDirectory: this.session.path, flavor: 'dsh' }
+            skillLookup: { workingDirectory: this.session.path, flavor: 'dsh' },
+            // DSH's automation-only ACP profile omits its native ask-user
+            // tool (no UI to answer over raw ACP). The MCP bridge provides
+            // `ask_user_question` instead; the questions surface through the
+            // permission bridge as the interactive AskUserQuestion card on
+            // every HAPI client, and the answer batch returns to the model
+            // in-band as the tool result. The closure reads the CURRENT
+            // handler: establishBackend swaps it on every respawn, and the
+            // tool can only run once a session exists.
+            askUserTool: {
+                escalate: async (input) => {
+                    const handler = this.permissionHandler
+                    if (!handler) {
+                        return { status: 'canceled' as const, reason: 'DSH session is not established' }
+                    }
+                    return await handler.askUser(input)
+                }
+            }
         })
         this.happyServer = happyServer
         this.acpMcpServers = toAcpMcpServers(mcpServers)

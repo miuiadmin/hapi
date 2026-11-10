@@ -5,7 +5,7 @@
  * bridge server and generating the MCP server configuration that Codex needs.
  */
 
-import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { startHappyServer, type HappyAskUserOutcome } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
@@ -53,6 +53,11 @@ export interface HapiMcpBridgeOptions {
         workingDirectory: string;
         flavor: string;
     };
+    /** Register the MCP ask_user_question tool (DSH: its ACP profile has no
+     * native ask-user tool). See StartHappyServerOptions.askUserTool. */
+    askUserTool?: {
+        escalate: (input: unknown) => Promise<HappyAskUserOutcome>;
+    };
 }
 
 /**
@@ -83,7 +88,8 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
-        skillLookup: options.skillLookup
+        skillLookup: options.skillLookup,
+        askUserTool: options.askUserTool
     });
     // Stamp the hub row id so orphanReap can find MCP helpers after the agent
     // root dies without a full tree kill (#2003 / #1911 follow-up).

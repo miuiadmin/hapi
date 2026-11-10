@@ -1,6 +1,7 @@
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agent/types'
 import type { PermissionMode } from '@hapi/protocol/types'
+import { randomUUID } from 'node:crypto'
 import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import {
@@ -9,13 +10,23 @@ import {
     type PendingPermissionRequest,
     type PermissionCompletion
 } from './BasePermissionHandler'
+import { mapAskUserAnswers, type AskUserAnswer } from './askUserAnswers'
 
 interface PermissionResponseMessage {
     id: string
     approved: boolean
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     reason?: string
+    /** AskUserQuestion payloads from web/mobile: Record<questionIndex, string[]>
+     * (labels + free-text "Other" appended). Absent on plain approve/deny. */
+    answers?: Record<string, string[]> | Record<string, { answers: string[] }>
 }
+
+/** Outcome of a synthetic ask-user escalation surfaced to the HAPI client. */
+export type AcpAskUserOutcome =
+    | { status: 'answered'; answers: AskUserAnswer[] }
+    | { status: 'denied'; reason?: string }
+    | { status: 'canceled'; reason?: string }
 
 function pickOptionId(request: PermissionRequest, preferredKinds: string[]): string | null {
     for (const kind of preferredKinds) {
@@ -44,6 +55,10 @@ function mapDecisionToOutcome(
 
 /** Shared HAPI permission bridge for ACP agents with one-shot choices. */
 export class AcpPermissionHandler extends BasePermissionHandler<PermissionResponseMessage, void> {
+    /** Synthetic ask-user escalations (MCP ask_user_question bridge). Keyed by
+     * the same request id registered in the agent-state pending map; resolved
+     * from Permission responses that carry `answers`. */
+    private readonly askUserResolvers = new Map<string, (outcome: AcpAskUserOutcome) => void>()
     private readonly pendingBackendRequests = new Map<string, PermissionRequest>()
 
     constructor(
@@ -108,10 +123,61 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         }))
     }
 
+    /**
+     * Surface an `ask_user_question` payload to the HAPI user and await the
+     * answer batch.
+     *
+     * DSH's automation-only ACP profile deliberately omits its native
+     * ask-user tool (there is no UI to answer it over raw ACP); the hapi MCP
+     * bridge provides the tool instead and routes the question through this
+     * escalation. The pending request is registered in the agent state under
+     * the exact tool name `ask_user_question` with the questions as
+     * arguments, which every HAPI client (web/iOS/Android) already renders
+     * as the interactive AskUserQuestion card and answers through
+     * approvePermission({answers}) — the same path Claude Code's native
+     * AskUserQuestion takes. No backend request exists for these ids: the
+     * response resolves the caller directly (the MCP tool returns the answer
+     * batch to the model in-band).
+     */
+    askUser(input: unknown): Promise<AcpAskUserOutcome> {
+        return new Promise<AcpAskUserOutcome>((resolve) => {
+            const id = `askuser-${randomUUID()}`
+            this.askUserResolvers.set(id, resolve)
+            this.addPendingRequest(id, 'ask_user_question', input, {
+                resolve: () => {},
+                reject: (error) => {
+                    this.askUserResolvers.delete(id)
+                    resolve({ status: 'canceled', reason: error.message })
+                }
+            })
+        })
+    }
+
     protected async handlePermissionResponse(
         response: PermissionResponseMessage,
         pending: PendingPermissionRequest<void>
     ): Promise<PermissionCompletion> {
+        const askUserResolver = this.askUserResolvers.get(response.id)
+        if (askUserResolver) {
+            this.askUserResolvers.delete(response.id)
+            if (response.approved) {
+                const answers = mapAskUserAnswers(pending.input, response.answers)
+                const hasAnyAnswer = answers.some((answer) => answer.selected.length > 0 || answer.custom !== undefined)
+                askUserResolver(hasAnyAnswer
+                    ? { status: 'answered', answers }
+                    : { status: 'denied', reason: response.reason ?? 'No answers were provided.' })
+            } else {
+                askUserResolver({ status: 'denied', reason: response.reason })
+            }
+            pending.resolve()
+            return {
+                status: response.approved ? 'approved' : 'denied',
+                decision: response.decision,
+                reason: response.reason,
+                answers: response.answers
+            }
+        }
+
         const request = this.pendingBackendRequests.get(response.id)
         this.pendingBackendRequests.delete(response.id)
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied')

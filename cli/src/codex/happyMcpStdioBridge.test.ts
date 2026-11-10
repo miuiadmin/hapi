@@ -104,6 +104,39 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         expect([...harness.tools.keys()]).toEqual(['change_title', 'display_image', 'display_video'])
     })
 
+    it('registers and forwards ask_user_question only when listed in --tools', async () => {
+        // DSH passes the tool explicitly (its ACP profile has no native
+        // ask-user tool); flavors that do not list it must not see it.
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'ask_user_question'
+        ])
+
+        expect([...harness.tools.keys()]).toEqual(['ask_user_question'])
+        const handler = harness.tools.get('ask_user_question')
+        await expect(handler?.({
+            questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }]
+        })).resolves.toEqual({
+            content: [{ type: 'text', text: 'forwarded' }],
+            isError: false
+        })
+        expect(harness.callTool).toHaveBeenCalledWith({
+            name: 'ask_user_question',
+            arguments: { questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }] }
+        })
+
+        harness.tools.clear()
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'change_title'
+        ])
+        expect([...harness.tools.keys()]).toEqual(['change_title'])
+    })
+
     it('forwards display_media arguments unchanged', async () => {
         await runHappyMcpStdioBridge([
             '--url',
