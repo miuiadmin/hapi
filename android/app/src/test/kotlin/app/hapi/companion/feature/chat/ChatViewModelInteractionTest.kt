@@ -40,6 +40,8 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.DshModelsResponse
+import app.hapi.protocol.wire.DshModelSummary
 import app.hapi.protocol.wire.GrokReasoningEffortResponse
 import app.hapi.protocol.wire.FileSearchItem
 import app.hapi.protocol.wire.FileSearchResponse
@@ -331,6 +333,9 @@ private class RecordingChatApi : ChatSessionApi {
 
     var piModelsResult: PiModelsResponse = PiModelsResponse(success = false, error = "not scripted")
     override suspend fun getSessionPiModels(sessionId: String): PiModelsResponse = piModelsResult
+
+    var dshModelsResult: DshModelsResponse = DshModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionDshModels(sessionId: String): DshModelsResponse = dshModelsResult
 
     var sessionCursorModelsResult: CursorModelsResponse =
         CursorModelsResponse(success = false, error = "not scripted")
@@ -1686,6 +1691,51 @@ class ChatViewModelInteractionTest {
         harness.viewModel.setEffort(null)
         harness.api.configCalls.first { "effort:null" in it }
         assertNull(harness.sessionStore.currentDetail(IX_SESSION)?.effort)
+    }
+
+    @Test
+    fun `dsh model rows are opaque catalog values switching through the generic model rail`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "dsh"))
+        harness.api.dshModelsResult = DshModelsResponse(
+            success = true,
+            availableModels = listOf(
+                DshModelSummary(modelId = "[\"newapi\",\"glm-5.3\"]", name = "GLM-5.3"),
+                // No display name — the raw tuple is the label.
+                DshModelSummary(modelId = "[\"newapi\",\"deepseek-v3.2\"]"),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        // Hidden until the catalog lands (web builds options only for a
+        // non-empty list; empty/failed also stays hidden).
+        assertNull(harness.viewModel.config.value.modelOptions)
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.modelOptions != null }
+        assertEquals(
+            listOf(null, "[\"newapi\",\"glm-5.3\"]", "[\"newapi\",\"deepseek-v3.2\"]"),
+            config.modelOptions?.map { it.value },
+        )
+        assertEquals(
+            listOf("Default", "GLM-5.3", "[\"newapi\",\"deepseek-v3.2\"]"),
+            config.modelOptions?.map { it.label },
+        )
+
+        // The value is sent back verbatim (no provider/model unpacking).
+        harness.viewModel.setModel("[\"newapi\",\"deepseek-v3.2\"]")
+        harness.api.configCalls.first { "model:[\"newapi\",\"deepseek-v3.2\"]" in it }
+        assertEquals(
+            "[\"newapi\",\"deepseek-v3.2\"]",
+            harness.sessionStore.currentDetail(IX_SESSION)?.model,
+        )
+
+        // An empty catalog keeps the section hidden (no rows to pick).
+        val emptyCatalog = InteractionHarness(this, detail(flavor = "dsh"))
+        emptyCatalog.api.dshModelsResult = DshModelsResponse(success = true, availableModels = emptyList())
+        emptyCatalog.viewModel.start()
+        emptyCatalog.viewModel.loadModelOptions()
+        testScheduler.runCurrent()
+        assertNull(emptyCatalog.viewModel.config.value.modelOptions)
     }
 
     @Test

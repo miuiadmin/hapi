@@ -78,6 +78,7 @@ import app.hapi.protocol.wire.AgentState
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.CodexModelSummary
+import app.hapi.protocol.wire.DshModelSummary
 import app.hapi.protocol.wire.GrokReasoningEffortOption
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
@@ -752,6 +753,8 @@ class ChatViewModel(
         val opencodeEfforts: List<OpencodeReasoningEffortOption>? = null,
         val grokEfforts: List<GrokReasoningEffortOption>? = null,
         val piModels: List<PiModelSummary>? = null,
+        /** DSH session catalog (`GET /api/sessions/:id/dsh-models`); ids are opaque config-option values. */
+        val dshModels: List<DshModelSummary>? = null,
         /** Cursor session catalog (`GET /api/sessions/:id/cursor-models`). */
         val cursorSessionModels: List<OpencodeModelSummary>? = null,
         /** Machine catalog merge-in; fetch failure tolerated (stays null). */
@@ -2586,14 +2589,14 @@ class ChatViewModel(
     }
 
     /** Flavors whose config sheet needs a dynamic catalog fetch. */
-    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor")
+    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor", "dsh")
 
     /**
      * Fetch the session flavor's dynamic config catalogs (codex models +
      * efforts, opencode/grok reasoning-effort options, pi models, cursor
-     * session+machine catalogs). One load per flavor: a failure leaves
-     * `loadedFlavor` null so the next sheet open retries. Other flavors are a
-     * no-op (static/no catalog).
+     * session+machine catalogs, dsh models). One load per flavor: a failure
+     * leaves `loadedFlavor` null so the next sheet open retries. Other flavors
+     * are a no-op (static/no catalog).
      */
     fun loadModelOptions() {
         val flavor = currentFlavor() ?: return
@@ -2608,6 +2611,7 @@ class ChatViewModel(
                 "grok" -> loadGrokCatalogs()
                 "pi" -> loadPiCatalogs()
                 "cursor" -> loadCursorCatalogs()
+                "dsh" -> loadDshCatalogs()
                 else -> ConfigCatalogs()
             }
         }
@@ -2677,6 +2681,28 @@ class ChatViewModel(
         val models = response.availableModels
         return if (response.success && models != null) {
             ConfigCatalogs(loadedFlavor = "pi", piModels = models)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /**
+     * Silent-hide on failure — dsh exposes its catalog through ACP config
+     * options (Zed-style grouped provider/model tuples flattened server-side
+     * into opaque value strings); switching rides the generic `POST /model`
+     * rail with the value verbatim (web `useDshModelsForSession`).
+     */
+    private suspend fun loadDshCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionDshModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val models = response.availableModels
+        return if (response.success && models != null) {
+            ConfigCatalogs(loadedFlavor = "dsh", dshModels = models)
         } else {
             ConfigCatalogs()
         }
@@ -2801,6 +2827,18 @@ class ChatViewModel(
                         SessionConfigSections.piSelectedModel(it, model, detail?.metadata?.piSelectedModel)
                     },
                 )
+            }
+            "dsh" -> {
+                // Opaque config-option values; labels come from the catalog's
+                // `name` (else the raw tuple). Hidden while loading/empty/failed
+                // — web builds `dshModelOptions` only for a non-empty list.
+                val dshModels = catalogs.dshModels
+                modelOptions = if (dshModels.isNullOrEmpty()) {
+                    null
+                } else {
+                    listOf(CatalogOption(null, "Default")) +
+                        dshModels.map { CatalogOption(it.modelId, it.name ?: it.modelId) }
+                }
             }
             "cursor" -> {
                 modelOptions = null

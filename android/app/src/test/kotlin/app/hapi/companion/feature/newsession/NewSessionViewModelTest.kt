@@ -24,6 +24,8 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.CopilotModelSummary
 import app.hapi.protocol.wire.CopilotModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
+import app.hapi.protocol.wire.DshModelSummary
+import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.GrokModelSummary
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.GrokReasoningEffortOption
@@ -160,6 +162,7 @@ private class FakeGateway : NewSessionGateway {
     // scripted results — dequeue per call, last entry repeats.
     val agyCalls = mutableListOf<Pair<String, Boolean>>()
     val piCalls = mutableListOf<String>()
+    val dshCalls = mutableListOf<String>()
     val cursorCalls = mutableListOf<String>()
     val opencodeModelsCalls = mutableListOf<Pair<String, String>>()
     val opencodeVariantsCalls = mutableListOf<Pair<String, String?>>()
@@ -168,6 +171,7 @@ private class FakeGateway : NewSessionGateway {
 
     var agyResults = mutableListOf<AgyModelsResponse>()
     var piResults = mutableListOf<PiModelsResponse>()
+    var dshResults = mutableListOf<DshModelsResponse>()
     var cursorResults = mutableListOf<CursorModelsResponse>()
     var opencodeModelsResults = mutableListOf<OpencodeModelsResponse>()
     var opencodeVariantsResults = mutableListOf<OpencodeModelVariantsResponse>()
@@ -211,6 +215,11 @@ private class FakeGateway : NewSessionGateway {
     override suspend fun piModels(machineId: String): PiModelsResponse {
         piCalls.add(machineId)
         return dequeue(piResults, PiModelsResponse(success = true))
+    }
+
+    override suspend fun dshModels(machineId: String): DshModelsResponse {
+        dshCalls.add(machineId)
+        return dequeue(dshResults, DshModelsResponse(success = true))
     }
 
     override suspend fun opencodeModels(machineId: String, cwd: String): OpencodeModelsResponse {
@@ -551,6 +560,22 @@ class SpawnBodyTest {
         )
         assertEquals(setOf("directory", "agent", "permissionMode", "sessionType"), body.keys)
         assertEquals("yolo", body["permissionMode"]!!.jsonPrimitive.content)
+
+        // Catalog model ids are opaque `["provider","model"]` tuples sent
+        // back verbatim; `auto` (Default) omits the model entirely.
+        val withModel = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(
+                    directory = "/repo",
+                    agent = "dsh",
+                    model = "[\"newapi\",\"glm-5.3\"]",
+                    permissionMode = "default",
+                ),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "model", "permissionMode", "sessionType"), withModel.keys)
+        assertEquals("[\"newapi\",\"glm-5.3\"]", withModel["model"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -2037,6 +2062,56 @@ class NewSessionViewModelTest {
             listOf(OptionItem("auto", "Default"), OptionItem("glm-5.3", "TheHive — GLM-5.3")),
             vm.uiState.value.modelOptions,
         )
+    }
+
+    @Test
+    fun `dsh machine catalog drives the picker and drops stale preference tuples`() = runTest {
+        val gateway = FakeGateway().apply {
+            dshResults = mutableListOf(
+                DshModelsResponse(
+                    success = true,
+                    availableModels = listOf(
+                        DshModelSummary(modelId = "[\"newapi\",\"glm-5.3\"]", name = "GLM-5.3"),
+                        // No display name — the raw tuple is the label.
+                        DshModelSummary(modelId = "[\"newapi\",\"deepseek-v3.2\"]"),
+                    ),
+                ),
+            )
+        }
+        // A remembered launch default the catalog no longer advertises.
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                launchSettings = mapOf(
+                    "m1" to mapOf(
+                        "dsh" to PreferredLaunchSettings(model = "[\"newapi\",\"gone-model\"]"),
+                    ),
+                ),
+            ),
+        )
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+
+        vm.setAgent("dsh")
+        advanceUntilIdle()
+        // Machine-scoped probe with no cwd gate (web `useDshModelsForMachine`).
+        assertEquals(listOf("m1"), gateway.dshCalls)
+        assertEquals(
+            listOf(
+                OptionItem("auto", "Default"),
+                OptionItem("[\"newapi\",\"glm-5.3\"]", "GLM-5.3"),
+                OptionItem("[\"newapi\",\"deepseek-v3.2\"]", "[\"newapi\",\"deepseek-v3.2\"]"),
+            ),
+            vm.uiState.value.modelOptions,
+        )
+        // A stale tuple would be rejected by the ACP server — back to Default.
+        assertEquals("auto", vm.uiState.value.form.model)
+
+        // A pick is kept verbatim; the form carries the opaque value to spawn.
+        vm.setModel("[\"newapi\",\"glm-5.3\"]")
+        runCurrent()
+        assertEquals("[\"newapi\",\"glm-5.3\"]", vm.uiState.value.form.model)
+        val request = NewSessionLogic.buildSpawnRequest(vm.uiState.value.form, codexFastTierVisible = false)
+        assertEquals("[\"newapi\",\"glm-5.3\"]", request.model)
     }
 
     @Test

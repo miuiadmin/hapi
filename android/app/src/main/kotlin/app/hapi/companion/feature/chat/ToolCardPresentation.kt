@@ -369,7 +369,7 @@ fun toolCardPresentation(
 
         "TeamDelete" -> return ToolCardPresentation(ToolGlyph.TEAM, res.getString(R.string.tool_delete_team), null)
 
-        "TodoWrite" -> return ToolCardPresentation(ToolGlyph.IDEA, res.getString(R.string.tool_todo_list), null)
+        "TodoWrite", "todo_write" -> return ToolCardPresentation(ToolGlyph.IDEA, res.getString(R.string.tool_todo_list), null)
 
         "update_plan" -> return ToolCardPresentation(ToolGlyph.PLAN, res.getString(R.string.tool_plan), null)
 

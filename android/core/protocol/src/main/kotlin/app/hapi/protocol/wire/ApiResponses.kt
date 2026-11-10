@@ -531,6 +531,28 @@ data class PiModelSummary(
 )
 
 /**
+ * `GET /api/machines/:id/dsh-models` (also the session-level twin) —
+ * RPC-wrapped: check [success]. Ported from `DshModelsResponse`
+ * (`shared/src/apiTypes.ts`). Model ids are opaque ACP config-option values
+ * (dsh 0.2.x: JSON-encoded `["provider","model"]` tuples flattened
+ * server-side) and must be sent back verbatim when switching.
+ */
+@Serializable
+data class DshModelsResponse(
+    val success: Boolean,
+    val availableModels: List<DshModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
+/** `DshModelSummary` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class DshModelSummary(
+    val modelId: String,
+    val name: String? = null,
+)
+
+/**
  * `GET /api/sessions/:id/grok-reasoning-effort-options` — RPC-wrapped.
  * Ported from `GrokReasoningEffortResponse` (`shared/src/apiTypes.ts`).
  */

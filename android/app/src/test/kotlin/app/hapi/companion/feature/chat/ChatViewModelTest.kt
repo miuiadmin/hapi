@@ -223,6 +223,8 @@ internal open class FakeMessagesApi : ChatSessionApi {
         app.hapi.protocol.wire.GrokReasoningEffortResponse(success = false, error = "not scripted")
     override suspend fun getSessionPiModels(sessionId: String): app.hapi.protocol.wire.PiModelsResponse =
         app.hapi.protocol.wire.PiModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionDshModels(sessionId: String): app.hapi.protocol.wire.DshModelsResponse =
+        app.hapi.protocol.wire.DshModelsResponse(success = false, error = "not scripted")
     override suspend fun getSessionCursorModels(sessionId: String): app.hapi.protocol.wire.CursorModelsResponse =
         app.hapi.protocol.wire.CursorModelsResponse(success = false, error = "not scripted")
     override suspend fun getMachineCursorModels(machineId: String): app.hapi.protocol.wire.CursorModelsResponse =

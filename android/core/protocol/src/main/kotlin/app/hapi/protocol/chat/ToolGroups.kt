@@ -55,37 +55,117 @@ fun visibleBlockRole(block: VisibleChatBlock): String = when {
     else -> "assistant"
 }
 
+/**
+ * Port of web `normalizeToolIdentifier` — tool names/kinds are matched after
+ * trimming, lowercasing and stripping every non-alphanumeric character, so
+ * every spelling variant of a tool (`TodoWrite`, `todo_write`, `TODO-WRITE`)
+ * resolves to the same identifier (`todowrite`). DSH reports raw lowercase
+ * snake names (`bash`, `read`, `apply_patch`, `todo_write`), which only
+ * classify through this normalization.
+ */
+fun normalizeToolIdentifier(value: String?): String {
+    if (value == null) return ""
+    val lower = value.trim().lowercase()
+    return buildString {
+        for (char in lower) {
+            if (char in 'a'..'z' || char in '0'..'9') append(char)
+        }
+    }
+}
+
 private val PLAN_TOOL_NAMES = setOf(
-    "TodoWrite",
-    "update_plan",
-    "ExitPlanMode",
-    "exit_plan_mode",
-    "CodexReasoning",
+    "todowrite",
+    "updateplan",
+    "exitplanmode",
+    "codexreasoning",
 )
 
 private val MILESTONE_TOOL_NAMES = setOf(
-    "Task",
-    "Agent",
-    "CodexAgent",
-    "TeamCreate",
-    "TeamDelete",
-    "SendMessage",
-    "AgyTaskLog",
-    "Skill",
-    "spawn_agent",
-    "send_input",
-    "send_message",
-    "resume_agent",
-    "followup_task",
-    "wait_agent",
-    "close_agent",
-    "interrupt_agent",
-    "list_agents",
+    "task",
+    "agent",
+    "codexagent",
+    "teamcreate",
+    "teamdelete",
+    "sendmessage",
+    "agytasklog",
+    "agyasynctask",
+    "agyerror",
+    "skill",
+    "spawnagent",
+    "sendinput",
+    "resumeagent",
+    "followuptask",
+    "waitagent",
+    "closeagent",
+    "interruptagent",
+    "listagents",
 )
 
 private val INTERACTIVE_TOOL_NAMES = setOf(
-    "CodexPermission",
+    "codexpermission",
 )
+
+private val READ_TOOL_NAMES = setOf(
+    "read",
+    "notebookread",
+    "readfile",
+    "viewfile",
+    "fileread",
+)
+
+private val SEARCH_TOOL_NAMES = setOf(
+    "search",
+    "grep",
+    "glob",
+    "ls",
+    "listdir",
+    "listfiles",
+    "searchfiles",
+    "grepsearch",
+    "contentsearch",
+)
+
+private val COMMAND_TOOL_NAMES = setOf(
+    "bash",
+    "codexbash",
+    "shell",
+    "shellcommand",
+    "runshellcommand",
+    "runcommand",
+    "executecommand",
+    "terminal",
+)
+
+private val MUTATION_TOOL_NAMES = setOf(
+    "edit",
+    "multiedit",
+    "write",
+    "notebookedit",
+    "codexpatch",
+    "codexdiff",
+    "editfile",
+    "writefile",
+    "replacefilecontent",
+    "writetofile",
+    "applypatch",
+    "patch",
+)
+
+private val WEB_TOOL_NAMES = setOf(
+    "webfetch",
+    "websearch",
+    "fetchurl",
+    "openurl",
+    "urlfetch",
+)
+
+private val READ_NATIVE_KINDS = setOf("read", "readfile", "fileread", "view", "viewfile")
+private val SEARCH_NATIVE_KINDS = setOf("search", "grep", "find", "glob")
+private val COMMAND_NATIVE_KINDS = setOf(
+    "execute", "shell", "bash", "run", "runshell", "runshellcommand", "cmd", "terminal", "command",
+)
+private val MUTATION_NATIVE_KINDS = setOf("edit", "write", "writefile", "replace", "fileedit", "modify", "patch")
+private val WEB_NATIVE_KINDS = setOf("web", "fetch", "webfetch", "websearch", "openurl")
 
 private fun pushUnique(target: MutableList<String>, value: String?) {
     if (value.isNullOrEmpty()) return
@@ -107,19 +187,19 @@ private fun normalizeCommandInput(input: JsonElement?): String? {
 }
 
 fun getToolGroupActionKind(block: ToolCallBlock): ToolGroupActionKind {
-    val name = block.tool.name
+    val nativeKind = normalizeToolIdentifier(block.tool.nativeKind)
+    if (nativeKind in WEB_NATIVE_KINDS) return ToolGroupActionKind.WEB
+    if (nativeKind in READ_NATIVE_KINDS) return ToolGroupActionKind.READ
+    if (nativeKind in SEARCH_NATIVE_KINDS) return ToolGroupActionKind.SEARCH
+    if (nativeKind in COMMAND_NATIVE_KINDS) return ToolGroupActionKind.COMMAND
+    if (nativeKind in MUTATION_NATIVE_KINDS) return ToolGroupActionKind.MUTATION
 
-    if (name == "Read" || name == "NotebookRead") return ToolGroupActionKind.READ
-    if (name == "Grep" || name == "Glob" || name == "LS") return ToolGroupActionKind.SEARCH
-    if (name == "Bash" || name == "CodexBash" || name == "shell_command" || name == "run_shell_command") {
-        return ToolGroupActionKind.COMMAND
-    }
-    if (name == "Edit" || name == "MultiEdit" || name == "Write" || name == "NotebookEdit"
-        || name == "CodexPatch" || name == "CodexDiff"
-    ) {
-        return ToolGroupActionKind.MUTATION
-    }
-    if (name == "WebFetch" || name == "WebSearch") return ToolGroupActionKind.WEB
+    val name = normalizeToolIdentifier(block.tool.name)
+    if (name in WEB_TOOL_NAMES) return ToolGroupActionKind.WEB
+    if (name in READ_TOOL_NAMES) return ToolGroupActionKind.READ
+    if (name in SEARCH_TOOL_NAMES) return ToolGroupActionKind.SEARCH
+    if (name in COMMAND_TOOL_NAMES) return ToolGroupActionKind.COMMAND
+    if (name in MUTATION_TOOL_NAMES) return ToolGroupActionKind.MUTATION
     return ToolGroupActionKind.OTHER
 }
 
@@ -192,15 +272,16 @@ private fun summarizeToolGroup(tools: List<ToolCallBlock>): ToolGroupSummary {
 }
 
 private fun isInteractiveToolBlock(block: ToolCallBlock): Boolean =
-    INTERACTIVE_TOOL_NAMES.contains(block.tool.name)
+    normalizeToolIdentifier(block.tool.name) in INTERACTIVE_TOOL_NAMES
         || block.tool.permission?.status == "pending"
         || isAskUserQuestionToolName(block.tool.name)
         || isRequestUserInputToolName(block.tool.name)
 
 fun isEligibleForToolGrouping(block: ToolCallBlock): Boolean {
+    val normalizedName = normalizeToolIdentifier(block.tool.name)
     if (isSubagentToolName(block.tool.name)) return false
-    if (PLAN_TOOL_NAMES.contains(block.tool.name)) return false
-    if (MILESTONE_TOOL_NAMES.contains(block.tool.name)) return false
+    if (normalizedName in PLAN_TOOL_NAMES) return false
+    if (normalizedName in MILESTONE_TOOL_NAMES) return false
     if (isInteractiveToolBlock(block)) return false
     // Classification selects the group family; shared Codex `unknown`
     // agent commands still belong in ordinary groups. User shell stays separate.

@@ -13,6 +13,7 @@ import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.AgyModelsResponse
 import app.hapi.protocol.wire.CopilotModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
+import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.KimiModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
@@ -60,6 +61,13 @@ interface NewSessionGateway {
 
     /** `GET /api/machines/:id/pi-models`. */
     suspend fun piModels(machineId: String): PiModelsResponse
+
+    /**
+     * `GET /api/machines/:id/dsh-models` — machine-scoped DSH probe (spawns
+     * a probe agent briefly); ids are opaque config-option values sent back
+     * verbatim at spawn.
+     */
+    suspend fun dshModels(machineId: String): DshModelsResponse
 
     /** `GET /api/machines/:id/cursor-models`. */
     suspend fun cursorModels(machineId: String): CursorModelsResponse
@@ -179,6 +187,9 @@ class ApiNewSessionGateway(private val api: HapiApi) : NewSessionGateway {
 
     override suspend fun piModels(machineId: String): PiModelsResponse =
         api.getMachinePiModels(machineId)
+
+    override suspend fun dshModels(machineId: String): DshModelsResponse =
+        api.getMachineDshModels(machineId)
 
     override suspend fun cursorModels(machineId: String): CursorModelsResponse =
         api.getMachineCursorModels(machineId)
