@@ -4,6 +4,7 @@ const transportState = vi.hoisted(() => ({
     calls: [] as Array<{ method: string; params?: unknown }>,
     initializeResponse: {} as Record<string, unknown>,
     resumeResponse: { configOptions: [] } as Record<string, unknown>,
+    loadResponse: {} as Record<string, unknown> | null,
     resumeErrorQueue: [] as Array<Error | null>
 }));
 
@@ -28,6 +29,11 @@ vi.mock('./AcpStdioTransport', () => {
                     if (error) throw error;
                 }
                 return transportState.resumeResponse;
+            }
+            if (method === 'session/load') {
+                // Berry 0.1.x answers session/load with {} (replay then live
+                // attach; no remapped id).
+                return transportState.loadResponse ?? {};
             }
             return null;
         });
@@ -62,6 +68,7 @@ describe('AcpSdkBackend.sessionResume', () => {
         transportState.calls = [];
         transportState.initializeResponse = { protocolVersion: 1, authMethods: [] };
         transportState.resumeResponse = { configOptions: [] };
+        transportState.loadResponse = {};
         transportState.resumeErrorQueue = [];
     });
 
@@ -181,5 +188,54 @@ describe('AcpSdkBackend.sessionResume', () => {
         expect(sessionId).toBe('dsh-stored-1');
         const resumeCalls = transportState.calls.filter((call) => call.method === 'session/resume');
         expect(resumeCalls).toHaveLength(2);
+    });
+
+    it('loads via session/load and falls back to the requested id when the answer carries none', async () => {
+        // Berry (agentCapabilities.loadSession): session/load replays the
+        // stored history then live-attaches, answering {} — no sessionId.
+        // The caller must still end up with the requested id.
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                transportState.calls.push({ method, params });
+                if (method === 'session/load') return {};
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.loadSession({
+            sessionId: 'berry-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        });
+
+        expect(transportState.calls).toContainEqual({
+            method: 'session/load',
+            params: { sessionId: 'berry-stored-1', cwd: '/tmp', mcpServers: [] }
+        });
+        expect(sessionId).toBe('berry-stored-1');
+    });
+
+    it('prefers the sessionId returned by session/load when present', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async () => ({ sessionId: 'remapped-9' }),
+            close: async () => {}
+        };
+
+        const sessionId = await backend.loadSession({
+            sessionId: 'berry-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        });
+
+        expect(sessionId).toBe('remapped-9');
     });
 });

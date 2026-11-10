@@ -170,3 +170,122 @@ describe('AcpPermissionHandler.askUser', () => {
         })
     })
 })
+
+describe('AcpPermissionHandler session-scoped grants', () => {
+    function backendRequest() {
+        return {
+            sessionId: 'berry-session-1',
+            id: 'acp-req-1',
+            toolCallId: 'call-1',
+            kind: 'other' as const,
+            title: 'Run command',
+            options: [
+                { optionId: 'opt-always', kind: 'allow_always', name: 'Always allow' },
+                { optionId: 'opt-once', kind: 'allow_once', name: 'Allow once' },
+                { optionId: 'opt-reject', kind: 'reject_once', name: 'Reject' }
+            ]
+        }
+    }
+
+    async function answerSessionGrant(handler: AcpPermissionHandler, harness: ReturnType<typeof createHarness>) {
+        const request = backendRequest()
+        ;(harness.backend.onPermissionRequest as unknown as { mock: { calls: Array<[cb: (r: unknown) => void]> } })
+            .mock.calls[0][0](request)
+        await permissionRpcRespond(harness, {
+            id: request.id,
+            approved: true,
+            decision: 'approved_for_session'
+        })
+        return request
+    }
+
+    it('maps approved_for_session to allow_always by default', async () => {
+        const harness = createHarness()
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        const request = await answerSessionGrant(handler, harness)
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'berry-session-1',
+            request,
+            { outcome: 'selected', optionId: 'opt-always' }
+        )
+    })
+
+    it('maps approved_for_session to allow_once when sessionScopedPermissionGrants is set', async () => {
+        // Berry persists allow_always answers STICKILY in tool-policy.json —
+        // they outlive the session. A HAPI "allow for session" pick must
+        // therefore map to allow_once for berry backends.
+        const harness = createHarness()
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined,
+            undefined,
+            { sessionScopedPermissionGrants: true }
+        )
+        const request = await answerSessionGrant(handler, harness)
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'berry-session-1',
+            request,
+            { outcome: 'selected', optionId: 'opt-once' }
+        )
+    })
+
+    it('falls back to allow_always in session-scoped mode when allow_once is absent', async () => {
+        const harness = createHarness()
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined,
+            undefined,
+            { sessionScopedPermissionGrants: true }
+        )
+        const request = backendRequest()
+        request.options = request.options.filter((option) => option.kind !== 'allow_once')
+        ;(harness.backend.onPermissionRequest as unknown as { mock: { calls: Array<[cb: (r: unknown) => void]> } })
+            .mock.calls[0][0](request)
+        await permissionRpcRespond(harness, {
+            id: request.id,
+            approved: true,
+            decision: 'approved_for_session'
+        })
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'berry-session-1',
+            request,
+            { outcome: 'selected', optionId: 'opt-always' }
+        )
+    })
+
+    it('keeps plain approvals preferring allow_once in both modes', async () => {
+        for (const options of [undefined, { sessionScopedPermissionGrants: true }] as const) {
+            const harness = createHarness()
+            const handler = new AcpPermissionHandler(
+                harness.client as never,
+                harness.backend as never,
+                () => undefined,
+                undefined,
+                options
+            )
+            const request = backendRequest()
+            ;(harness.backend.onPermissionRequest as unknown as { mock: { calls: Array<[cb: (r: unknown) => void]> } })
+                .mock.calls[0][0](request)
+            await permissionRpcRespond(harness, {
+                id: request.id,
+                approved: true,
+                decision: 'approved'
+            })
+
+            expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+                'berry-session-1',
+                request,
+                { outcome: 'selected', optionId: 'opt-once' }
+            )
+        }
+    })
+})
