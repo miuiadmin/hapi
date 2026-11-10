@@ -53,12 +53,24 @@ const harness = vi.hoisted(() => ({
     dieAfterPrompts: null as number | null,
     // One-shot prompt failure that does NOT kill the transport (an ordinary
     // in-band error, e.g. an unknown model).
-    promptError: null as Error | null
+    promptError: null as Error | null,
+    // askUser escalations routed through the permission handler mock; the
+    // per-call handler index proves the CURRENT instance answered.
+    askUserCalls: [] as unknown[],
+    askUserOutcome: null as unknown,
+    askUserHandlerIndex: [] as number[],
+    permissionHandlers: [] as unknown[],
+    // Recorded by the seedBerryHapiMcpBridge mock: [dataDir, server] pairs.
+    seedCalls: [] as Array<[string, { command: string; args: string[] }]>,
+    // Cross-mock ordering: 'seed' must precede the first 'spawn' (berry
+    // reads enabled.yaml at process start).
+    spawnOrder: [] as string[]
 }))
 
 vi.mock('./utils/berryBackend', () => ({
     createBerryBackend: vi.fn((env?: unknown, opts?: { model?: string; dataDir?: string }) => {
         harness.createCalls.push({ env, opts })
+        harness.spawnOrder.push('spawn')
         const state = { prompts: 0, dead: false }
         const backend = {
             initialize: vi.fn(async () => {}),
@@ -148,10 +160,35 @@ vi.mock('./utils/berryPromptContent', async (importOriginal) => {
     }
 })
 
+vi.mock('./utils/berryMcpSeed', () => ({
+    seedBerryHapiMcpBridge: vi.fn((dataDir: string, server: { command: string; args: string[] }) => {
+        harness.seedCalls.push([dataDir, server])
+        harness.spawnOrder.push('seed')
+    })
+}))
+
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: vi.fn(async () => ({
+        server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
+        mcpServers: {}
+    }))
+}))
+
 vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
     AcpPermissionHandler: class {
+        // Index of this instance among all constructions: respawn tests
+        // prove the escalation routes to the CURRENT handler.
+        readonly instance: number
         constructor(...args: unknown[]) {
+            this.instance = harness.permissionHandlers.length
+            harness.permissionHandlers.push(this)
             harness.permissionHandlerArgs.push(args)
+        }
+        // Captured instances: the askUserTool MCP callback routes here.
+        async askUser(input: unknown): Promise<unknown> {
+            harness.askUserCalls.push(input)
+            harness.askUserHandlerIndex.push(this.instance)
+            return harness.askUserOutcome ?? { status: 'canceled', reason: 'mock' }
         }
         async cancelAll(): Promise<void> {}
     }
@@ -172,13 +209,14 @@ function deadTransportError(message = 'ACP process exited (code=1, signal=null)'
     return error
 }
 
-function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId: string | null = null) {
+function createQueue() {
     const queue = new MessageQueue2<BerryMode>((m) => JSON.stringify(m))
-    for (const [message, mode] of batches) {
-        queue.push(message, mode)
-    }
-    queue.close()
+    return queue
+}
 
+/** Session variant whose queue stays open — lets tests exercise the
+ * launcher mid-flight (like the real MCP ask tool call would be). */
+function createSessionFromQueue(queue: MessageQueue2<BerryMode>, sessionId: string | null = null) {
     const session = {
         path: '/tmp/berry-test',
         logPath: '/tmp/berry-test/hapi.log',
@@ -202,6 +240,16 @@ function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId
         sendSessionEvent: vi.fn()
     }
     return session
+}
+
+function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId: string | null = null) {
+    const queue = createQueue()
+    for (const [message, mode] of batches) {
+        queue.push(message, mode)
+    }
+    queue.close()
+
+    return createSessionFromQueue(queue, sessionId)
 }
 
 function createSession(mode?: BerryMode, sessionId: string | null = null) {
@@ -231,6 +279,12 @@ describe('BerryRemoteLauncher', () => {
         harness.newSessionBlocker = null
         harness.dieAfterPrompts = null
         harness.promptError = null
+        harness.askUserCalls = []
+        harness.askUserOutcome = null
+        harness.askUserHandlerIndex = []
+        harness.permissionHandlers = []
+        harness.seedCalls = []
+        harness.spawnOrder = []
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -780,5 +834,169 @@ describe('BerryRemoteLauncher', () => {
             type: 'message',
             message: 'Berry prompt failed: ACP process exited (code=1, signal=null)'
         })
+    })
+
+    it('seeds the hapi MCP bridge into the isolated dataDir before the first spawn', async () => {
+        // Berry reads enabled.yaml only at process start: the bridge URL
+        // must be on disk BEFORE spawnBackend() runs, in the per-row
+        // dataDir, carrying the absolute bridge command and the --tools
+        // whitelist that includes ask_user_question.
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        const stop = vi.fn()
+        vi.mocked(buildHapiMcpBridge).mockResolvedValueOnce({
+            server: { url: 'http://127.0.0.1:9/mcp', stop },
+            mcpServers: {
+                hapi: {
+                    command: '/usr/local/bin/hapi',
+                    args: [
+                        'mcp',
+                        '--url',
+                        'http://127.0.0.1:9/mcp',
+                        '--tools',
+                        'ask_user_question,skill_lookup',
+                        '--hapi-session-id',
+                        'hapi-berry-row-1'
+                    ],
+                    tools: {}
+                }
+            }
+        } as never)
+        const session = createSession()
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(buildHapiMcpBridge).toHaveBeenCalledWith(session.client, {
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: '/tmp/berry-test', flavor: 'berry' },
+            askUserTool: { escalate: expect.any(Function) }
+        })
+        expect(harness.spawnOrder).toEqual(['seed', 'spawn'])
+        expect(harness.seedCalls).toHaveLength(1)
+        const [dataDir, server] = harness.seedCalls[0]
+        expect(dataDir).toBe(EXPECTED_DATA_DIR)
+        expect(server.command).toBe('/usr/local/bin/hapi')
+        const toolsIndex = server.args.indexOf('--tools')
+        expect(toolsIndex).toBeGreaterThan(-1)
+        expect(server.args[toolsIndex + 1]).toContain('ask_user_question')
+        // The bridge server is torn down with the launcher.
+        expect(stop).toHaveBeenCalled()
+    })
+
+    it('keeps session/load and session/new free of mcpServers (ACP -32602 boundary)', async () => {
+        // Even with a non-empty bridge config seeded, the ACP mounts must
+        // stay empty: berry's ACP face rejects non-empty mcpServers with
+        // -32602 (the enabled.yaml plugin row is the only MCP carrier).
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        const bridge = {
+            server: { url: 'http://127.0.0.1:9/mcp', stop: vi.fn() },
+            mcpServers: {
+                hapi: { command: '/usr/local/bin/hapi', args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'], tools: {} }
+            }
+        } as never
+        vi.mocked(buildHapiMcpBridge).mockResolvedValueOnce(bridge)
+        vi.mocked(buildHapiMcpBridge).mockResolvedValueOnce(bridge)
+        const session = createSession(undefined, 'berry-existing-1')
+        await new BerryRemoteLauncher(session as never).launch()
+
+        expect(harness.backends[0].loadSession).toHaveBeenCalledWith({
+            sessionId: 'berry-existing-1',
+            cwd: '/tmp/berry-test',
+            mcpServers: []
+        })
+        // The load-failure fallback path stays empty too.
+        harness.loadError = new Error('stale session')
+        const session2 = createSession(undefined, 'berry-existing-2')
+        await new BerryRemoteLauncher(session2 as never).launch()
+
+        expect(harness.backends[1].loadSession).toHaveBeenCalled()
+        expect(harness.backends[1].newSession).toHaveBeenCalledWith({ cwd: '/tmp/berry-test', mcpServers: [] })
+    })
+
+    it('routes the MCP ask_user_question escalation through the permission bridge', async () => {
+        // Berry ships no native ask-user tool at all — the bridge tool is
+        // the only way its model can ask the user, escalating through the
+        // CURRENT permission handler so every client renders the
+        // interactive AskUserQuestion card. The captured askUserTool
+        // callback is what the MCP server invokes.
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        let escalate: ((input: unknown) => Promise<unknown>) | undefined
+        vi.mocked(buildHapiMcpBridge).mockImplementationOnce(
+            async (_client: unknown, options?: { askUserTool?: { escalate: (input: unknown) => Promise<unknown> } }) => {
+                escalate = options?.askUserTool?.escalate
+                return {
+                    server: { url: 'http://127.0.0.1:9/mcp', stop: vi.fn() },
+                    mcpServers: {}
+                } as never
+            }
+        )
+        harness.askUserOutcome = { status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] }
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSessionFromQueue(queue)
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        // Keep the launcher alive: cleanup() drops the permission handler at
+        // session end, so the escalation is exercised mid-flight like the
+        // real MCP tool call would be.
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        expect(escalate).toBeInstanceOf(Function)
+        const questions = { questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }] }
+        const outcome = await escalate!(questions)
+        expect(harness.askUserCalls).toEqual([questions])
+        expect(outcome).toEqual({ status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] })
+
+        queue.close()
+        await done
+
+        // After cleanup the handler is gone: the closure degrades to a
+        // canceled outcome instead of throwing.
+        expect(await escalate!({ questions: [] })).toEqual({
+            status: 'canceled',
+            reason: 'Berry session is not established'
+        })
+    })
+
+    it('routes the escalation to the respawned permission handler after a backend restart', async () => {
+        // The escalate closure reads the live field: a mid-session respawn
+        // swaps the permission handler, and a later ask_user_question must
+        // reach the replacement (bound to the fresh transport), never the
+        // corpse.
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        let escalate: ((input: unknown) => Promise<unknown>) | undefined
+        vi.mocked(buildHapiMcpBridge).mockImplementationOnce(
+            async (_client: unknown, options?: { askUserTool?: { escalate: (input: unknown) => Promise<unknown> } }) => {
+                escalate = options?.askUserTool?.escalate
+                return {
+                    server: { url: 'http://127.0.0.1:9/mcp', stop: vi.fn() },
+                    mcpServers: {}
+                } as never
+            }
+        )
+        harness.askUserOutcome = { status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] }
+        // First backend survives exactly one prompt; the second dies and
+        // triggers the respawn path.
+        harness.dieAfterPrompts = 1
+        const queue = createQueue()
+        queue.push('first', { permissionMode: 'yolo' })
+        queue.push('second', {})
+        const session = createSessionFromQueue(queue)
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+        expect(harness.permissionHandlerArgs).toHaveLength(2)
+
+        const questions = { questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }] }
+        const outcome = await escalate!(questions)
+        // The CURRENT (second) handler answered, not the dead one.
+        expect(harness.askUserCalls).toEqual([questions])
+        expect(harness.askUserHandlerIndex).toEqual([1])
+        expect(outcome).toEqual({ status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] })
+
+        queue.close()
+        await done
     })
 })

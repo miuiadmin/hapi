@@ -214,11 +214,19 @@ describe('resolveToolAutoApprovalDecision read-only fail-closed (title-only uncl
         // The exact allowlist is an explicit safety list, not a heuristic:
         // ask_user_question must stay auto-approved (a deny would surface a
         // second prompt under the question card) even for a title-only
-        // request.
+        // request. hapi__ask_user_question is berry's MCP composite name
+        // (<server>__<tool>) for the same tool.
         expect(resolveToolAutoApprovalDecision(
             'read-only',
             'ask_user_question',
             'APPROVAL-6',
+            undefined,
+            { unclassifiable: true }
+        )).toBe('approved')
+        expect(resolveToolAutoApprovalDecision(
+            'read-only',
+            'hapi__ask_user_question',
+            'APPROVAL-7',
             undefined,
             { unclassifiable: true }
         )).toBe('approved')

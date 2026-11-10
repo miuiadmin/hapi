@@ -48,6 +48,8 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     // user only answers the question card itself, never a double prompt.
     'ask_user_question',
     'mcp__hapi__ask_user_question',
+    // berry exposes MCP tools as <server>__<tool> composites.
+    'hapi__ask_user_question',
     'skill_lookup',
     'hapi_skill_lookup',
     'happy__skill_lookup',

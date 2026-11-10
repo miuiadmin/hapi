@@ -34,7 +34,10 @@ const harness = vi.hoisted(() => ({
     configOptionError: null as Error | null,
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
-    newSessionBlocker: null as null | Promise<void>
+    newSessionBlocker: null as null | Promise<void>,
+    // askUser escalations routed through the permission handler mock.
+    askUserCalls: [] as unknown[],
+    askUserOutcome: null as unknown
 }))
 
 vi.mock('./utils/hermesBackend', () => ({
@@ -104,8 +107,20 @@ vi.mock('./utils/hermesBackend', () => ({
     })
 }))
 
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: vi.fn(async () => ({
+        server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
+        mcpServers: {}
+    }))
+}))
+
 vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
     AcpPermissionHandler: class {
+        // Captured instances: the askUserTool MCP callback routes here.
+        async askUser(input: unknown): Promise<unknown> {
+            harness.askUserCalls.push(input)
+            return harness.askUserOutcome ?? { status: 'canceled', reason: 'mock' }
+        }
         async cancelAll(): Promise<void> {}
     }
 }))
@@ -125,13 +140,14 @@ function deadTransportError(message = 'ACP process exited (code=1, signal=null)'
     return error
 }
 
-function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionId: string | null = null) {
+function createQueue() {
     const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
-    for (const [message, mode] of batches) {
-        queue.push(message, mode)
-    }
-    queue.close()
+    return queue
+}
 
+/** Session variant whose queue stays open — lets tests exercise the
+ * launcher mid-flight (like the real MCP ask tool call would be). */
+function createSessionFromQueue(queue: MessageQueue2<HermesMode>, sessionId: string | null = null) {
     return {
         path: '/tmp/hermes-test',
         logPath: '/tmp/hermes-test/hapi.log',
@@ -150,6 +166,16 @@ function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionI
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
+}
+
+function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionId: string | null = null) {
+    const queue = createQueue()
+    for (const [message, mode] of batches) {
+        queue.push(message, mode)
+    }
+    queue.close()
+
+    return createSessionFromQueue(queue, sessionId)
 }
 
 function createSession(mode?: HermesMode, sessionId: string | null = null) {
@@ -177,6 +203,8 @@ describe('HermesRemoteLauncher', () => {
         harness.setModeError = null
         harness.configOptionError = null
         harness.newSessionBlocker = null
+        harness.askUserCalls = []
+        harness.askUserOutcome = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -630,5 +658,92 @@ describe('HermesRemoteLauncher', () => {
             message: 'Hermes prompt failed: unknown session'
         })
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('mounts the hapi MCP bridge servers on the ACP session', async () => {
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        const stop = vi.fn()
+        vi.mocked(buildHapiMcpBridge).mockResolvedValueOnce({
+            server: { url: 'http://127.0.0.1:9/mcp', stop },
+            mcpServers: {
+                hapi: { command: '/usr/local/bin/hapi', args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'], tools: {} }
+            }
+        } as never)
+        // Resume fails so one launch covers BOTH mounts: the session/resume
+        // attempt and the fresh-session fallback.
+        harness.resumeError = new Error('stale session')
+        const session = createSession(undefined, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(buildHapiMcpBridge).toHaveBeenCalledWith(session.client, {
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: '/tmp/hermes-test', flavor: 'hermes' },
+            askUserTool: { escalate: expect.any(Function) }
+        })
+        const mounted = [{
+            name: 'hapi',
+            command: '/usr/local/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'],
+            env: []
+        }]
+        expect(harness.backend?.resumeSession).toHaveBeenCalledWith({
+            sessionId: 'hermes-existing-1',
+            cwd: '/tmp/hermes-test',
+            mcpServers: mounted
+        })
+        expect(harness.backend?.newSession).toHaveBeenCalledWith({
+            cwd: '/tmp/hermes-test',
+            mcpServers: mounted
+        })
+        // The bridge server is torn down with the launcher.
+        expect(stop).toHaveBeenCalled()
+    })
+
+    it('routes the MCP ask_user_question escalation through the permission bridge', async () => {
+        // Hermes' native `clarify` reaches HAPI only as a degraded permission
+        // card; the bridge tool escalates through the CURRENT permission
+        // handler so every client renders the interactive AskUserQuestion
+        // card. The captured askUserTool callback is what the MCP server
+        // invokes.
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        let escalate: ((input: unknown) => Promise<unknown>) | undefined
+        vi.mocked(buildHapiMcpBridge).mockImplementationOnce(
+            async (_client: unknown, options?: { askUserTool?: { escalate: (input: unknown) => Promise<unknown> } }) => {
+                escalate = options?.askUserTool?.escalate
+                return {
+                    server: { url: 'http://127.0.0.1:9/mcp', stop: vi.fn() },
+                    mcpServers: {}
+                } as never
+            }
+        )
+        harness.askUserOutcome = { status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] }
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSessionFromQueue(queue)
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        // Keep the launcher alive: cleanup() drops the permission handler at
+        // session end, so the escalation is exercised mid-flight like the
+        // real MCP tool call would be.
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        expect(escalate).toBeInstanceOf(Function)
+        const questions = { questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }] }
+        const outcome = await escalate!(questions)
+        expect(harness.askUserCalls).toEqual([questions])
+        expect(outcome).toEqual({ status: 'answered', answers: [{ id: 'q1', selected: ['Yes'] }] })
+
+        queue.close()
+        await done
+
+        // After cleanup the handler is gone: the closure degrades to a
+        // canceled outcome instead of throwing.
+        expect(await escalate!({ questions: [] })).toEqual({
+            status: 'canceled',
+            reason: 'Hermes session is not established'
+        })
     })
 })
