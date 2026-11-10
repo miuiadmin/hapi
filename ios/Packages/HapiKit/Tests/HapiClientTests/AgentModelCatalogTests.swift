@@ -194,6 +194,40 @@ struct AgentSessionConfigTests {
             == "b")
     }
 
+    @Test func hermesRowsMirrorTheDshShape() {
+        // hermes rides the same rail as dsh (web `hermesModelOptions`): a
+        // null Default row plus opaque `provider:model` catalog values once
+        // the session catalog lands; hidden while the list is empty.
+        let response = AgentModelsResponse(success: true, availableModels: [
+            AgentModelSummary(modelId: "newapi:glm-5.3", name: "GLM-5.3"),
+            AgentModelSummary(modelId: "newapi:deepseek-v3.2"),
+        ])
+        let loaded = buildSessionConfigState(
+            detail: detail(flavor: "hermes", model: "newapi:glm-5.3"), summary: nil,
+            codexModels: .idle, agentModels: .loaded(response)
+        )
+        #expect(loaded.modelOptions == [
+            CatalogOption(value: nil, label: "Default"),
+            CatalogOption(value: "newapi:glm-5.3", label: "GLM-5.3"),
+            CatalogOption(value: "newapi:deepseek-v3.2", label: "newapi:deepseek-v3.2"),
+        ])
+        // No effort surface for hermes (shared caps: model-change only).
+        #expect(loaded.effortOptions == nil)
+
+        let empty = buildSessionConfigState(
+            detail: detail(flavor: "hermes"), summary: nil,
+            codexModels: .idle, agentModels: .loaded(AgentModelsResponse(success: true))
+        )
+        #expect(empty.modelOptions == [])
+
+        #expect(AgentModelCatalog.sessionModelOptions(flavor: .hermes, response: response, currentModel: nil)
+            == [CatalogOption(value: nil, label: "Default"),
+                CatalogOption(value: "newapi:glm-5.3", label: "GLM-5.3"),
+                CatalogOption(value: "newapi:deepseek-v3.2", label: "newapi:deepseek-v3.2")])
+        #expect(AgentModelCatalog.sessionModelOptions(flavor: .hermes, response: AgentModelsResponse(success: true), currentModel: nil)
+            .isEmpty)
+    }
+
     @Test func discoveredFlavorsStayHiddenUntilLoadedAndWhileInactive() {
         let idle = buildSessionConfigState(detail: detail(flavor: "kimi"), summary: nil, codexModels: .idle)
         #expect(idle.modelOptions == nil)

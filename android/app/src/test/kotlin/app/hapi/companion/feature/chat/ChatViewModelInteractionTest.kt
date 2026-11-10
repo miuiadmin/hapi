@@ -36,6 +36,7 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.normalizeDecryptedMessage
+import app.hapi.protocol.wire.AcpCatalogModelSummary
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
@@ -46,6 +47,7 @@ import app.hapi.protocol.wire.GrokReasoningEffortResponse
 import app.hapi.protocol.wire.FileSearchItem
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.HermesModelsResponse
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
@@ -336,6 +338,9 @@ private class RecordingChatApi : ChatSessionApi {
 
     var dshModelsResult: DshModelsResponse = DshModelsResponse(success = false, error = "not scripted")
     override suspend fun getSessionDshModels(sessionId: String): DshModelsResponse = dshModelsResult
+
+    var hermesModelsResult: HermesModelsResponse = HermesModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionHermesModels(sessionId: String): HermesModelsResponse = hermesModelsResult
 
     var sessionCursorModelsResult: CursorModelsResponse =
         CursorModelsResponse(success = false, error = "not scripted")
@@ -1732,6 +1737,51 @@ class ChatViewModelInteractionTest {
         // An empty catalog keeps the section hidden (no rows to pick).
         val emptyCatalog = InteractionHarness(this, detail(flavor = "dsh"))
         emptyCatalog.api.dshModelsResult = DshModelsResponse(success = true, availableModels = emptyList())
+        emptyCatalog.viewModel.start()
+        emptyCatalog.viewModel.loadModelOptions()
+        testScheduler.runCurrent()
+        assertNull(emptyCatalog.viewModel.config.value.modelOptions)
+    }
+
+    @Test
+    fun `hermes model rows are opaque catalog values switching through the generic model rail`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "hermes"))
+        harness.api.hermesModelsResult = HermesModelsResponse(
+            success = true,
+            availableModels = listOf(
+                AcpCatalogModelSummary(modelId = "newapi:glm-5.3", name = "GLM-5.3"),
+                // No display name — the raw picker value is the label.
+                AcpCatalogModelSummary(modelId = "newapi:deepseek-v3.2"),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        // Hidden until the catalog lands (web builds options only for a
+        // non-empty list; empty/failed also stays hidden).
+        assertNull(harness.viewModel.config.value.modelOptions)
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.modelOptions != null }
+        assertEquals(
+            listOf(null, "newapi:glm-5.3", "newapi:deepseek-v3.2"),
+            config.modelOptions?.map { it.value },
+        )
+        assertEquals(
+            listOf("Default", "GLM-5.3", "newapi:deepseek-v3.2"),
+            config.modelOptions?.map { it.label },
+        )
+
+        // The value is sent back verbatim over the generic model rail.
+        harness.viewModel.setModel("newapi:deepseek-v3.2")
+        harness.api.configCalls.first { "model:newapi:deepseek-v3.2" in it }
+        assertEquals(
+            "newapi:deepseek-v3.2",
+            harness.sessionStore.currentDetail(IX_SESSION)?.model,
+        )
+
+        // An empty catalog keeps the section hidden (no rows to pick).
+        val emptyCatalog = InteractionHarness(this, detail(flavor = "hermes"))
+        emptyCatalog.api.hermesModelsResult = HermesModelsResponse(success = true, availableModels = emptyList())
         emptyCatalog.viewModel.start()
         emptyCatalog.viewModel.loadModelOptions()
         testScheduler.runCurrent()

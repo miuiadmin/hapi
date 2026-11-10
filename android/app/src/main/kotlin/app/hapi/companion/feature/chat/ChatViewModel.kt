@@ -77,6 +77,7 @@ import app.hapi.protocol.window.asWindowMessage
 import app.hapi.protocol.wire.AgentState
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AttachmentMetadata
+import app.hapi.protocol.wire.AcpCatalogModelSummary
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.DshModelSummary
 import app.hapi.protocol.wire.GrokReasoningEffortOption
@@ -755,6 +756,8 @@ class ChatViewModel(
         val piModels: List<PiModelSummary>? = null,
         /** DSH session catalog (`GET /api/sessions/:id/dsh-models`); ids are opaque config-option values. */
         val dshModels: List<DshModelSummary>? = null,
+        /** Hermes session catalog (`GET /api/sessions/:id/hermes-models`); ids are opaque `provider:model` picker values. */
+        val hermesModels: List<AcpCatalogModelSummary>? = null,
         /** Cursor session catalog (`GET /api/sessions/:id/cursor-models`). */
         val cursorSessionModels: List<OpencodeModelSummary>? = null,
         /** Machine catalog merge-in; fetch failure tolerated (stays null). */
@@ -2593,14 +2596,14 @@ class ChatViewModel(
     }
 
     /** Flavors whose config sheet needs a dynamic catalog fetch. */
-    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor", "dsh")
+    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor", "dsh", "hermes")
 
     /**
      * Fetch the session flavor's dynamic config catalogs (codex models +
      * efforts, opencode/grok reasoning-effort options, pi models, cursor
-     * session+machine catalogs, dsh models). One load per flavor: a failure
-     * leaves `loadedFlavor` null so the next sheet open retries. Other flavors
-     * are a no-op (static/no catalog).
+     * session+machine catalogs, dsh/hermes models). One load per flavor: a
+     * failure leaves `loadedFlavor` null so the next sheet open retries.
+     * Other flavors are a no-op (static/no catalog).
      */
     fun loadModelOptions() {
         val flavor = currentFlavor() ?: return
@@ -2616,6 +2619,7 @@ class ChatViewModel(
                 "pi" -> loadPiCatalogs()
                 "cursor" -> loadCursorCatalogs()
                 "dsh" -> loadDshCatalogs()
+                "hermes" -> loadHermesCatalogs()
                 else -> ConfigCatalogs()
             }
         }
@@ -2707,6 +2711,28 @@ class ChatViewModel(
         val models = response.availableModels
         return if (response.success && models != null) {
             ConfigCatalogs(loadedFlavor = "dsh", dshModels = models)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /**
+     * Silent-hide on failure — hermes exposes its catalog through the
+     * session's ACP config options (ListHermesModels; opaque `provider:model`
+     * picker values); switching rides the generic `POST /model` rail with
+     * the value verbatim (web `useHermesModelsForSession`).
+     */
+    private suspend fun loadHermesCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionHermesModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val models = response.availableModels
+        return if (response.success && models != null) {
+            ConfigCatalogs(loadedFlavor = "hermes", hermesModels = models)
         } else {
             ConfigCatalogs()
         }
@@ -2848,6 +2874,19 @@ class ChatViewModel(
                 // section shows even while the model list loads (web parity).
                 effort = detail?.modelReasoningEffort?.trim()?.takeIf { it.isNotEmpty() }
                 effortOptions = SessionConfigSections.dshReasoningEffortOptions(effort)
+            }
+            "hermes" -> {
+                // Opaque `provider:model` picker values; labels come from
+                // the catalog's `name` (else the raw id). Hidden while
+                // loading/empty/failed — web builds `hermesModelOptions`
+                // only for a non-empty list.
+                val hermesModels = catalogs.hermesModels
+                modelOptions = if (hermesModels.isNullOrEmpty()) {
+                    null
+                } else {
+                    listOf(CatalogOption(null, "Default")) +
+                        hermesModels.map { CatalogOption(it.modelId, it.name ?: it.modelId) }
+                }
             }
             "cursor" -> {
                 modelOptions = null

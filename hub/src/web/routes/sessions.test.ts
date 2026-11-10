@@ -779,7 +779,7 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(400)
         expect(await response.json()).toEqual({
-            error: 'Model reasoning effort is only supported for Codex and OpenCode sessions'
+            error: 'Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions'
         })
         expect(applySessionConfigCalls).toEqual([])
     })

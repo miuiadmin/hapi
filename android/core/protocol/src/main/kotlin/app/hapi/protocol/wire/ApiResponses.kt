@@ -552,6 +552,27 @@ data class DshModelSummary(
     val name: String? = null,
 )
 
+/** `AcpCatalogModelSummary` (`shared/src/apiTypes.ts`) — Hermes/Berry model discovery rows. */
+@Serializable
+data class AcpCatalogModelSummary(
+    val modelId: String,
+    val name: String? = null,
+)
+
+/**
+ * `GET /api/sessions/:id/hermes-models` (RPC-wrapped: check [success]).
+ * Ported from `HermesModelsResponse` (`shared/src/apiTypes.ts`). Model ids
+ * are opaque `provider:model` picker values (ListHermesModels over the
+ * session's ACP connection) and must be sent back verbatim when switching.
+ */
+@Serializable
+data class HermesModelsResponse(
+    val success: Boolean,
+    val availableModels: List<AcpCatalogModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
 /**
  * `GET /api/sessions/:id/grok-reasoning-effort-options` — RPC-wrapped.
  * Ported from `GrokReasoningEffortResponse` (`shared/src/apiTypes.ts`).

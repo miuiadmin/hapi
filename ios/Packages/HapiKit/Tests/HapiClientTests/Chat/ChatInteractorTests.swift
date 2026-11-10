@@ -1323,6 +1323,30 @@ struct ChatInteractorTests {
         #expect(pi.store.detail(for: chatSessionID)?.metadata?.piSelectedModel == PiModelReference(provider: "b", modelId: "n"))
     }
 
+    @Test func hermesLoadsItsSessionCatalogAndSwitchesVerbatim() async throws {
+        // hermes rides the dsh rail: ListHermesModels over the session's
+        // ACP connection, a null Default row plus opaque `provider:model`
+        // values, and switching posts the value verbatim over /model.
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "hermes", model: "newapi:glm-5.3"))
+        await harness.performer.serve(
+            "GET", "/api/sessions/sess-1/hermes-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"newapi:glm-5.3","name":"GLM-5.3"},{"modelId":"newapi:deepseek-v3.2"}]}"#
+        )
+
+        harness.interactor.loadModelOptions()
+
+        #expect(await eventually { harness.interactor.config.modelOptions?.count == 3 })
+        #expect(harness.interactor.config.modelOptions?.first == CatalogOption(value: nil, label: "Default"))
+        #expect(harness.interactor.config.modelOptions?.map(\.value) == [nil, "newapi:glm-5.3", "newapi:deepseek-v3.2"])
+
+        harness.interactor.setModel("newapi:deepseek-v3.2")
+        #expect(await eventually {
+            await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/model")
+                == [#"{"model":"newapi:deepseek-v3.2"}"#]
+        })
+        #expect(harness.store.detail(for: chatSessionID)?.model == "newapi:deepseek-v3.2")
+    }
+
     // MARK: Session lifecycle
 
     @Test func renameTrimsAndPatchesTheNameAndAFailureEmitsANotice() async throws {

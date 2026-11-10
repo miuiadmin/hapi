@@ -195,7 +195,11 @@ public enum AgentModelCatalog {
         switch flavor {
         case .opencode, .agy, .pi:
             options = rows
-        case .dsh:
+        case .dsh, .hermes:
+            // dsh/hermes ride the same rail: opaque config-option values
+            // with a null Default row, only once the session catalog lands
+            // (web `dshModelOptions`/`hermesModelOptions` build rows for a
+            // non-empty list only).
             options = rows.isEmpty ? [] : [CatalogOption(value: nil, label: "Default")] + rows
         case .copilot:
             options = [CatalogOption(value: nil, label: "Auto")] + rows
