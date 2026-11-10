@@ -190,6 +190,56 @@ describe('AcpSdkBackend.sessionResume', () => {
         expect(resumeCalls).toHaveLength(2);
     });
 
+    it('does not retry a terminal session/new rejection', async () => {
+        // Mirrors the resume filter: a terminal session/new rejection
+        // (invalidParams etc.) fails fast instead of burning all 3 attempts
+        // of backoff before the caller surfaces the error.
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                transportState.calls.push({ method, params });
+                throw new Error('Invalid session configuration (-32602 invalidParams)');
+            },
+            close: async () => {}
+        };
+
+        await expect(backend.newSession({ cwd: '/tmp', mcpServers: [] }))
+            .rejects.toThrow('invalidParams');
+
+        // Exactly one session/new request — no retry of the terminal error.
+        const newCalls = transportState.calls.filter((call) => call.method === 'session/new');
+        expect(newCalls).toHaveLength(1);
+    });
+
+    it('retries a transport-indeterminate session/new failure and then succeeds', async () => {
+        // Only the transport's indeterminate marker keeps the retry: the
+        // child died mid-request, and the same request can succeed after a
+        // respawn.
+        let attempts = 0;
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                transportState.calls.push({ method, params });
+                attempts += 1;
+                if (attempts === 1) throw indeterminateError();
+                return { sessionId: 'fresh-acp-1' };
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp', mcpServers: [] });
+
+        expect(sessionId).toBe('fresh-acp-1');
+        const newCalls = transportState.calls.filter((call) => call.method === 'session/new');
+        expect(newCalls).toHaveLength(2);
+    });
+
     it('loads via session/load and falls back to the requested id when the answer carries none', async () => {
         // Berry (agentCapabilities.loadSession): session/load replays the
         // stored history then live-attaches, answering {} — no sessionId.

@@ -486,6 +486,13 @@ export class AcpSdkBackend implements AgentBackend {
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                // Same filter as session/resume: only transport-indeterminate
+                // failures (child exited, transport closed, failed stdin
+                // write) are worth retrying. A terminal session/new
+                // rejection (invalidParams etc.) fails fast instead of
+                // burning the full backoff chain before the caller surfaces
+                // the error.
+                shouldRetry: isAcpIndeterminateError,
                 onRetry: (error, attempt, nextDelayMs) => {
                     logger.debug(`[ACP] session/new attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
                 }

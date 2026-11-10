@@ -538,6 +538,58 @@ describe('DshRemoteLauncher', () => {
         expect(session.sessionId).toBe('dsh-session-2')
     })
 
+    it('re-applies the model and effort preferences on the fresh session after an abort', async () => {
+        // The fresh session created by the post-abort fallback starts from
+        // the server default — the closed session's config died with it. The
+        // respawn contract must be mirrored here: re-apply the live model and
+        // reasoning-effort preferences so the next batch does not silently
+        // run on the default while the hub picker still shows the user's
+        // choice.
+        harness.supportsCancel = false
+        harness.supportsResume = true
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: '' }
+        const queue = createQueue()
+        // Turn 1 carries both preferences: the model switch and the effort
+        // switch below record them as the session's live preferences.
+        queue.push('first', { model: PRO, modelReasoningEffort: 'high' })
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        // Close-path abort ends the ACP session (dsh keeps the process alive).
+        await launcher.kill()
+
+        // The closed session vanishes: the recovery branch falls back to a
+        // FRESH session, which must get both preferences re-applied.
+        harness.resumeError = new Error('session not found on disk')
+        queue.push('second', {})
+        queue.close()
+        await done
+
+        expect(harness.newSessionCalls).toHaveLength(2)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+        // Turn 1's two switches, then the fresh-session re-apply of both —
+        // on the NEW session id.
+        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([PRO, 'high', PRO, 'high'])
+        expect(harness.setConfigOptionCalls[2]).toEqual({
+            sessionId: 'dsh-session-2',
+            configId: 'model',
+            value: PRO
+        })
+        expect(harness.setConfigOptionCalls[3]).toEqual({
+            sessionId: 'dsh-session-2',
+            configId: 'reasoning_effort',
+            value: 'high'
+        })
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
     it('drops the dequeued message when an abort lands while the closed session is being resumed', async () => {
         // An abort inside the post-abort resume window targets the already
         // closed session id; the generation check must discard the dequeued

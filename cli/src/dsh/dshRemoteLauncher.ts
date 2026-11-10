@@ -291,6 +291,37 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // Re-pin through onSessionFound: the respawn replaces the stored
                 // dshSessionId, so a runner restart resumes the live session.
                 this.session.onSessionFound(acpSessionId)
+                if (!resumed) {
+                    // The fresh session starts from the server default — the
+                    // closed session's model/effort config died with it. Mirror
+                    // the respawn contract from establishBackend so the batch
+                    // (or, when an abort lands mid-recreation, the NEXT message
+                    // resuming this persisted session) runs on the preferences
+                    // the session was showing.
+                    const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
+                    if (this.currentBackendModel && modelOption && modelOption.currentValue !== this.currentBackendModel) {
+                        await this.applyModelSwitch(backend, acpSessionId, this.currentBackendModel)
+                    } else if (!this.currentBackendModel) {
+                        // No preference to re-apply: the fresh session IS the
+                        // new source of truth — capture its default so a later
+                        // explicit "Default" reset has something to switch back
+                        // to, and keep the picker on the live model.
+                        this.initialBackendModel = modelOption?.currentValue
+                            ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
+                            ?? null
+                        this.currentBackendModel = this.initialBackendModel
+                    }
+                    if (this.currentReasoningEffort !== null) {
+                        // Same re-apply + drop-on-failure contract as a respawn:
+                        // the fresh session is the preference's only chance to
+                        // re-materialize, so a value it rejects is cleared.
+                        const reapplied = await this.applyEffortValue(backend, acpSessionId, this.currentReasoningEffort)
+                        if (reapplied === null) {
+                            this.currentReasoningEffort = null
+                            this.opts.onEffortRollback?.(undefined)
+                        }
+                    }
+                }
                 if (generationBeforeRespawn !== this.abortGeneration) {
                     // Aborted mid-recreation: drop the batch and treat the fresh
                     // session as ended so the next loop respawns cleanly instead
