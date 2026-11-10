@@ -350,7 +350,11 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
     ): boolean {
         if (this.shouldExit) return false
         if (!ACP_TRANSPORT_DEATH_RE.test(message)) return false
-        return !backend.isTransportAlive()
+        // The regex already matched the transport's own death signature
+        // ("process exited" / "transport closed"), and the only caller feeds
+        // it a caught prompt error — no second liveness probe is needed (the
+        // stack's AcpSdkBackend exposes none; the message IS the death mark).
+        return true
     }
 
     /**
@@ -474,7 +478,6 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             case 'tool_call':
             case 'tool_result':
             case 'plan':
-            case 'round_summary':
                 break
             default: {
                 const _exhaustive: never = message
