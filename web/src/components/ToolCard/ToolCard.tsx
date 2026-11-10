@@ -66,6 +66,13 @@ export function isTerminalToolBlock(block: ToolCallBlock): boolean {
     return block.tool.name === 'CodexBash' || getToolGroupActionKind(block) === 'command'
 }
 
+/** Tools whose invocation input is a shell command rendered as a bash CodeBlock ("Command" title). */
+const COMMAND_INPUT_TOOL_NAMES = new Set(['Bash', 'CodexBash', 'bash'])
+
+export function isCommandInputToolName(toolName: string): boolean {
+    return COMMAND_INPUT_TOOL_NAMES.has(toolName)
+}
+
 export function getToolTimingDetails(tool: ChatToolCall, now: number): {
     startedAt: number | null
     completedAt: number | null
@@ -306,7 +313,7 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
     }
 
     const commandArray = isObject(input) && Array.isArray(input.command) ? input.command : null
-    if ((toolName === 'CodexBash' || toolName === 'Bash') && (typeof commandArray?.[0] === 'string' || typeof input === 'object')) {
+    if (isCommandInputToolName(toolName) && (typeof commandArray?.[0] === 'string' || typeof input === 'object')) {
         const cmd = Array.isArray(commandArray)
             ? commandArray.filter((part) => typeof part === 'string').join(' ')
             : getInputStringAny(input, ['command', 'cmd'])

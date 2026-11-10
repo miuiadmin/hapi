@@ -829,7 +829,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex' && flavor !== 'opencode') {
+        if (flavor !== 'codex' && flavor !== 'opencode' && flavor !== 'dsh') {
             return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
         }
         if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {

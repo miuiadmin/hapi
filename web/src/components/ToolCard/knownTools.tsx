@@ -214,12 +214,34 @@ export const knownTools: Record<string, {
         subtitle: getTerminalSubtitle,
         minimal: true
     },
+    // DSH emits raw lowercase snake tool names (kind:'other', title = the
+    // verbatim tool name). The lowercase entries below alias them onto the
+    // same presentation as their capitalized twins.
+    bash: {
+        icon: () => <TerminalIcon className={DEFAULT_ICON_CLASS} />,
+        title: getTerminalTitle,
+        subtitle: getTerminalSubtitle,
+        minimal: true
+    },
     Glob: {
         icon: () => <SearchIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => getInputStringAny(opts.input, ['pattern']) ?? 'Search files',
         minimal: true
     },
+    glob: {
+        icon: () => <SearchIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => getInputStringAny(opts.input, ['pattern']) ?? 'Search files',
+        minimal: true
+    },
     Grep: {
+        icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const pattern = getInputStringAny(opts.input, ['pattern'])
+            return pattern ? `grep(pattern: ${pattern})` : 'Search content'
+        },
+        minimal: true
+    },
+    grep: {
         icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
             const pattern = getInputStringAny(opts.input, ['pattern'])
@@ -325,6 +347,24 @@ export const knownTools: Record<string, {
         },
         minimal: true
     },
+    edit: {
+        icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Edit file'
+        },
+        minimal: true
+    },
+    // DSH's apply_patch carries a unified-patch payload; keep the card a thin
+    // mutation chip (the generic JSON fallback would dump the whole patch).
+    apply_patch: {
+        icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Apply patch'
+        },
+        minimal: true
+    },
     MultiEdit: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
@@ -338,6 +378,20 @@ export const knownTools: Record<string, {
         minimal: true
     },
     Write: {
+        icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Write file'
+        },
+        subtitle: (opts) => {
+            const content = getInputStringAny(opts.input, ['content', 'text'])
+            if (!content) return null
+            const lines = countLines(content)
+            return lines > 1 ? `${lines} lines` : `${content.length} chars`
+        },
+        minimal: true
+    },
+    write: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
             const file = getInputStringAny(opts.input, ['file_path', 'path'])
@@ -369,7 +423,34 @@ export const knownTools: Record<string, {
         },
         minimal: true
     },
+    web_fetch: {
+        icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const url = getInputStringAny(opts.input, ['url'])
+            if (!url) return 'Web fetch'
+            try {
+                return new URL(url).hostname
+            } catch {
+                return url
+            }
+        },
+        subtitle: (opts) => {
+            const url = getInputStringAny(opts.input, ['url'])
+            if (!url) return null
+            return url
+        },
+        minimal: true
+    },
     WebSearch: {
+        icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => getInputStringAny(opts.input, ['query']) ?? 'Web search',
+        subtitle: (opts) => {
+            const query = getInputStringAny(opts.input, ['query'])
+            return query ? truncate(query, 80) : null
+        },
+        minimal: true
+    },
+    web_search: {
         icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => getInputStringAny(opts.input, ['query']) ?? 'Web search',
         subtitle: (opts) => {
@@ -399,6 +480,12 @@ export const knownTools: Record<string, {
         minimal: false
     },
     TodoWrite: {
+        icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Todo list',
+        subtitle: (opts) => formatChecklistCount(extractTodoChecklist(opts.input, opts.result), 'item'),
+        minimal: (opts) => extractTodoChecklist(opts.input, opts.result).length === 0
+    },
+    todo_write: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Todo list',
         subtitle: (opts) => formatChecklistCount(extractTodoChecklist(opts.input, opts.result), 'item'),

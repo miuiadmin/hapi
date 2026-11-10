@@ -57,6 +57,13 @@ describe('reasoning status metadata', () => {
         expect(getReasoningEffortForFlavor(null, 'xhigh', 'max')).toBeNull()
     })
 
+    it('reads the dsh reasoning_effort config value (empty = provider default = null)', () => {
+        expect(getReasoningEffortForFlavor('dsh', 'max', 'low')).toBe('max')
+        expect(getReasoningEffortForFlavor('dsh', '', 'low')).toBeNull()
+        expect(getReasoningEffortForFlavor('dsh', null, 'low')).toBeNull()
+        expect(getReasoningEffortForFlavor('dsh', '  ', 'low')).toBeNull()
+    })
+
     it('keeps unset defaults for Codex/OpenCode and requires a real Pi effort', () => {
         expect(shouldShowReasoningStatusLabel('codex', null)).toBe(true)
         expect(shouldShowReasoningStatusLabel('opencode', null)).toBe(true)
@@ -66,5 +73,14 @@ describe('reasoning status metadata', () => {
         expect(shouldShowReasoningStatusLabel('claude', 'max')).toBe(false)
         expect(shouldShowReasoningStatusLabel('grok', 'max')).toBe(false)
         expect(shouldShowReasoningStatusLabel(null, 'max')).toBe(false)
+    })
+
+    it('shows the dsh chip only for an explicit thought level', () => {
+        expect(shouldShowReasoningStatusLabel('dsh', 'off')).toBe(true)
+        expect(shouldShowReasoningStatusLabel('dsh', 'max')).toBe(true)
+        // '' is DSH's "Provider default" — stay silent like Pi's unset effort.
+        expect(shouldShowReasoningStatusLabel('dsh', null)).toBe(false)
+        expect(shouldShowReasoningStatusLabel('dsh', '')).toBe(false)
+        expect(shouldShowReasoningStatusLabel('dsh', '   ')).toBe(false)
     })
 })

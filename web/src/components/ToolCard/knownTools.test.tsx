@@ -415,3 +415,77 @@ describe('getToolPresentation — request_user_input', () => {
         expect(presentation.subtitle).toBe('Continue?')
     })
 })
+
+describe('getToolPresentation — dsh lowercase snake aliases', () => {
+    // DSH tool_call updates carry kind:'other' with raw lowercase snake names;
+    // their cards must present like the capitalized twins.
+    it.each(['Bash', 'bash'])('titles %s cards from the command', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { command: 'git status --short' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('git status')
+        expect(presentation.subtitle).toBe('git status --short')
+    })
+
+    it.each(['TodoWrite', 'todo_write'])('renders %s as a non-minimal checklist card when items exist', (toolName) => {
+        const withItems = getToolPresentation({
+            toolName,
+            input: { todos: [{ id: '1', content: 'Ship the fix', status: 'in_progress' }] },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        expect(withItems.minimal).toBe(false)
+        expect(withItems.subtitle).toBe('1 item')
+
+        const withoutItems = getToolPresentation({
+            toolName,
+            input: { todos: [] },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        expect(withoutItems.minimal).toBe(true)
+    })
+
+    it.each([
+        ['Edit', 'edit'],
+        ['Write', 'write'],
+    ] as const)('titles %s and %s from the target file', (capitalized, lowercase) => {
+        for (const toolName of [capitalized, lowercase]) {
+            const presentation = getToolPresentation({
+                toolName,
+                input: { file_path: '/repo/web/src/app.ts', old_string: 'a', new_string: 'b' },
+                result: null,
+                childrenCount: 0,
+                description: null,
+                metadata: null,
+            })
+            // No session metadata → the raw path is the display path.
+            expect(presentation.title).toBe('/repo/web/src/app.ts')
+            expect(presentation.minimal).toBe(true)
+        }
+    })
+
+    it('presents apply_patch as a thin mutation chip', () => {
+        const presentation = getToolPresentation({
+            toolName: 'apply_patch',
+            input: { patch: '*** Begin Patch\n*** Update File: README.md' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Apply patch')
+        expect(presentation.minimal).toBe(true)
+    })
+})

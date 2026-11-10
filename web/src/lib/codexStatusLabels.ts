@@ -13,14 +13,14 @@ export function formatReasoningLabel(effort?: string | null, showLabel = true): 
 
 /**
  * Status metadata comes from different session fields by agent protocol:
- * Codex/OpenCode publish model reasoning effort, while Pi publishes effort.
+ * Codex/OpenCode/DSH publish model reasoning effort, while Pi publishes effort.
  */
 export function getReasoningEffortForFlavor(
     agentFlavor: string | null | undefined,
     modelReasoningEffort?: string | null,
     effort?: string | null
 ): string | null {
-    if (agentFlavor === 'codex' || agentFlavor === 'opencode') {
+    if (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh') {
         return modelReasoningEffort?.trim() || null
     }
     if (agentFlavor === 'pi') {
@@ -36,6 +36,8 @@ export function shouldShowReasoningStatusLabel(
     // Codex/OpenCode retain their existing explicit default label when unset.
     if (agentFlavor === 'codex' || agentFlavor === 'opencode') return true
     // Pi has no meaningful default for non-reasoning models; only show a real level.
+    // DSH is the same: '' (Provider default) stays silent, explicit levels show.
+    if (agentFlavor === 'dsh') return Boolean(reasoningEffort?.trim())
     return agentFlavor === 'pi' && Boolean(reasoningEffort?.trim())
 }
 

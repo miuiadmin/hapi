@@ -1089,7 +1089,19 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     AskUserQuestion: AskUserQuestionResultView,
     ExitPlanMode: MarkdownResultView,
     ask_user_question: AskUserQuestionResultView,
-    exit_plan_mode: MarkdownResultView
+    exit_plan_mode: MarkdownResultView,
+    // DSH emits raw lowercase snake tool names (kind:'other', title = the
+    // verbatim tool name). Alias them onto the same result views as their
+    // capitalized twins so dsh bash output, edit/write mutations, todo_write
+    // checklists, and web results render like Claude's capitalized tools.
+    bash: BashResultView,
+    edit: MutationResultView,
+    write: MutationResultView,
+    grep: LineListResultView,
+    glob: LineListResultView,
+    web_fetch: MarkdownResultView,
+    web_search: MarkdownResultView,
+    todo_write: TodoWriteResultView
 }
 
 const GoalResultView: ToolViewComponent = (props) => {

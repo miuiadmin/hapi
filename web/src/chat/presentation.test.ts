@@ -239,6 +239,26 @@ describe('getEventPresentation — agent error', () => {
     })
 })
 
+describe('getEventPresentation — status-line messages', () => {
+    // Agent status lines (e.g. the CLI's max_tokens truncation notice for dsh
+    // turns) arrive as plain `message` events and must render verbatim as the
+    // centered status row — no extra shaping needed.
+    it('renders a max_tokens truncation notice verbatim', () => {
+        const result = getEventPresentation({
+            type: 'message',
+            message: 'Response truncated: turn hit the max_tokens limit'
+        })
+
+        expect(result.icon).toBeNull()
+        expect(result.text).toBe('Response truncated: turn hit the max_tokens limit')
+    })
+
+    it('renders plain message events without mangling them', () => {
+        expect(getEventPresentation({ type: 'message', message: 'Turn complete' }).text).toBe('Turn complete')
+        expect(getEventPresentation({ type: 'message', message: 'Message' }).text).toBe('Message')
+    })
+})
+
 describe('getEventPresentation — thread goals', () => {
     it('formats goal status updates', () => {
         const result = getEventPresentation({
