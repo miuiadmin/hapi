@@ -102,6 +102,40 @@ export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
         .map((toolName) => `mcp__hapi__${toolName}`);
 }
 
+/**
+ * Race an ask_user escalation against the MCP request's cancellation signal
+ * (dsh sends notifications/cancelled when its 60s per-call timeout fires).
+ * On abort the tool resolves with skip semantics immediately instead of
+ * hanging until turn end; the underlying escalation promise is left to be
+ * superseded by the model's retry or canceled at 'Prompt finished'.
+ */
+export function raceAskUserEscalation<T extends { status: string }>(
+    escalate: Promise<T>,
+    signal: AbortSignal | undefined
+): Promise<T | { status: 'canceled'; reason: string }> {
+    if (!signal) return escalate;
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value: T | { status: 'canceled'; reason: string }) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            resolve(value);
+        };
+        const onAbort = () => {
+            finish({ status: 'canceled', reason: 'the question was cancelled (agent timeout or retry)' });
+        };
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+        escalate.then(finish, (error) => {
+            finish({ status: 'canceled', reason: error instanceof Error ? error.message : String(error) } as { status: 'canceled'; reason: string });
+        });
+    });
+}
+
 function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
@@ -549,13 +583,24 @@ function createHapiMcpServer(
         });
 
         mcp.registerTool<any, any>('ask_user_question', {
-            description: 'Ask brief, direct, self-contained questions about missing information, preferences, or decisions when you need a human answer before proceeding. Use user-facing terms; assume no knowledge of background work or internal names. The user answers through the HAPI chat UI (interactive option cards). The result is an answer batch with one item per question id; an item with empty selected and no custom means the user skipped that question: continue without it, do not ask it again, and do not treat the skip as permission.',
+            description: 'Ask brief, direct, self-contained questions about missing information, preferences, or decisions when you need a human answer before proceeding. Use user-facing terms; assume no knowledge of background work or internal names. The user answers through the HAPI chat UI (interactive option cards) and may take a while; if this call is cancelled (e.g. a 60s agent-side timeout) the questions may be re-asked. The result is an answer batch with one item per question id; an item with empty selected and no custom means the user skipped that question: continue without it, do not ask it again, and do not treat the skip as permission.',
             title: 'Ask User Question',
             inputSchema: askUserInputSchema,
-        }, async (args: AskUserQuestionInput) => {
+        }, async (args: AskUserQuestionInput, extra: { signal?: AbortSignal }) => {
             logger.debug('[hapiMCP] ask_user_question:', JSON.stringify(args.questions?.length ?? 0), 'question(s)');
             try {
-                const outcome = await askUserTool.escalate(args);
+                // DSH enforces a 60s per-call MCP timeout it cannot raise
+                // (verified: the ACP mcpServers wire schema strips any
+                // timeout override). When the timeout fires the client sends
+                // notifications/cancelled and extra.signal aborts. Without
+                // this race the escalation — and its interactive card — hang
+                // until the turn ends while the model retries with a SECOND
+                // card, stacking dialogs the user already started filling.
+                // On cancel, return skip semantics immediately so the retry
+                // cycle stays clean; the pending card is superseded by the
+                // retry's escalation (AcpPermissionHandler.askUser) or
+                // canceled at turn end.
+                const outcome = await raceAskUserEscalation(askUserTool.escalate(args), extra?.signal);
                 if (outcome.status === 'answered') {
                     return {
                         content: [
