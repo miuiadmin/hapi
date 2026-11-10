@@ -175,6 +175,15 @@ export function getModelOptionsForFlavor(
     if (flavor === 'dsh') {
         return []
     }
+    // Hermes is the same shape as DSH: model ids are opaque config-option
+    // strings (`custom:newapi:...`) whose catalog arrives via the session's
+    // ListHermesModels RPC. Until that catalog is wired through the hub, an
+    // empty list must win over the Claude fallback — surfacing Claude presets
+    // in a Hermes session would let the picker enqueue `sonnet`-style ids the
+    // ACP server rejects with -32602.
+    if (flavor === 'hermes') {
+        return []
+    }
     if (flavor === 'cursor') {
         return withCurrentModelOption([{ value: 'auto', label: CURSOR_AUTO_MODEL_LABEL }], currentModel)
     }
@@ -245,6 +254,11 @@ export function getNextModelForFlavor(
     // DSH: same guard for the Ctrl/Cmd+M cycler — without the catalog the
     // shortcut must keep the current model, never cycle into Claude presets.
     if (flavor === 'dsh') {
+        return normalizeCurrentModel(currentModel)
+    }
+    // Hermes: same guard for the Ctrl/Cmd+M cycler — without a catalog the
+    // shortcut must keep the current model, never cycle into Claude presets.
+    if (flavor === 'hermes') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'cursor') {

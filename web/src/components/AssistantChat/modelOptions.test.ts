@@ -170,6 +170,15 @@ describe('getModelOptionsForFlavor', () => {
         expect(getModelOptionsForFlavor('dsh', '["deepseek-official","deepseek-flash"]', [])).toEqual([])
     })
 
+    it('returns an empty list for hermes flavor (no claude fallback, no catalog leak)', () => {
+        // Hermes model ids are opaque config-option strings; until the
+        // ListHermesModels catalog is wired through the hub the picker must
+        // stay empty rather than surface Claude presets the ACP server
+        // rejects with -32602.
+        expect(getModelOptionsForFlavor('hermes', null)).toEqual([])
+        expect(getModelOptionsForFlavor('hermes', 'custom:newapi:glm-5.3', [])).toEqual([])
+    })
+
     it('keeps the supplied dsh catalog options including the Default reset entry', () => {
         const options = getModelOptionsForFlavor('dsh', null, [
             { value: null, label: 'Default' },
@@ -383,6 +392,13 @@ describe('getNextModelForFlavor', () => {
         const flash = '["deepseek-official","deepseek-flash"]'
         expect(getNextModelForFlavor('dsh', flash)).toBe(flash)
         expect(getNextModelForFlavor('dsh', flash, [])).toBe(flash)
+    })
+
+    it('keeps the current hermes model when no catalog has loaded (no claude cycling)', () => {
+        const model = 'custom:newapi:glm-5.3'
+        expect(getNextModelForFlavor('hermes', model)).toBe(model)
+        expect(getNextModelForFlavor('hermes', model, [])).toBe(model)
+        expect(getNextModelForFlavor('hermes', null)).toBeNull()
     })
 
     it('keeps the current cursor model when the dynamic list has not loaded', () => {
