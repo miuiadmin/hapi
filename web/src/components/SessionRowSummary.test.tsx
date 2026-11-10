@@ -203,3 +203,32 @@ describe('SessionRowSummary time label', () => {
         expect(screen.getByText('just imported from Codex')).toBeInTheDocument()
     })
 })
+
+describe('SessionRowSummary residency fade', () => {
+    beforeEach(() => {
+        localStorage.clear()
+    })
+
+    // PR #2362 intent on the stack's row shape: the title line dims when the
+    // session is not resident, so "who is still in memory" survives a
+    // whole-list scan; resident rows stay at full strength.
+    it('dims the title line when the session is not resident', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ active: false, backgroundTaskCount: 0 })} />
+            </I18nProvider>
+        )
+        const faded = container.querySelector('.opacity-50')
+        expect(faded).not.toBeNull()
+        expect(faded!.textContent).toContain('Background demo')
+    })
+
+    it('keeps resident rows at full strength', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ active: true, backgroundTaskCount: 0 })} />
+            </I18nProvider>
+        )
+        expect(container.querySelector('.opacity-50')).toBeNull()
+    })
+})

@@ -11,6 +11,7 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { MessageService } from './messageService'
 import type { EventPublisher } from './eventPublisher'
 import { Store } from '../store'
@@ -1911,5 +1912,36 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
 
         const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
         expect(stillQueued.find((m) => m.localId === 'local-future')?.invokedAt).toBeNull()
+    })
+})
+
+describe('tool-call upsert write skip', () => {
+    function toolCallContent(callId: string, fields: { input?: unknown; status?: string } = {}): unknown {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId,
+                    name: 'Bash',
+                    ...(fields.input !== undefined ? { input: fields.input } : {}),
+                    ...(fields.status !== undefined ? { status: fields.status } : {})
+                }
+            }
+        }
+    }
+
+    it('does not rewrite the row when a re-emitted tick changes nothing', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'toolcall-noop-tick')
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { input: { command: 'ls' }, status: 'in_progress' }), 'call-1')
+        const repeat = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { input: { command: 'ls' }, status: 'in_progress' }), 'call-1')
+
+        expect(repeat.updated).toBe(true)
+        expect(repeat.message.id).toBe(first.message.id)
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        store.close()
     })
 })
