@@ -1,12 +1,27 @@
 import Foundation
 import HapiProtocol
 
-/// Presentation aliases only. Keep the recorded name/input and chat grouping intact.
+/// Presentation aliases only. Keep the recorded name/input and chat grouping
+/// intact. DSH emits raw lowercase snake tool names (kind `'other'`, title =
+/// the verbatim name); they alias onto their capitalized twins so the cards,
+/// bodies and result styles render richly (web `knownTools.tsx` lowercase
+/// entries + the `_all`/`_results` view registries). The views degrade
+/// safely on foreign shapes — every rich view falls back to the generic
+/// JSON/title path when its expected input keys are missing.
 func toolPresentationName(_ name: String) -> String {
     let name = name.hasPrefix("functions.") ? String(name.dropFirst("functions.".count)) : name
     switch name {
     case "exec_command": return "Bash"
     case "apply_patch": return "CodexPatch"
+    case "bash": return "Bash"
+    case "read": return "Read"
+    case "edit": return "Edit"
+    case "write": return "Write"
+    case "grep": return "Grep"
+    case "glob": return "Glob"
+    case "web_fetch": return "WebFetch"
+    case "web_search": return "WebSearch"
+    case "todo_write": return "TodoWrite"
     default: return name
     }
 }

@@ -31,6 +31,11 @@ struct ToolGroupClassificationTests {
         #expect(getToolGroupActionKind(tool("apply_patch")) == .mutation)
         #expect(getToolGroupActionKind(tool("web_fetch")) == .web)
         #expect(getToolGroupActionKind(tool("web_search")) == .web)
+        // Berry's `find` carries kind 'other', so only the name fallback
+        // bucket can classify it (the native-kind set already knows `find`).
+        #expect(getToolGroupActionKind(tool("find")) == .search)
+        #expect(getToolGroupActionKind(tool("find", nativeKind: "other")) == .search)
+        #expect(getToolGroupActionKind(tool("Find", nativeKind: "other")) == .search)
         // Not in any web table — stays `.other` (web parity).
         #expect(getToolGroupActionKind(tool("read_image")) == .other)
     }
@@ -91,6 +96,7 @@ struct ToolGroupClassificationTests {
     @Test func ordinaryToolsRemainEligible() {
         #expect(isEligibleForToolGrouping(tool("bash")))
         #expect(isEligibleForToolGrouping(tool("read")))
+        #expect(isEligibleForToolGrouping(tool("find")))
         #expect(isEligibleForToolGrouping(tool("apply_patch")))
         #expect(isEligibleForToolGrouping(tool("WebFetch")))
     }

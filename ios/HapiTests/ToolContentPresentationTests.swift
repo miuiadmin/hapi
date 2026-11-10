@@ -25,6 +25,39 @@ final class ToolContentPresentationTests: XCTestCase {
         XCTAssertNil(toolSourceInput(.object(["unknown": .bool(true)]), keys: ["patch"]))
     }
 
+    func testDshLowercaseSnakeNamesResolveOntoTheirCapitalizedTwins() throws {
+        // Web `knownTools.tsx` + the `_all`/`_results` registries alias DSH's
+        // raw lowercase names onto the same views as their twins; the
+        // presentation-name alias is the mobile equivalent.
+        let aliases: [(String, String)] = [
+            ("bash", "Bash"), ("read", "Read"), ("edit", "Edit"), ("write", "Write"),
+            ("grep", "Grep"), ("glob", "Glob"), ("web_fetch", "WebFetch"),
+            ("web_search", "WebSearch"), ("todo_write", "TodoWrite"),
+            ("functions.apply_patch", "CodexPatch"), ("functions.exec_command", "Bash"),
+        ]
+        for (raw, twin) in aliases {
+            XCTAssertEqual(toolPresentationName(raw), twin, raw)
+        }
+        // Foreign names stay untouched (no forced casing or prefix strip).
+        XCTAssertEqual(toolPresentationName("read_image"), "read_image")
+        XCTAssertEqual(toolPresentationName("Bash"), "Bash")
+        XCTAssertEqual(toolPresentationName("update_plan"), "update_plan")
+    }
+
+    func testAliasedResultStylesMatchTheirTwinsAndDegradeOnForeignShapes() throws {
+        // Result-view selection follows the alias: dsh web results render
+        // markdown, reads render source, bash renders terminal — while empty
+        // or foreign inputs fall back through the generic paths instead of
+        // crashing on the twin's expected keys.
+        XCTAssertEqual(toolResultStyle(tool("web_fetch")), .markdown)
+        XCTAssertEqual(toolResultStyle(tool("web_search")), .markdown)
+        XCTAssertEqual(toolResultStyle(tool("read")), .code(nil))
+        XCTAssertEqual(toolResultStyle(tool("bash")), .terminal)
+        XCTAssertEqual(toolResultStyle(tool("read", state: .error)), .terminal)
+        XCTAssertEqual(toolResultStyle(tool("read", input: try json(#"{"file_path":"a.kt"}"#))), .code("kotlin"))
+        XCTAssertEqual(toolResultStyle(tool("grep", input: try json(#"{"pattern":"x"}"#))), .terminal)
+    }
+
     func testPlanProposalsReadInputAndPreserveTheCompleteDocument() throws {
         let plan = "\n# 计划 👩🏽‍💻\n\n" + String(repeating: "- Inspect **input.plan**  \n", count: 1_000) + "last  \n"
         for name in ["ExitPlanMode", "exit_plan_mode"] {

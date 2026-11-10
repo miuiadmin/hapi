@@ -169,8 +169,9 @@ public enum NewSessionLogic {
         codexFastTierVisible: Bool
     ) -> SpawnRequest {
         let agent = form.agent
-        // Session-only catalogs (hermes/berry) have nothing to pick at create
-        // time — their picker appears in-chat once the agent is running.
+        // Berry has no model catalog at all (spawn-time BERRY_AGENT_MODEL
+        // env only); session-only catalogs (hermes) have nothing to pick at
+        // create time — their picker appears in-chat once the agent runs.
         let catalogScope = AgentModelCatalog.scope(for: agent)
         let hasModelPicker = agent == .claude || agent == .codex
             || (catalogScope != nil && catalogScope != .session)

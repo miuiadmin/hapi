@@ -129,10 +129,12 @@ class CatalogTest {
         assertTrue(Flavors.supportsEffort("pi"))
         assertFalse(Flavors.supportsEffort("codex"))
         assertFalse(Flavors.supportsEffort(null))
-        // Every known flavor supports model change (dsh included — shared
-        // FLAVOR_CAPS grants it ModelChange).
-        assertTrue(AgentFlavor.KNOWN.all { Flavors.supportsModelChange(it.id) })
+        // Every known flavor supports model change except berry — its only
+        // model lever is the spawn-time BERRY_AGENT_MODEL env, so it
+        // advertises no runtime switching.
+        assertTrue(AgentFlavor.KNOWN.all { it == AgentFlavor.Berry || Flavors.supportsModelChange(it.id) })
         assertTrue(Flavors.supportsModelChange("dsh"))
+        assertFalse(Flavors.supportsModelChange("berry"))
         assertFalse(Flavors.supportsModelChange("unknown"))
         assertEquals("Antigravity", Flavors.label("agy"))
         assertEquals("Grok Build", Flavors.label("grok"))

@@ -417,7 +417,8 @@ func toolCardPresentation(_ tool: ChatToolCall, basePath: String?) -> ToolCardPr
     case "TeamDelete":
         return ToolCardPresentation(icon: ToolIcon.team, title: String(localized: "Delete Team"), subtitle: nil)
 
-    case "TodoWrite", "todo_write":
+    // `todo_write` (DSH) arrives through the toolPresentationName alias.
+    case "TodoWrite":
         return ToolCardPresentation(icon: ToolIcon.idea, title: String(localized: "Todo list"), subtitle: nil)
 
     case "update_plan":

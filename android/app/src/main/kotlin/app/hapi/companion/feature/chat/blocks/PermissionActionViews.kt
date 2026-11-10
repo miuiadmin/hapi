@@ -65,6 +65,10 @@ import app.hapi.protocol.catalog.Flavors
  * - codex family (incl. cursor and codex-dialect tool names): Allow
  *   (`decision: approved`) / Abort (`decision: abort`) + overflow
  *   Allow-for-session (`decision: approved_for_session`);
+ * - dsh: Allow / Deny only — its request_permission carries exactly
+ *   allow-once/reject-once (one-shot, no durable grants), so the footer must
+ *   never offer "Allow for session" / "Allow all edits" (`PermissionFooter`
+ *   `isDshSession` gate);
  * - everyone else: Allow (`{}`) / Deny (`{}`) + overflow Allow-for-session
  *   (claude: `allowTools`) and, for claude edit tools, Allow-all-edits
  *   (`mode: acceptEdits`).
@@ -116,6 +120,34 @@ private val EDIT_TOOLS = setOf("Edit", "MultiEdit", "Write", "NotebookEdit")
 private val HIDE_ALLOW_FOR_SESSION = EDIT_TOOLS +
     setOf("exit_plan_mode", "ExitPlanMode", "CursorCreatePlan")
 
+/**
+ * UI projection of the existing flavor/tool gates, not a new permission
+ * policy (iOS `PermissionActionOptions` twin). The dsh gate mirrors web's
+ * `isDshSession`: DSH permissions are strictly one-shot, so no durable
+ * "for session"/"all edits" grant may be offered. The explicit `!dsh` on the
+ * claude-only all-edits button keeps that invariant local instead of
+ * relying on the claude gate.
+ */
+internal data class PermissionActionOptions(
+    val denyAction: PermissionAction,
+    val canAllowForSession: Boolean,
+    val canAllowAllEdits: Boolean,
+) {
+    val hasOverflow: Boolean get() = canAllowForSession || canAllowAllEdits
+
+    companion object {
+        fun from(flavor: String?, toolName: String): PermissionActionOptions {
+            val codex = isCodexUx(flavor, toolName)
+            val dsh = flavor == "dsh"
+            return PermissionActionOptions(
+                denyAction = if (codex) PermissionAction.Abort else PermissionAction.Deny,
+                canAllowForSession = !dsh && (codex || toolName !in HIDE_ALLOW_FOR_SESSION),
+                canAllowAllEdits = !dsh && flavor == "claude" && toolName in EDIT_TOOLS,
+            )
+        }
+    }
+}
+
 @Composable
 private fun PermissionActionsRow(
     tool: ChatToolCall,
@@ -130,9 +162,8 @@ private fun PermissionActionsRow(
         return
     }
     val resolving = override == PermissionRowOverride.Resolving
-    val codex = isCodexUx(flavor, tool.name)
-    val canAllowForSession = !codex && tool.name !in HIDE_ALLOW_FOR_SESSION
-    val canAllowAllEdits = flavor == "claude" && tool.name in EDIT_TOOLS
+    val options = PermissionActionOptions.from(flavor, tool.name)
+    val codex = options.denyAction == PermissionAction.Abort
     var overflowOpen by remember { mutableStateOf(false) }
 
     Row(
@@ -151,7 +182,7 @@ private fun PermissionActionsRow(
         }
         OutlinedButton(
             onClick = {
-                onAction(requestId, if (codex) PermissionAction.Abort else PermissionAction.Deny)
+                onAction(requestId, options.denyAction)
             },
             enabled = !resolving,
             modifier = Modifier.weight(1f),
@@ -163,11 +194,11 @@ private fun PermissionActionsRow(
         }
         if (resolving) {
             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-        } else if (codex || canAllowForSession || canAllowAllEdits) {
+        } else if (options.hasOverflow) {
             Box {
                 TextButton(onClick = { overflowOpen = true }) { Text("⋯") }
                 DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
-                    if (codex || canAllowForSession) {
+                    if (options.canAllowForSession) {
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.chat_perm_allow_for_session)) },
                             onClick = {
@@ -176,7 +207,7 @@ private fun PermissionActionsRow(
                             },
                         )
                     }
-                    if (canAllowAllEdits) {
+                    if (options.canAllowAllEdits) {
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.chat_perm_allow_all_edits)) },
                             onClick = {
@@ -614,6 +645,13 @@ private fun PermissionActionsPreview() {
                     tool = previewToolCall("p3", "CodexBash", input = mapOf("command" to "ls")).tool,
                     requestId = "p3",
                     flavor = "codex",
+                    override = null,
+                    onAction = { _, _ -> },
+                )
+                PermissionActionsRow(
+                    tool = previewToolCall("p5", "edit", input = mapOf("file_path" to "/a/b.ts")).tool,
+                    requestId = "p5",
+                    flavor = "dsh",
                     override = null,
                     onAction = { _, _ -> },
                 )

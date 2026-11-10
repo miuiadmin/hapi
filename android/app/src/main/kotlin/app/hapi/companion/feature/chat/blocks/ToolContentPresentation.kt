@@ -8,10 +8,27 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-/** Presentation aliases only; never rewrite the recorded call or grouping input. */
+/**
+ * Presentation aliases only; never rewrite the recorded call or grouping input.
+ * DSH emits raw lowercase snake tool names (kind `'other'`, title = the
+ * verbatim name); alias them onto their capitalized twins so the cards, bodies
+ * and result styles render richly (web `knownTools.tsx` lowercase entries +
+ * the `_all`/`_results` view registries). The branches degrade safely on
+ * foreign shapes — every rich view falls back to the generic JSON/title path
+ * when its expected input keys are missing.
+ */
 internal fun toolPresentationName(name: String): String = when (val local = name.removePrefix("functions.")) {
     "exec_command" -> "Bash"
     "apply_patch" -> "CodexPatch"
+    "bash" -> "Bash"
+    "read" -> "Read"
+    "edit" -> "Edit"
+    "write" -> "Write"
+    "grep" -> "Grep"
+    "glob" -> "Glob"
+    "web_fetch" -> "WebFetch"
+    "web_search" -> "WebSearch"
+    "todo_write" -> "TodoWrite"
     else -> local
 }
 

@@ -157,6 +157,7 @@ final class PermissionActionPresentationTests: XCTestCase {
             ("codex", "Edit", .abort, true, false),
             ("cursor", "CursorBash", .abort, true, false),
             ("gemini", "GeminiBash", .abort, true, false),
+            ("hermes", "Bash", .deny, true, false),
         ] {
             let options = PermissionActionOptions(flavor: flavor, toolName: tool)
             XCTAssertEqual(options.denyAction, deny, "\(flavor), \(tool)")
@@ -167,6 +168,19 @@ final class PermissionActionPresentationTests: XCTestCase {
         XCTAssertEqual(PermissionActionOptions(flavor: nil, toolName: "CodexPermission").denyAction, .abort)
         for tool in PermissionGates.editTools {
             XCTAssertTrue(PermissionActionOptions(flavor: "claude", toolName: tool).canAllowAllEdits)
+        }
+    }
+
+    func testDshSessionsOfferOnlyOneShotAllowAndReject() {
+        // Web `isDshSession`: DSH's request_permission carries exactly
+        // allow-once/reject-once, so neither durable approval is offered —
+        // not even for a tool whose name would otherwise unlock them.
+        for tool in ["Bash", "Edit", "Write", "TodoWrite", "exit_plan_mode"] {
+            let options = PermissionActionOptions(flavor: "dsh", toolName: tool)
+            XCTAssertEqual(options.denyAction, .deny, tool)
+            XCTAssertFalse(options.canAllowForSession, tool)
+            XCTAssertFalse(options.canAllowAllEdits, tool)
+            XCTAssertFalse(options.hasMore, tool)
         }
     }
 

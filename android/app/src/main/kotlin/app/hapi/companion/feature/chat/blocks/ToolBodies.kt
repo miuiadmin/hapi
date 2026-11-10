@@ -53,7 +53,10 @@ import kotlinx.serialization.json.JsonPrimitive
  *   derives a word diff from `old_string`/`new_string`; ported minimally);
  * - `Write` → the written content as a code block;
  * - `CodexDiff` (and any input/result that parses as a unified diff) → [DiffView];
- * - `TodoWrite`/`update_plan`/`todo_write` (DSH) → checklist rows;
+ * - `TodoWrite`/`update_plan` → checklist rows;
+ * - DSH's raw lowercase names (`bash`, `edit`, `write`, `todo_write`, …)
+ *   resolve through [toolPresentationName] onto the twins above; every
+ *   branch falls back to the generic JSON view on foreign input shapes;
  * - `ExitPlanMode`/`exit_plan_mode` → complete Markdown proposal from input;
  * - Ask/RequestUserInput → questions + selected answers, read-only;
  * - anything else → pretty-printed JSON input, then the generic result.
@@ -191,7 +194,8 @@ private fun ToolInputSection(tool: ChatToolCall) {
             }
         }
 
-        name == "TodoWrite" || name == "update_plan" || name == "todo_write" -> {
+        // `todo_write` (DSH) arrives through the toolPresentationName alias.
+        name == "TodoWrite" || name == "update_plan" -> {
             val items = checklistItems(input)
             if (items.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
