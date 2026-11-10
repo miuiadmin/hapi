@@ -118,37 +118,117 @@ public struct ToolGroupingOptions: Sendable {
 
 // MARK: - Name tables
 
+/// Port of `normalizeToolIdentifier` — tool names/kinds are matched after
+/// trimming, lowercasing and stripping every non-alphanumeric character, so
+/// every spelling variant of a tool (`TodoWrite`, `todo_write`, `TODO-WRITE`)
+/// resolves to the same identifier (`todowrite`). DSH reports raw lowercase
+/// snake names (`bash`, `read`, `apply_patch`, `todo_write`), which only
+/// classify through this normalization.
+func normalizeToolIdentifier(_ value: String?) -> String {
+    guard let value else { return "" }
+    let lowercased = value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    return String(String.UnicodeScalarView(
+        lowercased.unicodeScalars.filter { scalar in
+            (scalar.value >= 97 && scalar.value <= 122) || (scalar.value >= 48 && scalar.value <= 57)
+        }
+    ))
+}
+
 private let planToolNames: Set<String> = [
-    "TodoWrite",
-    "update_plan",
-    "ExitPlanMode",
-    "exit_plan_mode",
-    "CodexReasoning",
+    "todowrite",
+    "updateplan",
+    "exitplanmode",
+    "codexreasoning",
 ]
 
 private let milestoneToolNames: Set<String> = [
-    "Task",
-    "Agent",
-    "CodexAgent",
-    "TeamCreate",
-    "TeamDelete",
-    "SendMessage",
-    "AgyTaskLog",
-    "Skill",
-    "spawn_agent",
-    "send_input",
-    "send_message",
-    "resume_agent",
-    "followup_task",
-    "wait_agent",
-    "close_agent",
-    "interrupt_agent",
-    "list_agents",
+    "task",
+    "agent",
+    "codexagent",
+    "teamcreate",
+    "teamdelete",
+    "sendmessage",
+    // agy's transitional task-log chip — keep it standalone (like SendMessage)
+    // so it reads as a thin marker instead of being folded into a tool group.
+    "agytasklog",
+    "agyasynctask",
+    "agyerror",
+    "skill",
+    "spawnagent",
+    "sendinput",
+    "resumeagent",
+    "followuptask",
+    "waitagent",
+    "closeagent",
+    "interruptagent",
+    "listagents",
 ]
 
 private let interactiveToolNames: Set<String> = [
-    "CodexPermission",
+    "codexpermission",
 ]
+
+private let readToolNames: Set<String> = [
+    "read",
+    "notebookread",
+    "readfile",
+    "viewfile",
+    "fileread",
+]
+
+private let searchToolNames: Set<String> = [
+    "search",
+    "grep",
+    "glob",
+    "ls",
+    "listdir",
+    "listfiles",
+    "searchfiles",
+    "grepsearch",
+    "contentsearch",
+]
+
+private let commandToolNames: Set<String> = [
+    "bash",
+    "codexbash",
+    "shell",
+    "shellcommand",
+    "runshellcommand",
+    "runcommand",
+    "executecommand",
+    "terminal",
+]
+
+private let mutationToolNames: Set<String> = [
+    "edit",
+    "multiedit",
+    "write",
+    "notebookedit",
+    "codexpatch",
+    "codexdiff",
+    "editfile",
+    "writefile",
+    "replacefilecontent",
+    "writetofile",
+    "applypatch",
+    "patch",
+]
+
+private let webToolNames: Set<String> = [
+    "webfetch",
+    "websearch",
+    "fetchurl",
+    "openurl",
+    "urlfetch",
+]
+
+private let readNativeKinds: Set<String> = ["read", "readfile", "fileread", "view", "viewfile"]
+private let searchNativeKinds: Set<String> = ["search", "grep", "find", "glob"]
+private let commandNativeKinds: Set<String> = [
+    "execute", "shell", "bash", "run", "runshell", "runshellcommand", "cmd", "terminal", "command",
+]
+private let mutationNativeKinds: Set<String> = ["edit", "write", "writefile", "replace", "fileedit", "modify", "patch"]
+private let webNativeKinds: Set<String> = ["web", "fetch", "webfetch", "websearch", "openurl"]
 
 /// Port of `isAskUserQuestionToolName` (web ToolCard/askUserQuestion.ts).
 public func isAskUserQuestionToolName(_ toolName: String) -> Bool {
@@ -182,16 +262,19 @@ private func normalizeCommandInput(_ input: JSONValue?) -> String? {
 
 /// Port of `getToolGroupActionKind`.
 public func getToolGroupActionKind(_ block: ToolCallBlock) -> ToolGroupActionKind {
-    let name = block.tool.name
+    let nativeKind = normalizeToolIdentifier(block.tool.nativeKind)
+    if webNativeKinds.contains(nativeKind) { return .web }
+    if readNativeKinds.contains(nativeKind) { return .read }
+    if searchNativeKinds.contains(nativeKind) { return .search }
+    if commandNativeKinds.contains(nativeKind) { return .command }
+    if mutationNativeKinds.contains(nativeKind) { return .mutation }
 
-    if name == "Read" || name == "NotebookRead" { return .read }
-    if name == "Grep" || name == "Glob" || name == "LS" { return .search }
-    if name == "Bash" || name == "CodexBash" || name == "shell_command" || name == "run_shell_command" { return .command }
-    if name == "Edit" || name == "MultiEdit" || name == "Write" || name == "NotebookEdit"
-        || name == "CodexPatch" || name == "CodexDiff" {
-        return .mutation
-    }
-    if name == "WebFetch" || name == "WebSearch" { return .web }
+    let name = normalizeToolIdentifier(block.tool.name)
+    if webToolNames.contains(name) { return .web }
+    if readToolNames.contains(name) { return .read }
+    if searchToolNames.contains(name) { return .search }
+    if commandToolNames.contains(name) { return .command }
+    if mutationToolNames.contains(name) { return .mutation }
     return .other
 }
 
@@ -276,7 +359,7 @@ private func summarizeToolGroup(_ tools: [ToolCallBlock]) -> ToolGroupSummary {
 // MARK: - Eligibility
 
 private func isInteractiveToolBlock(_ block: ToolCallBlock) -> Bool {
-    interactiveToolNames.contains(block.tool.name)
+    interactiveToolNames.contains(normalizeToolIdentifier(block.tool.name))
         || block.tool.permission?.status == .pending
         || isAskUserQuestionToolName(block.tool.name)
         || isRequestUserInputToolName(block.tool.name)
@@ -284,9 +367,10 @@ private func isInteractiveToolBlock(_ block: ToolCallBlock) -> Bool {
 
 /// Port of `isEligibleForToolGrouping`.
 public func isEligibleForToolGrouping(_ block: ToolCallBlock) -> Bool {
+    let normalizedName = normalizeToolIdentifier(block.tool.name)
     if isSubagentToolName(block.tool.name) { return false }
-    if planToolNames.contains(block.tool.name) { return false }
-    if milestoneToolNames.contains(block.tool.name) { return false }
+    if planToolNames.contains(normalizedName) { return false }
+    if milestoneToolNames.contains(normalizedName) { return false }
     if isInteractiveToolBlock(block) { return false }
     // Classification selects the group family; shared Codex `unknown`
     // agent commands still belong in ordinary groups. User shell stays separate.

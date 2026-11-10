@@ -12,7 +12,7 @@ import SwiftUI
 /// - `Write` → the written content as a code block;
 /// - `CodexDiff` (and any input/result that parses as a unified diff) →
 ///   `DiffTextView`;
-/// - `TodoWrite`/`update_plan` → checklist rows;
+/// - `TodoWrite`/`update_plan`/`todo_write` (DSH) → checklist rows;
 /// - `ExitPlanMode`/`exit_plan_mode` → complete Markdown proposal from input;
 /// - Ask/RequestUserInput → questions + selected answers, read-only;
 /// - anything else → pretty-printed JSON input, then the generic result.
@@ -143,7 +143,7 @@ private struct ToolInputSection: View {
             } else {
                 GenericJSONInput(input: input)
             }
-        } else if name == "TodoWrite" || name == "update_plan" {
+        } else if name == "TodoWrite" || name == "update_plan" || name == "todo_write" {
             let items = checklistItems(input)
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {

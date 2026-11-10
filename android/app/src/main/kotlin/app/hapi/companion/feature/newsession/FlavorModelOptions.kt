@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.newsession
 
 import app.hapi.protocol.wire.CopilotModelSummary
+import app.hapi.protocol.wire.DshModelSummary
 import app.hapi.protocol.wire.GrokModelSummary
 import app.hapi.protocol.wire.KimiModelSummary
 import app.hapi.protocol.wire.PiModelSummary
@@ -99,6 +100,18 @@ object FlavorModelOptions {
                 }
                 OptionItem(model.modelId, label)
             }
+
+    // ------------------------------------------------------------------ dsh --
+
+    /**
+     * DSH options (web NewSession `dsh` ModelSelector): a Default (`auto`)
+     * row plus one row per discovered model — ids are opaque ACP
+     * config-option values (`["provider","model"]` tuples flattened
+     * server-side) sent back verbatim; labels from `name`, else the raw id.
+     */
+    fun dshModelOptions(models: List<DshModelSummary>): List<OptionItem> =
+        listOf(OptionItem("auto", "Default")) +
+            models.map { OptionItem(it.modelId, it.name ?: it.modelId) }
 
     // ------------------------------------------------------------------- pi --
 

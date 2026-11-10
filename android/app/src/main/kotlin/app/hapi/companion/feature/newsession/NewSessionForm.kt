@@ -18,7 +18,7 @@ data class NewSessionForm(
     val directory: String = "",
     /** Flavor id from [AgentFlavor.CREATABLE]. */
     val agent: String = "claude",
-    /** `'auto'` = no explicit model. Flavor-specific meaning: claude presets, codex/opencode/grok/copilot/kimi/pi catalog ids, agy catalog ids, cursor ACP wire ids (`auto` is still sent for cursor). */
+    /** `'auto'` = no explicit model. Flavor-specific meaning: claude presets, codex/opencode/grok/copilot/kimi/pi catalog ids, agy/dsh catalog ids (dsh: opaque `["provider","model"]` tuples), cursor ACP wire ids (`auto` is still sent for cursor). */
     val model: String = "auto",
     /** Cursor only: the dual picker's base row (web `cursorSelectedBase`); wire lives in [model]. */
     val cursorSelectedBase: String = "auto",
@@ -148,7 +148,7 @@ object NewSessionLogic {
      * Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field port
      * of the web `handleCreate` mapping:
      * - `model` for every flavor picker: claude presets, codex/opencode/grok/
-     *   copilot/kimi/pi/agy catalog ids (only when not `'auto'`); cursor always
+     *   copilot/kimi/pi/agy/dsh catalog ids (only when not `'auto'`); cursor always
      *   sends — `'auto'` or the exact wire id;
      * - `effort` for claude/grok/pi when not `'auto'`; `modelReasoningEffort`
      *   for codex/opencode when not `'default'`;
@@ -172,7 +172,9 @@ object NewSessionLogic {
         val resolvedModel = when (agent) {
             // Cursor pins Auto explicitly instead of omitting `--model`.
             "cursor" -> form.model.trim().ifEmpty { "auto" }
-            "claude", "codex", "opencode", "agy", "grok", "copilot", "kimi", "pi" ->
+            // dsh model ids are opaque ACP config-option values
+            // (`["provider","model"]` tuples) sent back verbatim.
+            "claude", "codex", "opencode", "agy", "grok", "copilot", "kimi", "pi", "dsh" ->
                 form.model.trim().takeIf { it.isNotEmpty() && it != "auto" }
             else -> null
         }

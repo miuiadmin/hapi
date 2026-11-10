@@ -53,7 +53,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *   derives a word diff from `old_string`/`new_string`; ported minimally);
  * - `Write` → the written content as a code block;
  * - `CodexDiff` (and any input/result that parses as a unified diff) → [DiffView];
- * - `TodoWrite`/`update_plan` → checklist rows;
+ * - `TodoWrite`/`update_plan`/`todo_write` (DSH) → checklist rows;
  * - `ExitPlanMode`/`exit_plan_mode` → complete Markdown proposal from input;
  * - Ask/RequestUserInput → questions + selected answers, read-only;
  * - anything else → pretty-printed JSON input, then the generic result.
@@ -191,7 +191,7 @@ private fun ToolInputSection(tool: ChatToolCall) {
             }
         }
 
-        name == "TodoWrite" || name == "update_plan" -> {
+        name == "TodoWrite" || name == "update_plan" || name == "todo_write" -> {
             val items = checklistItems(input)
             if (items.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -387,7 +387,7 @@ internal fun languageForPath(path: String?): String? {
 
 private fun JsonPrimitive.contentOrNullIfNotString(): String? = if (isString) content else null
 
-/** Checklist row state + text for TodoWrite `todos` / update_plan `plan` items. */
+/** Checklist row state + text for TodoWrite `todos` / update_plan `plan` / todo_write (DSH) `todos` items. */
 private data class ChecklistItem(val state: ChecklistState, val text: String)
 
 private enum class ChecklistState { DONE, IN_PROGRESS, PENDING }

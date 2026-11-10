@@ -27,6 +27,8 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.CopilotModelSummary
 import app.hapi.protocol.wire.CopilotModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
+import app.hapi.protocol.wire.DshModelSummary
+import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.GrokModelSummary
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.KimiModelSummary
@@ -109,6 +111,7 @@ class NewSessionStrings(
     val copilotLoadFailed: String = "Failed to load Copilot models",
     val kimiLoadFailed: String = "Failed to load Kimi models",
     val piLoadFailed: String = "Failed to load Pi models",
+    val dshLoadFailed: String = "Failed to load DSH models",
     /** Variant-picker placeholder + the create-time variant guard error. */
     val selectVariant: String = "Select variant",
     /** Grok `auto` permission row suffix when the account/CLI lacks Auto. */
@@ -365,6 +368,7 @@ class NewSessionViewModel(
     private data class CopilotCatalog(val models: List<CopilotModelSummary>)
     private data class KimiCatalog(val models: List<KimiModelSummary>)
     private data class PiCatalog(val models: List<PiModelSummary>)
+    private data class DshCatalog(val models: List<DshModelSummary>)
 
     /** All flavor catalog slots in one flow (one slice per fetch). */
     private data class FlavorCatalogs(
@@ -376,6 +380,7 @@ class NewSessionViewModel(
         val copilot: Load<CopilotCatalog> = Load.Idle,
         val kimi: Load<KimiCatalog> = Load.Idle,
         val pi: Load<PiCatalog> = Load.Idle,
+        val dsh: Load<DshCatalog> = Load.Idle,
         /** An agy Retry probe is in flight over an already-loaded catalog. */
         val agyFetching: Boolean = false,
     )
@@ -462,6 +467,8 @@ class NewSessionViewModel(
     private var kimiKey: String? = null
     private var piJob: Job? = null
     private var piKey: String? = null
+    private var dshJob: Job? = null
+    private var dshKey: String? = null
 
     /**
      * Selection keys the web reset effects watch: agy = agent+machine,
@@ -1414,6 +1421,14 @@ class NewSessionViewModel(
             piKey = null
             flavorCatalogs.update { it.copy(pi = Load.Idle) }
         }
+
+        if (agent == "dsh" && machineId != null) {
+            refreshDshModels(machineId)
+        } else {
+            dshJob?.cancel()
+            dshKey = null
+            flavorCatalogs.update { it.copy(dsh = Load.Idle) }
+        }
     }
 
     /**
@@ -1680,6 +1695,31 @@ class NewSessionViewModel(
         }
     }
 
+    /** `useDshModelsForMachine` — machine-scoped probe (no cwd gate). */
+    private fun refreshDshModels(machineId: String) {
+        if (dshKey == machineId && flavorCatalogs.value.dsh !is Load.Idle) return
+        dshKey = machineId
+        dshJob?.cancel()
+        flavorCatalogs.update { it.copy(dsh = Load.Loading) }
+        dshJob = scope.launch {
+            val state = try {
+                val response = gateway.dshModels(machineId)
+                if (response.success) {
+                    Load.Ready(DshCatalog(response.availableModels.orEmpty()))
+                } else {
+                    Load.Failed(response.error ?: strings.dshLoadFailed)
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                Load.Failed(error.message ?: strings.dshLoadFailed)
+            }
+            if (dshKey != machineId) return@launch
+            flavorCatalogs.update { it.copy(dsh = state) }
+            if (state is Load.Ready) reconcileDshSelection(state.value)
+        }
+    }
+
     // --------------------------------------------------- flavor reconcilers --
 
     /** Agy: an unpicked selection that left the catalog drops to Default. */
@@ -1771,6 +1811,19 @@ class NewSessionViewModel(
     private fun reconcileKimiSelection(catalog: KimiCatalog) {
         val current = form.value
         if (current.agent != "kimi") return
+        if (current.model != "auto" && catalog.models.none { it.modelId == current.model }) {
+            form.update { it.copy(model = "auto") }
+        }
+    }
+
+    /**
+     * DSH: a selection the catalog no longer advertises drops back to Default
+     * (a stale `["provider","model"]` tuple would be rejected by the ACP
+     * server — web `dshSelectedModel` reset effect).
+     */
+    private fun reconcileDshSelection(catalog: DshCatalog) {
+        val current = form.value
+        if (current.agent != "dsh") return
         if (current.model != "auto" && catalog.models.none { it.modelId == current.model }) {
             form.update { it.copy(model = "auto") }
         }
@@ -1910,6 +1963,7 @@ class NewSessionViewModel(
         val copilotCatalog = (flavors.copilot as? Load.Ready)?.value
         val kimiCatalog = (flavors.kimi as? Load.Ready)?.value
         val piCatalog = (flavors.pi as? Load.Ready)?.value
+        val dshCatalog = (flavors.dsh as? Load.Ready)?.value
         val piSelectedModel = piCatalog?.models
             ?.let { FlavorModelOptions.resolvePiSelectedModel(it, currentForm.model) }
 
@@ -1928,6 +1982,8 @@ class NewSessionViewModel(
                 FlavorModelOptions.kimiModelOptions(kimiCatalog?.models.orEmpty())
             agent == "pi" ->
                 FlavorModelOptions.piModelOptions(piCatalog?.models.orEmpty())
+            agent == "dsh" ->
+                FlavorModelOptions.dshModelOptions(dshCatalog?.models.orEmpty())
             // agy/opencode/cursor render dedicated sections; codex Unsupported
             // (old runner) and the remaining flavors hide the picker.
             else -> null
@@ -2021,6 +2077,7 @@ class NewSessionViewModel(
                         (directoryExists == true && flavors.kimi is Load.Loading)
                     )
             "pi" -> currentForm.model != "auto" && flavors.pi is Load.Loading
+            "dsh" -> currentForm.model != "auto" && flavors.dsh is Load.Loading
             else -> false
         }
 
@@ -2138,7 +2195,8 @@ class NewSessionViewModel(
             (agent == "grok" && flavors.grok is Load.Loading) ||
             (agent == "copilot" && flavors.copilot is Load.Loading) ||
             (agent == "kimi" && flavors.kimi is Load.Loading) ||
-            (agent == "pi" && flavors.pi is Load.Loading)
+            (agent == "pi" && flavors.pi is Load.Loading) ||
+            (agent == "dsh" && flavors.dsh is Load.Loading)
         val modelsError = when {
             codex is CodexModelsUi.Failed -> strings.modelsFailedDetail.format(codex.message)
             agent == "grok" && flavors.grok is Load.Failed ->
@@ -2149,6 +2207,8 @@ class NewSessionViewModel(
                 strings.modelsFailedDetail.format((flavors.kimi as Load.Failed).message)
             agent == "pi" && flavors.pi is Load.Failed ->
                 strings.modelsFailedDetail.format((flavors.pi as Load.Failed).message)
+            agent == "dsh" && flavors.dsh is Load.Failed ->
+                strings.modelsFailedDetail.format((flavors.dsh as Load.Failed).message)
             else -> null
         }
         // Codex-import busy state (web isFormDisabled codex terms): a load,

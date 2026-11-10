@@ -7,6 +7,7 @@ import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.ForkConversationResponse
 import app.hapi.protocol.wire.GrokReasoningEffortResponse
@@ -142,6 +143,13 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
 
     /** `GET /api/sessions/:id/pi-models` (RPC-wrapped) — the session's Pi catalog. */
     suspend fun getSessionPiModels(sessionId: String): PiModelsResponse
+
+    /**
+     * `GET /api/sessions/:id/dsh-models` (RPC-wrapped) — the active DSH
+     * session's model catalog. Ids are opaque ACP config-option values sent
+     * back verbatim when switching.
+     */
+    suspend fun getSessionDshModels(sessionId: String): DshModelsResponse
 
     /** `GET /api/sessions/:id/cursor-models` (RPC-wrapped) — ACP wires + CLI skus. */
     suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse

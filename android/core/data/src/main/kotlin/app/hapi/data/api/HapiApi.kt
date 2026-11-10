@@ -43,6 +43,7 @@ import app.hapi.protocol.wire.OpencodeModelsResponse
 import app.hapi.protocol.wire.OpencodeModelVariantsResponse
 import app.hapi.protocol.wire.OpencodeReasoningEffortResponse
 import app.hapi.protocol.wire.PiModelsResponse
+import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.PiImportSessionsRequest
 import app.hapi.protocol.wire.PiImportSessionsResponse
 import app.hapi.protocol.wire.PiLocalSessionsResponse
@@ -588,6 +589,15 @@ class HapiApi internal constructor(
     override suspend fun getSessionPiModels(sessionId: String): PiModelsResponse =
         request("GET", url("api", "sessions", sessionId, "pi-models").build())
 
+    /**
+     * `GET /api/sessions/:id/dsh-models` — the active DSH session's model
+     * catalog (RPC-wrapped). Ids are opaque ACP config-option values
+     * (`["provider","model"]` tuples flattened server-side) that must be sent
+     * back verbatim when switching.
+     */
+    override suspend fun getSessionDshModels(sessionId: String): DshModelsResponse =
+        request("GET", url("api", "sessions", sessionId, "dsh-models").build())
+
     /** `GET /api/sessions/:id/cursor-models` — ACP wires + CLI skus of the active cursor session. */
     override suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse =
         request("GET", url("api", "sessions", sessionId, "cursor-models").build())
@@ -695,6 +705,14 @@ class HapiApi internal constructor(
     /** `GET /api/machines/:id/pi-models`. */
     suspend fun getMachinePiModels(machineId: String): PiModelsResponse =
         request("GET", url("api", "machines", machineId, "pi-models").build())
+
+    /**
+     * `GET /api/machines/:id/dsh-models` — pre-spawn DSH model catalog
+     * (RPC-wrapped; spawns a probe agent briefly). Ids are opaque ACP
+     * config-option values sent back verbatim at spawn.
+     */
+    suspend fun getMachineDshModels(machineId: String): DshModelsResponse =
+        request("GET", url("api", "machines", machineId, "dsh-models").build())
 
     /** `GET /api/machines/:id/cursor-models` — also merged into the session cursor catalog. */
     override suspend fun getMachineCursorModels(machineId: String): CursorModelsResponse =
