@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { resolveDshAcpCommand } from './dshBackend'
+import { AcpSdkBackend } from '@/agent/backends/acp'
+import { createDshBackend, dshPermissionModeEnvOverlay, resolveDshAcpCommand } from './dshBackend'
 
 describe('resolveDshAcpCommand', () => {
     it('defaults to the official dsh CLI with the ACP profile', () => {
@@ -56,5 +57,56 @@ describe('resolveDshAcpCommand', () => {
             .toThrow('HAPI_DSH_ACP_ARGS_JSON must be a JSON array of strings')
         expect(() => resolveDshAcpCommand({ HAPI_DSH_ACP_ARGS_JSON: '["pnpm", 1]' }))
             .toThrow('HAPI_DSH_ACP_ARGS_JSON must be a JSON array of strings')
+    })
+})
+
+describe('dshPermissionModeEnvOverlay', () => {
+    it('maps read-only onto the DSH read-only sandbox preset', () => {
+        expect(dshPermissionModeEnvOverlay('read-only', {})).toEqual({ DSH_PERMISSION_MODE: 'read-only' })
+    })
+
+    it('maps yolo onto danger-full-access', () => {
+        expect(dshPermissionModeEnvOverlay('yolo', {})).toEqual({ DSH_PERMISSION_MODE: 'danger-full-access' })
+    })
+
+    it('leaves the variable unset for default and safe-yolo (server default workspace-write)', () => {
+        expect(dshPermissionModeEnvOverlay('default', {})).toEqual({})
+        expect(dshPermissionModeEnvOverlay('safe-yolo', {})).toEqual({})
+        expect(dshPermissionModeEnvOverlay(undefined, {})).toEqual({})
+    })
+
+    it('keeps a machine-level DSH_PERMISSION_MODE authoritative', () => {
+        expect(dshPermissionModeEnvOverlay('yolo', { DSH_PERMISSION_MODE: 'read-only' })).toEqual({})
+    })
+})
+
+describe('createDshBackend spawn configuration', () => {
+    it('pins the sandbox preset from the spawn-time permission mode and uses the standard cancel mode', () => {
+        // dsh 0.2.2-rc.1: session/cancel is a notification that keeps the
+        // process AND session alive; the old close-fallback (session/close
+        // per Stop) destroyed the session on every abort.
+        const backend = createDshBackend({ PATH: '/usr/bin' }, { permissionMode: 'read-only' })
+        const options = (backend as unknown as {
+            options: { env: Record<string, string | undefined>; cancelMode?: string; flavor?: string }
+        }).options
+
+        expect(options.env.DSH_PERMISSION_MODE).toBe('read-only')
+        expect(options.env.PATH).toBe('/usr/bin')
+        expect(options.cancelMode).toBe('standard')
+        expect(options.flavor).toBe('dsh')
+    })
+
+    it('does not set DSH_PERMISSION_MODE without an explicit mode mapping', () => {
+        for (const permissionMode of ['default', 'safe-yolo', undefined]) {
+            const backend = createDshBackend({ PATH: '/usr/bin' }, { permissionMode })
+            const options = (backend as unknown as { options: { env: Record<string, string | undefined> } }).options
+            expect(options.env.DSH_PERMISSION_MODE).toBeUndefined()
+        }
+    })
+
+    it('maps yolo onto danger-full-access in the child env', () => {
+        const backend = createDshBackend({}, { permissionMode: 'yolo' })
+        const options = (backend as unknown as { options: { env: Record<string, string | undefined> } }).options
+        expect(options.env.DSH_PERMISSION_MODE).toBe('danger-full-access')
     })
 })

@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const transportState = vi.hoisted(() => ({
     calls: [] as Array<{ method: string; params?: unknown }>,
     initializeResponse: {} as Record<string, unknown>,
-    resumeResponse: { configOptions: [] } as Record<string, unknown>
+    resumeResponse: { configOptions: [] } as Record<string, unknown>,
+    resumeErrorQueue: [] as Array<Error | null>
 }));
 
 vi.mock('./AcpStdioTransport', () => {
@@ -20,6 +21,12 @@ vi.mock('./AcpStdioTransport', () => {
                 return transportState.initializeResponse;
             }
             if (method === 'session/resume') {
+                // Deferred (null) placeholders consume a slot without failing,
+                // letting tests stage N failures followed by success.
+                if (transportState.resumeErrorQueue.length > 0) {
+                    const error = transportState.resumeErrorQueue.shift();
+                    if (error) throw error;
+                }
                 return transportState.resumeResponse;
             }
             return null;
@@ -27,16 +34,35 @@ vi.mock('./AcpStdioTransport', () => {
         sendNotification = vi.fn();
         close = vi.fn(async () => {});
     }
-    return { AcpStdioTransport: MockAcpStdioTransport };
+    // Mirrors the real module's indeterminate marker (the mock replaces the
+    // module, so AcpSdkBackend's own import must resolve to a working copy).
+    // Registered globally so tests can mark errors with the same symbol.
+    const indeterminateSymbol = Symbol.for('acp-indeterminate-mock');
+    return {
+        AcpStdioTransport: MockAcpStdioTransport,
+        ACP_INDETERMINATE_SYMBOL: indeterminateSymbol,
+        isAcpIndeterminateError: (error: unknown) =>
+            typeof error === 'object'
+            && error !== null
+            && (error as Record<symbol, unknown>)[indeterminateSymbol] === true
+    };
 });
 
 import { AcpSdkBackend } from './AcpSdkBackend';
+
+/** A dead-transport rejection the way AcpStdioTransport marks one. */
+function indeterminateError(message = 'ACP process exited (code=1, signal=null)'): Error {
+    const error = new Error(message)
+    Object.defineProperty(error, Symbol.for('acp-indeterminate-mock'), { value: true })
+    return error
+}
 
 describe('AcpSdkBackend.sessionResume', () => {
     beforeEach(() => {
         transportState.calls = [];
         transportState.initializeResponse = { protocolVersion: 1, authMethods: [] };
         transportState.resumeResponse = { configOptions: [] };
+        transportState.resumeErrorQueue = [];
     });
 
     it('probes the resume capability independently of loadSession', async () => {
@@ -102,5 +128,58 @@ describe('AcpSdkBackend.sessionResume', () => {
         });
 
         expect(sessionId).toBe('remapped-1');
+    });
+
+    it('does not retry a terminal invalidParams resume rejection (dsh: mismatched cwd / active session)', async () => {
+        transportState.initializeResponse = {
+            protocolVersion: 1,
+            agentCapabilities: {
+                sessionCapabilities: { close: {}, list: {}, resume: {} }
+            }
+        };
+        // dsh answers a resume whose cwd does not realpath-match the stored
+        // session (or one that is still active elsewhere) with a TERMINAL
+        // invalidParams JSON-RPC error. Retrying it would only delay the
+        // caller's fresh-session fallback by the full backoff chain.
+        transportState.resumeErrorQueue = [
+            new Error('Session cwd mismatch: session belongs to /other/path (-32602 invalidParams)')
+        ];
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        await backend.initialize();
+
+        await expect(backend.resumeSession({
+            sessionId: 'dsh-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        })).rejects.toThrow('invalidParams');
+
+        // Exactly one session/resume request — no retry of the terminal error.
+        const resumeCalls = transportState.calls.filter((call) => call.method === 'session/resume');
+        expect(resumeCalls).toHaveLength(1);
+    });
+
+    it('retries a transport-indeterminate resume failure and then succeeds', async () => {
+        transportState.initializeResponse = {
+            protocolVersion: 1,
+            agentCapabilities: {
+                sessionCapabilities: { close: {}, list: {}, resume: {} }
+            }
+        };
+        // The child process died mid-request: the failure carries the
+        // transport's indeterminate marker (after a respawn the same request
+        // can succeed, so retrying it is correct).
+        transportState.resumeErrorQueue = [indeterminateError()];
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        await backend.initialize();
+
+        const sessionId = await backend.resumeSession({
+            sessionId: 'dsh-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        });
+
+        expect(sessionId).toBe('dsh-stored-1');
+        const resumeCalls = transportState.calls.filter((call) => call.method === 'session/resume');
+        expect(resumeCalls).toHaveLength(2);
     });
 });

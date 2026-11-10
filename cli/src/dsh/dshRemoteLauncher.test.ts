@@ -6,11 +6,22 @@ const FLASH = '["deepseek-official","deepseek-flash"]'
 const PRO = '["deepseek-official","deepseek-v4-pro"]'
 
 const harness = vi.hoisted(() => ({
+    // Latest created backend (existing tests assert against it); `backends`
+    // records every creation in order so respawn tests can tell the dead
+    // backend from its replacement apart.
     backend: null as Record<string, ReturnType<typeof vi.fn>> | null,
+    backends: [] as Array<Record<string, ReturnType<typeof vi.fn>>>,
+    createCalls: [] as Array<{ env?: Record<string, string | undefined>; opts?: { permissionMode?: string } }>,
     newSessionConfig: null as unknown,
     newSessionCalls: [] as unknown[],
     promptSessionIds: [] as string[],
     prompts: [] as unknown[][],
+    // Per-attempt prompt failures (shifted off the front); a null slot parks
+    // the queue without failing, letting tests stage N failures + success.
+    promptErrorQueue: [] as Array<Error | null>,
+    initializeErrorQueue: [] as Array<Error | null>,
+    // When set, prompt() finishes by emitting turn_complete with this reason.
+    promptStopReason: null as string | null,
     supportsResume: false,
     resumeCalls: [] as unknown[],
     resumeError: null as Error | null,
@@ -42,13 +53,26 @@ const harness = vi.hoisted(() => ({
         currentModelId: string | null
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
-    configOptionError: null as Error | null
+    configOptionError: null as Error | null,
+    // Mirrors the backend's advertised promptCapabilities.image gate.
+    supportsImages: false,
+    // Recorded by the buildDshPromptContent mock.
+    promptContentInputs: [] as Array<{ text: string; images: unknown[] | undefined }>
 }))
 
 vi.mock('./utils/dshBackend', () => ({
-    createDshBackend: vi.fn(() => {
+    createDshBackend: vi.fn((env?: unknown, opts?: { permissionMode?: string }) => {
+        harness.createCalls.push({
+            env: env as Record<string, string | undefined> | undefined,
+            opts
+        })
         const backend = {
-            initialize: vi.fn(async () => {}),
+            initialize: vi.fn(async () => {
+                if (harness.initializeErrorQueue.length > 0) {
+                    const error = harness.initializeErrorQueue.shift()
+                    if (error) throw error
+                }
+            }),
             newSession: vi.fn(async (config: unknown) => {
                 harness.newSessionConfig = config
                 harness.newSessionCalls.push(config)
@@ -63,7 +87,14 @@ vi.mock('./utils/dshBackend', () => ({
                 if (harness.promptBlocker) {
                     await harness.promptBlocker
                 }
+                if (harness.promptErrorQueue.length > 0) {
+                    const error = harness.promptErrorQueue.shift()
+                    if (error) throw error
+                }
                 onUpdate({ type: 'text', text: 'answer' })
+                if (harness.promptStopReason !== null) {
+                    onUpdate({ type: 'turn_complete', stopReason: harness.promptStopReason })
+                }
             }),
             cancelPrompt: vi.fn(async () => {
                 if (harness.supportsCancel) return
@@ -82,6 +113,7 @@ vi.mock('./utils/dshBackend', () => ({
                 return (config as { sessionId: string }).sessionId
             }),
             supportsCancelNotification: vi.fn(() => harness.supportsCancel),
+            supportsImagePrompts: vi.fn(() => harness.supportsImages),
             getConfigOptionByCategory: vi.fn(() => harness.modelOption),
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
@@ -96,9 +128,40 @@ vi.mock('./utils/dshBackend', () => ({
             onPermissionRequest: vi.fn(),
             disconnect: vi.fn(async () => {})
         }
+        harness.backends.push(backend)
         harness.backend = backend
         return backend
     })
+}))
+
+vi.mock('./utils/dshPromptContent', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./utils/dshPromptContent')>()
+    return {
+        ...actual,
+        buildDshPromptContent: vi.fn(async (
+            _backend: unknown,
+            text: string,
+            images: unknown[] | undefined,
+            _opts: unknown
+        ) => {
+            harness.promptContentInputs.push({ text, images })
+            const prompt: Array<Record<string, unknown>> = [{ type: 'text', text }]
+            if (images && images.length > 0 && harness.supportsImages) {
+                for (const image of images) {
+                    const attachment = image as { path: string; mimeType: string }
+                    prompt.push({ type: 'image', data: `b64:${attachment.path}`, mimeType: attachment.mimeType })
+                }
+            }
+            return prompt
+        })
+    }
+})
+
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: vi.fn(async () => ({
+        server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
+        mcpServers: {}
+    }))
 }))
 
 vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
@@ -119,7 +182,17 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }))
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
+import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport'
 import { DshRemoteLauncher } from './dshRemoteLauncher'
+
+/** The transport's own typed marker for dead-transport failures (process
+ *  exit, closed transport, failed stdin write) — what a real dead-child
+ *  session/prompt rejection carries. */
+function deadTransportError(message = 'ACP process exited (code=1, signal=null)'): Error {
+    const error = new Error(message)
+    Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true })
+    return error
+}
 
 function createQueue() {
     const queue = new MessageQueue2<DshMode>((mode) => JSON.stringify(mode))
@@ -169,10 +242,15 @@ function createSessionWithMode(mode?: DshMode) {
 describe('DshRemoteLauncher', () => {
     afterEach(() => {
         harness.backend = null
+        harness.backends = []
+        harness.createCalls = []
         harness.newSessionConfig = null
         harness.newSessionCalls = []
         harness.promptSessionIds = []
         harness.prompts = []
+        harness.promptErrorQueue = []
+        harness.initializeErrorQueue = []
+        harness.promptStopReason = null
         harness.supportsResume = false
         harness.resumeCalls = []
         harness.resumeError = null
@@ -188,10 +266,12 @@ describe('DshRemoteLauncher', () => {
         harness.modelsMetadata = null
         harness.setConfigOptionCalls = []
         harness.configOptionError = null
+        harness.supportsImages = false
+        harness.promptContentInputs = []
         harness.newSessionBlocker = null
     })
 
-    it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
+    it('creates a fresh ACP session and forwards text prompts', async () => {
         const session = createSessionWithMode()
         const launcher = new DshRemoteLauncher(session as never)
 
@@ -915,5 +995,255 @@ describe('DshRemoteLauncher', () => {
             [{ type: 'text', text: 'first' }],
             [{ type: 'text', text: 'third' }]
         ])
+    })
+
+    it('respawns the ACP backend and retries the same batch when the child process dies', async () => {
+        // The dsh child died mid-prompt: session/prompt rejects with the
+        // transport's typed dead-marker. The launcher must disconnect the
+        // corpse, respawn a fresh child, resume the PINNED durable
+        // dshSessionId (same cwd — dsh compares resume cwds by realpath),
+        // and retry the SAME batch exactly once.
+        harness.supportsResume = true
+        harness.promptErrorQueue = [deadTransportError()]
+        const queue = createQueue()
+        queue.push('hello', {})
+        queue.close()
+        const session = createSession(queue, 'dsh-stored-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // The dead backend was disconnected and a fresh one created + initialized.
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.backends[0].disconnect).toHaveBeenCalled()
+        expect(harness.backends[1].initialize).toHaveBeenCalled()
+        // The respawn resumes the pinned durable id with the SAME cwd used
+        // originally — dsh rejects mismatched resume cwds terminally.
+        expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'dsh-stored-1',
+            cwd: '/tmp/dsh-test',
+            mcpServers: []
+        })
+        // The SAME batch ran against the dead transport and again on the
+        // replacement — and the retry's answer reached the hub.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'hello' }],
+            [{ type: 'text', text: 'hello' }]
+        ])
+        expect(session.sendAgentMessage).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'answer'
+        })
+        // Exactly one reconnect status line for the whole respawn.
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const reconnectLines = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '').includes('reconnecting'))
+        expect(reconnectLines).toHaveLength(1)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH connection lost; reconnecting…'
+        })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
+        expect(harness.backends[1].disconnect).toHaveBeenCalled()
+    })
+
+    it('re-applies the live model on the respawned backend before the retried batch', async () => {
+        // The fresh child starts from whatever the server persisted; the
+        // respawn must re-apply the session's live model so the retry does
+        // not silently run on the server default.
+        harness.supportsResume = true
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const queue = createQueue()
+        queue.push('hello', { model: PRO })
+        queue.close()
+        const session = createSession(queue, 'dsh-stored-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // Discovery default, the batch's switch to PRO on the first backend,
+        // then the respawn's restore of PRO on the replacement.
+        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([PRO, PRO])
+        expect(harness.setConfigOptionCalls[1].sessionId).toBe('dsh-stored-1')
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'hello' }],
+            [{ type: 'text', text: 'hello' }]
+        ])
+    })
+
+    it('surfaces the error and keeps the loop alive when the respawn also fails', async () => {
+        harness.supportsResume = true
+        harness.promptErrorQueue = [deadTransportError()]
+        // First initialize succeeds (initial establishment), the respawn's
+        // initialize fails (dsh binary gone); the next message's fresh
+        // respawn attempt succeeds again.
+        harness.initializeErrorQueue = [null, new Error('Failed to spawn dsh: not found')]
+        // Distinct modes so the queue keeps the two messages as separate
+        // batches instead of merging them into one turn.
+        const session = createSessionWithBatches([
+            ['a', {}],
+            ['b', { model: PRO }]
+        ], 'dsh-stored-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // Initial backend, the failed respawn's partial backend (dropped and
+        // disconnected), and the successful respawn for the later message.
+        expect(harness.backends).toHaveLength(3)
+        expect(harness.backends[0].disconnect).toHaveBeenCalled()
+        expect(harness.backends[1].disconnect).toHaveBeenCalled()
+        // 'a' ran once against the dead transport (no retry — the respawn
+        // failed); the error was surfaced and the loop continued into 'b',
+        // which respawned fresh and ran on the new backend.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'a' }],
+            [{ type: 'text', text: 'b' }]
+        ])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH reconnect failed: Failed to spawn dsh: not found'
+        })
+        expect(harness.backends[2].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'dsh-stored-1',
+            cwd: '/tmp/dsh-test',
+            mcpServers: []
+        })
+    })
+
+    it('does not respawn when the prompt fails with a regular agent error', async () => {
+        harness.promptErrorQueue = [new Error('unknown session')]
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // A JSON-RPC rejection is not a dead transport: old behavior only.
+        expect(harness.backends).toHaveLength(1)
+        expect(harness.backends[0].disconnect).toHaveBeenCalledTimes(1)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH prompt failed: unknown session'
+        })
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('reports a distinct truncation line for a max_tokens turn', async () => {
+        // dsh reports stopReason end_turn|max_tokens|cancelled; a turn cut
+        // short by the context limit must not read as a normal completion.
+        // (Captured via the buffer listener: finalizeTerminal clears the
+        // buffer before launch() resolves.)
+        harness.promptStopReason = 'max_tokens'
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+        const lines = new Set<string>()
+        ;(launcher as unknown as {
+            messageBuffer: { onUpdate: (listener: (messages: Array<{ content: string }>) => void) => void }
+        }).messageBuffer.onUpdate((messages) => {
+            for (const message of messages) lines.add(message.content)
+        })
+
+        await launcher.launch()
+
+        expect([...lines]).toContain('Turn truncated: context limit reached')
+        expect([...lines]).not.toContain('Turn complete')
+    })
+
+    it('reports the normal completion line for an end_turn turn', async () => {
+        harness.promptStopReason = 'end_turn'
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+        const lines = new Set<string>()
+        ;(launcher as unknown as {
+            messageBuffer: { onUpdate: (listener: (messages: Array<{ content: string }>) => void) => void }
+        }).messageBuffer.onUpdate((messages) => {
+            for (const message of messages) lines.add(message.content)
+        })
+
+        await launcher.launch()
+
+        expect([...lines]).toContain('Turn complete')
+        expect([...lines]).not.toContain('Turn truncated: context limit reached')
+    })
+
+    it('mounts the hapi MCP bridge servers on the ACP session', async () => {
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        const stop = vi.fn()
+        vi.mocked(buildHapiMcpBridge).mockResolvedValueOnce({
+            server: { url: 'http://127.0.0.1:9/mcp', stop },
+            mcpServers: {
+                hapi: { command: '/usr/local/bin/hapi', args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'], tools: {} }
+            }
+        } as never)
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(buildHapiMcpBridge).toHaveBeenCalledWith(session.client, {
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: '/tmp/dsh-test', flavor: 'dsh' }
+        })
+        expect(harness.newSessionCalls[0]).toEqual({
+            cwd: '/tmp/dsh-test',
+            mcpServers: [{
+                name: 'hapi',
+                command: '/usr/local/bin/hapi',
+                args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'],
+                env: []
+            }]
+        })
+        // The bridge server is torn down with the launcher.
+        expect(stop).toHaveBeenCalled()
+    })
+
+    it('threads the spawn-time permission mode into createDshBackend', async () => {
+        // The env overlay itself (read-only → DSH_PERMISSION_MODE=read-only,
+        // yolo → danger-full-access, default/safe-yolo unset) is unit-tested
+        // against the real createDshBackend in dshBackend.test.ts; this pins
+        // the launcher-side threading of the spawn-time mode.
+        const session = createSessionWithMode()
+        await new DshRemoteLauncher(session as never, { permissionMode: 'read-only' }).launch()
+
+        expect(harness.createCalls).toHaveLength(1)
+        expect(harness.createCalls[0].opts?.permissionMode).toBe('read-only')
+    })
+
+    it('upgrades image attachments to ACP image blocks when the backend advertises image prompts', async () => {
+        harness.supportsImages = true
+        const images = [{ path: '/uploads/screenshot.png', mimeType: 'image/png', filename: 'screenshot.png' }]
+        const queue = createQueue()
+        queue.push('look at this', { imageAttachments: images })
+        queue.close()
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.promptContentInputs).toEqual([{ text: 'look at this', images }])
+        expect(harness.prompts).toEqual([[
+            { type: 'text', text: 'look at this' },
+            { type: 'image', data: 'b64:/uploads/screenshot.png', mimeType: 'image/png' }
+        ]])
+    })
+
+    it('keeps an image turn prompt text-only when the backend does not advertise image prompts', async () => {
+        // Older dsh / pinned community wrappers without
+        // promptCapabilities.image: the fallback @path form is produced by
+        // buildDshPromptContent itself; here the gate must simply keep the
+        // turn text-only rather than sending rejected image blocks.
+        harness.supportsImages = false
+        const queue = createQueue()
+        queue.push('look at this', {
+            imageAttachments: [{ path: '/uploads/screenshot.png', mimeType: 'image/png' }]
+        })
+        queue.close()
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'look at this' }]])
     })
 })

@@ -1,7 +1,7 @@
 import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
-import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
+import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
@@ -39,9 +39,12 @@ export type AcpModelDescriptor = {
  * - `standard` (default): send the `session/cancel` notification. ACP v1
  *   defines no capability field for cancel — it is unconditional baseline
  *   behavior, so standard adapters never gate on advertised capabilities.
- * - `close-fallback`: for agents known to mishandle `session/cancel`
- *   (dsh 0.2.x exits its whole process on it). Cancel by closing the session
- *   when the agent advertises `close`; otherwise fall back to the baseline.
+ *   Verified against the DSH 0.2.2-rc.1 source: the notification cancels the
+ *   in-flight prompt and keeps both the process and the session alive.
+ * - `close-fallback`: for agents known to mishandle `session/cancel` by
+ *   exiting their whole process (an early dsh 0.2.0 build; current dsh uses
+ *   `standard`). Cancel by closing the session when the agent advertises
+ *   `close`; otherwise fall back to the baseline.
  */
 export type AcpCancelMode = 'standard' | 'close-fallback';
 
@@ -343,6 +346,19 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /**
+     * Whether the initialize result advertises inline image prompt content
+     * (`agentCapabilities.promptCapabilities.image`, e.g. DSH 0.2.2+).
+     *
+     * Callers must gate image content blocks on this: sending
+     * `{type:'image'}` blocks to an agent that never advertised the
+     * capability rejects the whole session/prompt.
+     */
+    supportsImagePrompts(): boolean {
+        const promptCapabilities = this.initializeResult?.agentCapabilities?.promptCapabilities;
+        return isObject(promptCapabilities) && promptCapabilities.image === true;
+    }
+
+    /**
      * Resume a previous agent session via `session/resume`.
      *
      * Unlike `session/load` responses, dsh 0.2.x returns configOptions
@@ -361,6 +377,13 @@ export class AcpSdkBackend implements AgentBackend {
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                // Only transport-indeterminate failures (child exited,
+                // transport closed, failed stdin write) are worth retrying.
+                // dsh answers a mismatched cwd (compared by realpath) or an
+                // already-active session with a TERMINAL invalidParams
+                // rejection; retrying it just delays the caller's
+                // fresh-session fallback by the full backoff chain.
+                shouldRetry: isAcpIndeterminateError,
                 onRetry: (error, attempt, nextDelayMs) => {
                     logger.debug(`[ACP] session/resume attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
                 }
