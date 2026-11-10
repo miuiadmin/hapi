@@ -13,12 +13,25 @@ import org.junit.Test
  */
 class ToolGroupClassificationTest {
     private fun tool(name: String, nativeKind: String? = null) = ToolCallBlock(
-        id = name, localId = null, createdAt = 0, invokedAt = null,
+        id = name,
+        localId = null,
+        createdAt = 0,
+        invokedAt = null,
+        durationMs = null,
+        usage = null,
+        model = null,
+        roundSummary = null,
         tool = ChatToolCall(
-            id, name, "completed", input = null, createdAt = 0,
-            description = null, nativeKind = nativeKind,
+            id = name,
+            name = name,
+            state = "completed",
+            input = null,
+            createdAt = 0,
+            description = null,
+            nativeKind = nativeKind,
         ),
-        children = emptyList(), meta = null,
+        children = emptyList(),
+        meta = null,
     )
 
     @Test fun `dsh tool names classify through normalization`() {
