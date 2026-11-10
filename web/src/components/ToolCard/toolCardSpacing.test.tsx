@@ -81,3 +81,55 @@ describe('ToolCard detail dialog', () => {
         expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveClass('top-2')
     })
 })
+
+describe('ToolCard dsh command rendering', () => {
+    // DSH emits tool_call updates with raw lowercase snake names; a `bash`
+    // card must render the bash CodeBlock ("Command"), not the JSON input dump.
+    it('renders the dsh bash invocation as a command block', () => {
+        const block: ToolCallBlock = {
+            kind: 'tool-call',
+            id: 'tool-dsh-1',
+            localId: null,
+            createdAt: 1_000,
+            tool: {
+                id: 'tool-dsh-1',
+                name: 'bash',
+                state: 'completed',
+                input: { command: 'git status --short' },
+                createdAt: 1_000,
+                startedAt: 1_000,
+                completedAt: 1_500,
+                execStartedAt: null,
+                execCompletedAt: null,
+                description: null,
+                result: 'ok',
+            },
+            children: [],
+        }
+
+        render(
+            <I18nProvider>
+                <ToolCard
+                    api={{} as ApiClient}
+                    sessionId="session-1"
+                    metadata={null}
+                    terminalToolDisplayMode="detailed"
+                    disabled={false}
+                    onDone={() => {}}
+                    block={block}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText('Command')).toBeInTheDocument()
+        // The command CodeBlock renders the bare command in a data-code-cell
+        // (the header subtitle repeats it); the JSON fallback would instead
+        // render the pretty-printed `{"command": ...}` object.
+        const codeCell = screen
+            .getAllByText('git status --short')
+            .map((node) => node.closest('[data-code-cell]'))
+            .find((cell) => cell !== null)
+        expect(codeCell).not.toBeUndefined()
+        expect(codeCell?.textContent).toBe('git status --short')
+    })
+})

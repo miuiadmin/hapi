@@ -99,7 +99,14 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     CursorCreatePlan: CursorCreatePlanView,
     ask_user_question: AskUserQuestionView,
     exit_plan_mode: ExitPlanModeView,
-    request_user_input: RequestUserInputView
+    request_user_input: RequestUserInputView,
+    // DSH emits raw lowercase snake tool names (kind:'other', title = the
+    // verbatim tool name). Alias them onto the same views as their
+    // capitalized twins so dsh edits/writes render diff views and todo_write
+    // renders the checklist.
+    edit: EditView,
+    write: WriteView,
+    todo_write: TodoWriteView
 }
 
 export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
@@ -125,7 +132,10 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     CursorCreatePlan: CursorCreatePlanView,
     ask_user_question: AskUserQuestionView,
     exit_plan_mode: ExitPlanModeView,
-    request_user_input: RequestUserInputView
+    request_user_input: RequestUserInputView,
+    // DSH lowercase snake aliases (see toolViewRegistry).
+    edit: EditView,
+    write: WriteView
 }
 
 export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { formatSubagentModelLabel, getSubagentModel, getToolTimingDetails, isTerminalToolBlock, shouldShowInlineToolCardBody, shouldUseCompactTerminalToolCard } from '@/components/ToolCard/ToolCard'
+import { formatSubagentModelLabel, getSubagentModel, getToolTimingDetails, isCommandInputToolName, isTerminalToolBlock, shouldShowInlineToolCardBody, shouldUseCompactTerminalToolCard } from '@/components/ToolCard/ToolCard'
+import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolGroupActionKind } from '@/chat/toolGroups'
 import type { AgentTextBlock, ChatBlock, ToolCallBlock } from '@/chat/types'
 
@@ -264,5 +265,43 @@ describe('getSubagentModel', () => {
     it('ignores empty-string model values', () => {
         const children: ChatBlock[] = [makeAgentTextBlock({ model: '' }), makeAgentTextBlock({ model: 'claude-haiku-4-5-20251001' })]
         expect(getSubagentModel(children)).toBe('Haiku 4.5')
+    })
+})
+
+describe('dsh lowercase snake tool names', () => {
+    // DSH tool_call updates carry kind:'other' with raw lowercase snake names
+    // (bash, read, write, edit, apply_patch, grep, glob, web_fetch,
+    // web_search, todo_write, read_image). The registries must alias them onto
+    // the same views as their capitalized twins.
+
+    it('treats dsh bash as a terminal tool with command-style input', () => {
+        expect(isCommandInputToolName('bash')).toBe(true)
+        expect(isCommandInputToolName('Bash')).toBe(true)
+        expect(isCommandInputToolName('CodexBash')).toBe(true)
+        expect(isCommandInputToolName('read')).toBe(false)
+        expect(isCommandInputToolName('edit')).toBe(false)
+
+        const block = makeToolCallChild({
+            tool: {
+                ...makeToolCallChild().tool,
+                name: 'bash',
+                input: { command: 'git status --short' },
+            },
+        })
+        expect(isTerminalToolBlock(block)).toBe(true)
+        expect(shouldUseCompactTerminalToolCard('bash', 'compact')).toBe(true)
+        expect(shouldShowInlineToolCardBody('bash', true, 'detailed')).toBe(true)
+    })
+
+    it('resolves dsh edit/write/todo_write through the compact view registry', () => {
+        expect(getToolViewComponent('edit')).toBe(getToolViewComponent('Edit'))
+        expect(getToolViewComponent('write')).toBe(getToolViewComponent('Write'))
+        expect(getToolViewComponent('todo_write')).toBe(getToolViewComponent('TodoWrite'))
+        expect(getToolViewComponent('edit')).not.toBe(null)
+    })
+
+    it('resolves dsh edit/write through the full (dialog) view registry', () => {
+        expect(getToolFullViewComponent('edit')).toBe(getToolFullViewComponent('Edit'))
+        expect(getToolFullViewComponent('write')).toBe(getToolFullViewComponent('Write'))
     })
 })

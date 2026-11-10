@@ -36,6 +36,15 @@ function isClaudeSession(metadata: SessionMetadataSummary | null): boolean {
     return metadata?.flavor === 'claude'
 }
 
+/**
+ * DSH request_permission carries exactly allow-once/reject-once (one-shot, no
+ * durable grants), so the footer must never offer "Allow for session" /
+ * "Allow all edits" — those promise a durability the agent cannot express.
+ */
+export function isDshSession(metadata: SessionMetadataSummary | null): boolean {
+    return metadata?.flavor === 'dsh'
+}
+
 function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, codex: boolean, t: (key: string) => string): string {
     if (permission.status === 'resolved') return t('tool.resolved')
     if (permission.status === 'pending') return t('tool.waitingForApproval')
@@ -115,6 +124,7 @@ export function PermissionFooter(props: {
 
     const codex = useMemo(() => isCodexSession(props.metadata, props.tool.name), [props.metadata, props.tool.name])
     const claude = useMemo(() => isClaudeSession(props.metadata), [props.metadata])
+    const dsh = useMemo(() => isDshSession(props.metadata), [props.metadata])
 
     if (!permission) return null
 
@@ -147,8 +157,12 @@ export function PermissionFooter(props: {
         || toolName === 'ExitPlanMode'
         || toolName === 'CursorCreatePlan'
 
-    const canAllowForSession = !codex && isPending && !hideAllowForSession
-    const canAllowAllEdits = claude && isPending && isEditTool
+    // DSH permissions are strictly one-shot (allow-once/reject-once): no
+    // durable "for session"/"all edits" grant exists on its ACP surface. The
+    // all-edits button is already claude-only; the explicit !dsh keeps that
+    // invariant local instead of relying on the claude gate.
+    const canAllowForSession = !codex && !dsh && isPending && !hideAllowForSession
+    const canAllowAllEdits = claude && !dsh && isPending && isEditTool
 
     const approve = async () => {
         if (!isPending || loading || loadingAllEdits || loadingForSession) return

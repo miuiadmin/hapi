@@ -228,3 +228,36 @@ describe('useSessionActions - setModel', () => {
         expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'session-A'] })
     })
 })
+
+describe('useSessionActions - setModelReasoningEffort', () => {
+    it.each(['codex', 'opencode', 'dsh'])('forwards the dsh/codex-family thought level for %s sessions', async (flavor) => {
+        const api = {
+            setModelReasoningEffort: vi.fn(async () => undefined),
+        } as unknown as ApiClient
+        const { result } = renderHook(
+            () => useSessionActions(api, 'session-A', flavor, flavor === 'codex'),
+            { wrapper: createWrapper() },
+        )
+
+        await act(async () => {
+            await result.current.setModelReasoningEffort('high')
+        })
+
+        expect(api.setModelReasoningEffort).toHaveBeenCalledWith('session-A', 'high')
+    })
+
+    it.each([null, 'claude'])('still rejects unsupported flavors (%s)', async (flavor) => {
+        const api = {
+            setModelReasoningEffort: vi.fn(async () => undefined),
+        } as unknown as ApiClient
+        const { result } = renderHook(
+            () => useSessionActions(api, 'session-A', flavor ?? undefined),
+            { wrapper: createWrapper() },
+        )
+
+        await expect(act(async () => {
+            await result.current.setModelReasoningEffort('high')
+        })).rejects.toThrow('Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions')
+        expect(api.setModelReasoningEffort).not.toHaveBeenCalled()
+    })
+})

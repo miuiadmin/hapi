@@ -150,6 +150,22 @@ describe('getToolResultViewComponent registry', () => {
         expect(getToolResultViewComponent('CodexBash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
     })
 
+    it('aliases dsh lowercase snake tool names onto their capitalized result views', () => {
+        // DSH tool_call updates carry kind:'other' with raw lowercase snake
+        // names; the registry aliases must resolve to the same components as
+        // the capitalized twins so dsh output renders identically.
+        expect(getToolResultViewComponent('bash')).toBe(getToolResultViewComponent('Bash'))
+        expect(getToolResultViewComponent('edit')).toBe(getToolResultViewComponent('Edit'))
+        expect(getToolResultViewComponent('write')).toBe(getToolResultViewComponent('Write'))
+        expect(getToolResultViewComponent('todo_write')).toBe(getToolResultViewComponent('TodoWrite'))
+        expect(getToolResultViewComponent('grep')).toBe(getToolResultViewComponent('Grep'))
+        expect(getToolResultViewComponent('glob')).toBe(getToolResultViewComponent('Glob'))
+        expect(getToolResultViewComponent('web_fetch')).toBe(getToolResultViewComponent('WebFetch'))
+        expect(getToolResultViewComponent('web_search')).toBe(getToolResultViewComponent('WebSearch'))
+        expect(getToolResultViewComponent('read')).toBe(getToolResultViewComponent('Read'))
+        expect(getToolResultViewComponent('bash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
+    })
+
     it('uses a dedicated result view for Codex agent tools', () => {
         expect(getToolResultViewComponent('spawn_agent')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
         expect(getToolResultViewComponent('wait_agent')).toBe(getToolResultViewComponent('spawn_agent'))
