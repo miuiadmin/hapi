@@ -114,7 +114,7 @@ describe('runHermes', () => {
         )
     })
 
-    it('registers the session config RPC with nullable models and ignored efforts', async () => {
+    it('registers the session config RPC with nullable models and reasoning efforts', async () => {
         await runHermes({
             existingSessionId: 'hapi-session-hermes',
             startedBy: 'terminal',
@@ -124,7 +124,7 @@ describe('runHermes', () => {
         expect(harness.registerSessionConfigRpc).toHaveBeenCalledWith(expect.objectContaining({
             flavor: 'hermes',
             modelMode: 'nullable',
-            modelReasoningEffortMode: 'ignore',
+            modelReasoningEffortMode: 'nullable',
             effortMode: 'ignore'
         }))
     })

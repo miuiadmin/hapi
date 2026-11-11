@@ -60,6 +60,9 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
      * replacement backend was being established and drop the retried batch. */
     private abortGeneration = 0
     private currentBackendModel: string | null = null
+    /** Live reasoning-effort preference in Hermes's wire domain ('default' =
+     *  Provider default); re-applied on respawn. null = none tracked. */
+    private currentReasoningEffort: string | null = null
     /** Server default captured at session creation, before any override. */
     private initialBackendModel: string | null = null
     private lastAppliedEditMode: string | null = null
@@ -82,6 +85,14 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             model?: string
             onModelRollback?: (model: string | null) => void
             onConfigDiscovered?: (model: string | null) => void
+            /** A reasoning-effort switch failed (or the model exposes no
+             * thought_level option): the argument is the live effort
+             * preference in the picker's domain — undefined = none tracked,
+             * null = "Default"/provider default, string = a concrete value.
+             * The host resets its tracking and re-syncs so the hub picker
+             * stops showing the failed value and later turns stop
+             * re-requesting it (mirror of onModelRollback). */
+            onEffortRollback?: (effort: string | null | undefined) => void
         } = {}
     ) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -275,6 +286,23 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 } else {
                     batch.mode.model = this.currentBackendModel ?? undefined
                     this.opts.onModelRollback?.(this.currentBackendModel)
+                }
+            }
+
+            // Hermes surfaces reasoning effort as the 'reasoning_effort'
+            // config option (category thought_level; 'default' = Provider
+            // default/reset). The web reasoning-effort picker drives this via
+            // the queued turn's mode, exactly like the dsh rail.
+            const requestedEffort = batch.mode.modelReasoningEffort
+            if (requestedEffort !== undefined) {
+                const appliedEffort = await this.applyReasoningEffort(backend, acpSessionId, requestedEffort)
+                if (appliedEffort === null) {
+                    // Same contract as the model switch: the failed
+                    // preference never took, so the host's tracking (and
+                    // through it the hub picker) is corrected back to the
+                    // live value — later turns stop re-requesting the failed
+                    // one, and the respawn below skips it too.
+                    this.opts.onEffortRollback?.(this.liveEffortPreference())
                 }
             }
 
@@ -487,6 +515,21 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             // re-apply the live user preference so the retried batch runs on
             // the model the session is showing.
             await this.applyModelSwitch(backend, acpSessionId, this.currentBackendModel)
+        }
+        if (opts.respawn && this.currentReasoningEffort !== null) {
+            // Same re-apply contract as the model preference, with one
+            // difference: a failure here DROPS the effort preference. The
+            // replacement child is the preference's only chance to
+            // re-materialize (the session it was proven on is gone — and a
+            // failed resume even starts a fresh one), so a value the new
+            // session rejects — e.g. after a model switch to one without that
+            // effort level — is cleared instead of failing every later
+            // respawn; the host is told so the hub picker follows.
+            const reapplied = await this.applyEffortValue(backend, acpSessionId, this.currentReasoningEffort)
+            if (reapplied === null) {
+                this.currentReasoningEffort = null
+                this.opts.onEffortRollback?.(undefined)
+            }
         }
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
@@ -729,6 +772,73 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             })
             return null
         }
+    }
+
+    /**
+     * Apply a reasoning-effort change through the 'reasoning_effort' config
+     * option (category thought_level). Hermes's value space is the thought
+     * level vocabulary (none/minimal/low/medium/high/xhigh/max/ultra) with
+     * 'default' meaning "reset to the provider default", so the picker's
+     * null ("Default") maps to 'default'. Returns the applied value, or null
+     * when the switch failed or the model exposes no thought_level option
+     * (the caller keeps the previous effort and corrects the host via
+     * onEffortRollback) — the same contract as applyModelSwitch. A request
+     * that already matches the live value returns it without a wire call.
+     */
+    private async applyReasoningEffort(
+        backend: ReturnType<typeof createHermesBackend>,
+        acpSessionId: string,
+        effort: string | null
+    ): Promise<string | null> {
+        const value = effort ?? 'default'
+        if (value === this.currentReasoningEffort) return value
+        return this.applyEffortValue(backend, acpSessionId, value)
+    }
+
+    /**
+     * Fire the set_config_option for a concrete effort value without the
+     * preference dedupe — the respawn path re-applies the live preference to
+     * a FRESH child whose thought level is unknown, so even a value equal to
+     * `currentReasoningEffort` must go over the wire. Only a success updates
+     * the tracked preference; on failure the previous value stands and null
+     * is returned.
+     */
+    private async applyEffortValue(
+        backend: ReturnType<typeof createHermesBackend>,
+        acpSessionId: string,
+        value: string
+    ): Promise<string | null> {
+        const option = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')
+        if (!option) {
+            logger.warn('[hermes-acp] Cannot set reasoning effort: agent exposes no thought_level config option')
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: 'Cannot set reasoning effort: the current Hermes model exposes no thought levels.'
+            })
+            return null
+        }
+        try {
+            await backend.setConfigOption(acpSessionId, option.id, value)
+            this.currentReasoningEffort = value
+            this.messageBuffer.addMessage(`[EFFORT:${value || 'default'}]`, 'system')
+            return value
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn('[hermes-acp] reasoning effort switch failed', { message })
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Failed to switch Hermes reasoning effort: ${message}`
+            })
+            return null
+        }
+    }
+
+    /** The live effort preference in the picker's domain: undefined = none
+     * tracked, null = "Default" (Hermes's 'default'), string = a concrete
+     * value. This is what onEffortRollback reports after a failed apply. */
+    private liveEffortPreference(): string | null | undefined {
+        if (this.currentReasoningEffort === null) return undefined
+        return this.currentReasoningEffort === 'default' ? null : this.currentReasoningEffort
     }
 
     private async handleAbort(): Promise<void> {

@@ -29,6 +29,31 @@ export function getDshReasoningEffortSourceOptions(): ComposerReasoningEffortSou
     return DSH_REASONING_EFFORT_PRESETS.map((value) => ({ value }))
 }
 
+// Hermes exposes the same `reasoning_effort` config option (category
+// thought_level) with the fuller value set none/minimal/low/medium/high/
+// xhigh/max/ultra plus 'default' meaning "reset to the provider default".
+// The composer maps the null Default entry onto 'default'; dsh's 'off'
+// level corresponds to hermes's 'none', so it labels as "Off" too.
+export const HERMES_REASONING_EFFORT_PRESETS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
+const HERMES_REASONING_EFFORT_LABELS: Record<string, string> = {
+    none: 'Off',
+    minimal: 'Minimal',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    xhigh: 'XHigh',
+    max: 'Max',
+    ultra: 'Ultra'
+}
+
+/** Source options for SessionChat's hermes picker (mirrors what the agent's config option advertises). */
+export function getHermesReasoningEffortSourceOptions(): ComposerReasoningEffortSourceOption[] {
+    return HERMES_REASONING_EFFORT_PRESETS.map((value) => ({
+        value,
+        name: HERMES_REASONING_EFFORT_LABELS[value]
+    }))
+}
+
 function normalizeCodexComposerReasoningEffort(effort?: string | null): string | null {
     const trimmedEffort = effort?.trim().toLowerCase()
     if (!trimmedEffort || trimmedEffort === 'default') {
@@ -87,6 +112,15 @@ export function getCodexComposerReasoningEffortOptions(
         const sourceOptions = dynamicOptions && dynamicOptions.length > 0
             ? dynamicOptions
             : getDshReasoningEffortSourceOptions()
+        return buildDynamicReasoningEffortOptions(normalizedCurrentEffort, sourceOptions)
+    }
+
+    if (flavor === 'hermes') {
+        // Hermes has a fixed thought_level value set too (the fuller
+        // none…ultra vocabulary); same prefer-discovered-else-presets rule.
+        const sourceOptions = dynamicOptions && dynamicOptions.length > 0
+            ? dynamicOptions
+            : getHermesReasoningEffortSourceOptions()
         return buildDynamicReasoningEffortOptions(normalizedCurrentEffort, sourceOptions)
     }
 

@@ -5,6 +5,12 @@ export type HermesMode = {
      * null = explicit reset to the server default ("Default" in the picker);
      * undefined = no preference (keep whatever the backend is running). */
     model?: string | null
+    /** Reasoning-effort preference for the turn ('reasoning_effort' config
+     * option, category thought_level; Hermes vocabulary none/minimal/low/
+     * medium/high/xhigh/max/ultra). null = the picker's "Default" reset,
+     * mapped to Hermes's 'default' (provider default); undefined = no
+     * change. */
+    modelReasoningEffort?: string | null
     /** HAPI permission mode attached to the outgoing turn. undefined = the
      * session default ('default'); the launcher pushes changes to Hermes via
      * session/set_mode before prompting. */
@@ -16,14 +22,19 @@ export type HermesMode = {
  *  all), null = the picker's explicit "Default" reset, string = a concrete
  *  model. Collapsing undefined into null would make every ordinary turn look
  *  like a reset request when no model is known. The permission mode is only
- *  attached once the session state carries one, so ordinary turns stay lean. */
+ *  attached once the session state carries one, so ordinary turns stay lean;
+ *  the reasoning-effort preference rides the same three-state rule. */
 export function hermesModeForPreference(
     model: string | null | undefined,
-    permissionMode?: PermissionMode
+    permissionMode?: PermissionMode,
+    modelReasoningEffort?: string | null
 ): HermesMode {
     const mode: HermesMode = model === undefined ? {} : { model }
     if (permissionMode !== undefined) {
         mode.permissionMode = permissionMode
+    }
+    if (modelReasoningEffort !== undefined) {
+        mode.modelReasoningEffort = modelReasoningEffort
     }
     return mode
 }

@@ -40,6 +40,19 @@ struct ToolGroupClassificationTests {
         #expect(getToolGroupActionKind(tool("read_image")) == .other)
     }
 
+    @Test func hermesToolNamesClassifyThroughNormalization() {
+        // Hermes builtins carry kind 'other' with bare lowercase names (the
+        // "<name>: <preview>" title is stripped at derivation); the name
+        // fallback buckets classify them like the dsh set above.
+        #expect(getToolGroupActionKind(tool("terminal", nativeKind: "other")) == .command)
+        #expect(getToolGroupActionKind(tool("read_file", nativeKind: "other")) == .read)
+        #expect(getToolGroupActionKind(tool("write_file", nativeKind: "other")) == .mutation)
+        #expect(getToolGroupActionKind(tool("patch", nativeKind: "other")) == .mutation)
+        #expect(getToolGroupActionKind(tool("search_files", nativeKind: "other")) == .search)
+        #expect(getToolGroupActionKind(tool("web_search", nativeKind: "other")) == .web)
+        #expect(getToolGroupActionKind(tool("web_extract", nativeKind: "other")) == .web)
+    }
+
     // MARK: - Exact-case spellings still classify
 
     @Test func exactCaseNamesKeepTheirBuckets() {
@@ -81,6 +94,7 @@ struct ToolGroupClassificationTests {
     @Test func planAndMilestoneToolsStayOutOfGroups() {
         #expect(!isEligibleForToolGrouping(tool("todo_write")))
         #expect(!isEligibleForToolGrouping(tool("TodoWrite")))
+        #expect(!isEligibleForToolGrouping(tool("todo_list")))
         #expect(!isEligibleForToolGrouping(tool("update_plan")))
         #expect(!isEligibleForToolGrouping(tool("updatePlan")))
         #expect(!isEligibleForToolGrouping(tool("ExitPlanMode")))

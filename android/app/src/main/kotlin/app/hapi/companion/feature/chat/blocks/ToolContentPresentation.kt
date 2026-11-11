@@ -11,9 +11,12 @@ import kotlinx.serialization.json.JsonPrimitive
 /**
  * Presentation aliases only; never rewrite the recorded call or grouping input.
  * DSH emits raw lowercase snake tool names (kind `'other'`, title = the
- * verbatim name); alias them onto their capitalized twins so the cards, bodies
- * and result styles render richly (web `knownTools.tsx` lowercase entries +
- * the `_all`/`_results` view registries). The branches degrade safely on
+ * verbatim name) and hermes names its builtins terminal/read_file/write_file/
+ * patch/search_files/web_search/web_extract/todo_list (titles arrive as
+ * "<name>: <preview>" and are stripped to the bare name at derivation);
+ * alias them onto their capitalized twins so the cards, bodies and result
+ * styles render richly (web `knownTools.tsx` lowercase entries + the
+ * `_all`/`_results` view registries). The branches degrade safely on
  * foreign shapes — every rich view falls back to the generic JSON/title path
  * when its expected input keys are missing.
  */
@@ -21,14 +24,21 @@ internal fun toolPresentationName(name: String): String = when (val local = name
     "exec_command" -> "Bash"
     "apply_patch" -> "CodexPatch"
     "bash" -> "Bash"
+    "terminal" -> "Bash"
     "read" -> "Read"
+    "read_file" -> "Read"
     "edit" -> "Edit"
     "write" -> "Write"
+    "write_file" -> "Write"
     "grep" -> "Grep"
     "glob" -> "Glob"
+    "search_files" -> "Glob"
     "web_fetch" -> "WebFetch"
+    "web_extract" -> "WebFetch"
     "web_search" -> "WebSearch"
     "todo_write" -> "TodoWrite"
+    "todo_list" -> "TodoWrite"
+    "patch" -> "CodexPatch"
     else -> local
 }
 

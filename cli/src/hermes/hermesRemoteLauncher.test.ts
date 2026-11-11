@@ -30,6 +30,7 @@ const harness = vi.hoisted(() => ({
     suppressCalls: 0,
     titleListener: null as ((update: { title?: unknown }) => void) | null,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
+    thoughtLevelOption: null as { id: string; category?: string; currentValue?: string } | null,
     modelsMetadata: null as {
         availableModels: Array<{ modelId: string; name?: string }>
         currentModelId: string | null
@@ -96,7 +97,8 @@ vi.mock('./utils/hermesBackend', () => ({
                 onUpdate({ type: 'text', text: 'answer' })
             }),
             cancelPrompt: vi.fn(async () => {}),
-            getConfigOptionByCategory: vi.fn(() => harness.modelOption),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) =>
+                category === 'thought_level' ? harness.thoughtLevelOption : harness.modelOption),
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
                 harness.setConfigOptionCalls.push({ sessionId, configId, value })
@@ -219,6 +221,7 @@ describe('HermesRemoteLauncher', () => {
         harness.suppressCalls = 0
         harness.titleListener = null
         harness.modelOption = null
+        harness.thoughtLevelOption = null
         harness.modelsMetadata = null
         harness.setConfigOptionCalls = []
         harness.setModeCalls = []
@@ -498,6 +501,171 @@ describe('HermesRemoteLauncher', () => {
             String((call[0] as { message?: string } | undefined)?.message ?? '').includes('Cannot reset'))
         expect(resetFailures).toEqual([])
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('applies reasoning effort through the thought_level config option, mapping Default to hermes default', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'default' }
+        const session = createSessionWithBatches([
+            ['first', { modelReasoningEffort: 'high' }],
+            ['second', { modelReasoningEffort: null }]
+        ])
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        const effortCalls = harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')
+        expect(effortCalls).toEqual([
+            { sessionId: 'hermes-session-1', configId: 'reasoning_effort', value: 'high' },
+            // null ("Default" in the picker) maps to Hermes's 'default'
+            // (reset to the provider default) — not DSH's ''.
+            { sessionId: 'hermes-session-1', configId: 'reasoning_effort', value: 'default' }
+        ])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('skips reasoning effort with a status note when the model exposes no thought_level option', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.thoughtLevelOption = null
+        const onEffortRollback = vi.fn()
+        const session = createSessionWithBatches([['first', { modelReasoningEffort: 'high' }]])
+        const launcher = new HermesRemoteLauncher(session as never, { onEffortRollback })
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')).toEqual([])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Cannot set reasoning effort: the current Hermes model exposes no thought levels.'
+        })
+        // Nothing was ever applied: the host drops the preference entirely so
+        // subsequent turns stop carrying the effort field.
+        expect(onEffortRollback).toHaveBeenCalledWith(undefined)
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('keeps the previous effort and rolls back the host tracking when a per-turn switch fails', async () => {
+        // Same contract as the model switch: a failed set_config_option must
+        // not leave the hub picker showing the failed value, and later turns
+        // must stop re-requesting it — the rollback reports the live value.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'default' }
+        const onEffortRollback = vi.fn()
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('first', { modelReasoningEffort: 'high' })
+        const session = createSessionFromQueue(queue)
+        const launcher = new HermesRemoteLauncher(session as never, { onEffortRollback })
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        // The second pick fails: the model rejects the effort value.
+        harness.configOptionError = new Error('invalid effort value')
+        queue.push('second', { modelReasoningEffort: 'ultra' })
+        queue.close()
+        await done
+
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Failed to switch Hermes reasoning effort: invalid effort value'
+        })
+        // The host is told the LIVE preference ('high' — the last applied
+        // value), not the failed 'ultra'.
+        expect(onEffortRollback).toHaveBeenCalledWith('high')
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('reports Default (null) as the live preference after a failed reset', async () => {
+        // A failed reset-to-Default rolls the host back to the last APPLIED
+        // value in the picker's domain: 'default' on the wire reports as
+        // null ("Default"), not as the raw wire string.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'default' }
+        const onEffortRollback = vi.fn()
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('first', { modelReasoningEffort: null })
+        const session = createSessionFromQueue(queue)
+        const launcher = new HermesRemoteLauncher(session as never, { onEffortRollback })
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        harness.configOptionError = new Error('boom')
+        queue.push('second', { modelReasoningEffort: 'high' })
+        queue.close()
+        await done
+
+        expect(onEffortRollback).toHaveBeenCalledWith(null)
+    })
+
+    it('re-applies the effort preference on the respawned backend before the retried batch', async () => {
+        // The respawned `hermes acp` child must land back on the session's
+        // live effort preference (same contract as the model re-apply), so
+        // the retried batch does not silently run on the daemon default.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'default' }
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('first', { modelReasoningEffort: 'high' })
+        const session = createSessionFromQueue(queue, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        // The child dies on the next turn: the respawn re-applies 'high' on
+        // the replacement before retrying the batch.
+        harness.promptErrorQueue = [deadTransportError()]
+        queue.push('second', {})
+        queue.close()
+        await done
+
+        expect(harness.backends).toHaveLength(2)
+        const effortCalls = harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')
+        expect(effortCalls).toEqual([
+            { sessionId: 'hermes-existing-1', configId: 'reasoning_effort', value: 'high' },
+            { sessionId: 'hermes-existing-1', configId: 'reasoning_effort', value: 'high' }
+        ])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('drops the effort preference when the respawn re-apply fails', async () => {
+        // Drop-on-failure contract: the replacement child is the
+        // preference's only chance to re-materialize, so a value it rejects
+        // is cleared (host told: undefined) instead of failing every later
+        // respawn.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'default' }
+        const onEffortRollback = vi.fn()
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('first', { modelReasoningEffort: 'high' })
+        const session = createSessionFromQueue(queue, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never, { onEffortRollback })
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.configOptionError = new Error('model has no such thought level')
+        queue.push('second', {})
+        queue.close()
+        await done
+
+        expect(onEffortRollback).toHaveBeenCalledWith(undefined)
+        // Turn 1's apply succeeded; the respawn re-apply threw and dropped.
+        const effortCalls = harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')
+        expect(effortCalls).toHaveLength(2)
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }],
+            [{ type: 'text', text: 'second' }]
+        ])
     })
 
     it('answers ListHermesModels once a delayed session/new completes', async () => {

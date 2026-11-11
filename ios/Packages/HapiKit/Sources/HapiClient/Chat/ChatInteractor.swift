@@ -871,11 +871,11 @@ public final class ChatInteractor {
     }
 
     /// Effort switch, flavor-routed: claude → `POST /effort`; codex/opencode/
-    /// dsh → `POST /model-reasoning-effort` (the hub accepts dsh since the
-    /// v29.3 web rail). Nil clears.
+    /// dsh/hermes → `POST /model-reasoning-effort` (the hub accepts dsh and
+    /// hermes since the v29.x web rail). Nil clears.
     public func setEffort(_ effort: String?) {
         let flavor = currentFlavor()
-        let usesReasoningEffort = flavor == "codex" || flavor == "opencode" || flavor == "dsh"
+        let usesReasoningEffort = flavor == "codex" || flavor == "opencode" || flavor == "dsh" || flavor == "hermes"
         let api = api
         let sessionId = sessionId
         runConfigChange(

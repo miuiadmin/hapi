@@ -130,6 +130,33 @@ function normalizeToolName(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null;
 }
 
+/** A token that could be a tool identifier: identifiers are built from
+ *  alphanumerics plus `_`, `.` and `-` (ACP tool names, snake_case names,
+ *  `mcp__server__tool` mounts). The charset alone rules out sentences — a
+ *  human phrase before a colon ("Fix the bug: ...", "Step 1: ...") always
+ *  contains whitespace or punctuation outside the class. */
+const TOOL_IDENTIFIER_TOKEN = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * Strip the "<name>: <preview>" suffix agents append to tool_call titles.
+ * Hermes titles every tool call "<tool name>: <argument preview>" (verified
+ * against the hermes ACP source); the preview after ': ' would defeat every
+ * downstream alias/known-tool table, which match on the bare name. When the
+ * title contains ': ' and the token before the first colon looks like a tool
+ * identifier, that token is the derived name; anything else (sentences,
+ * paths, commands with colons but no identifier prefix) passes through
+ * verbatim. Applies at derivation so every consumer — permission cards,
+ * canonical diff views, the alias tables on web/iOS/Android — sees the same
+ * bare name regardless of flavor.
+ */
+export function stripToolTitlePreviewSuffix(title: string): string {
+    const separatorIndex = title.indexOf(': ');
+    if (separatorIndex <= 0) return title;
+    const candidate = title.slice(0, separatorIndex);
+    if (!TOOL_IDENTIFIER_TOKEN.test(candidate)) return title;
+    return candidate;
+}
+
 export function isPlaceholderToolName(name: string): boolean {
     const normalized = name.trim().toLowerCase();
     return normalized === '' || normalized === 'tool' || normalized === 'unknown' || normalized === 'other';
@@ -143,7 +170,7 @@ export function deriveToolNameWithSource(input: {
 }): { name: string; source: ToolNameSource } {
     const title = normalizeToolName(input.title);
     if (title) {
-        return { name: title, source: 'title' };
+        return { name: stripToolTitlePreviewSuffix(title), source: 'title' };
     }
 
     if (isObject(input.rawInput)) {

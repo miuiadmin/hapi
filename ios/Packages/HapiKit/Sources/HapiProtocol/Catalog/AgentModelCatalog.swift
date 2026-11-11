@@ -280,6 +280,34 @@ public enum AgentModelCatalog {
         return options + presets.map { CatalogOption(value: $0, label: ModelCatalog.capitalizedFirst($0)) }
     }
 
+    /// Hermes in-session reasoning efforts: the same `reasoning_effort`
+    /// config option (category thought_level) with the fuller fixed value
+    /// set — none/minimal/low/medium/high/xhigh/max/ultra plus `'default'`
+    /// meaning "reset to the provider default", which maps onto the nil
+    /// Default row (web `HERMES_REASONING_EFFORT_PRESETS`; dsh's `off`
+    /// level corresponds to hermes's `none`, so it labels as "Off" too).
+    /// An out-of-list current stays visible, injected after Default.
+    public static func hermesSessionEffortOptions(currentValue: String?) -> [CatalogOption] {
+        let trimmed = currentValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let normalized = (trimmed.isEmpty || trimmed == "default") ? nil : trimmed
+        let presets = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        let labels = [
+            "none": "Off",
+            "minimal": "Minimal",
+            "low": "Low",
+            "medium": "Medium",
+            "high": "High",
+            "xhigh": "XHigh",
+            "max": "Max",
+            "ultra": "Ultra",
+        ]
+        var options = [CatalogOption(value: nil, label: "Default")]
+        if let normalized, !presets.contains(normalized) {
+            options.append(CatalogOption(value: normalized, label: ModelCatalog.capitalizedFirst(normalized)))
+        }
+        return options + presets.map { CatalogOption(value: $0, label: labels[$0] ?? ModelCatalog.capitalizedFirst($0)) }
+    }
+
     // MARK: - Pi thinking levels (`shared/src/piThinkingLevel.ts`)
 
     public static let piThinkingLevelOrder = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]

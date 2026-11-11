@@ -24,6 +24,47 @@ describe('agent tool name helpers', () => {
         expect(isPlaceholderToolName('search')).toBe(false);
     });
 
+    describe('tool_call title preview suffix (hermes "<name>: <preview>")', () => {
+        it('strips the preview when the pre-colon token is a tool identifier', () => {
+            expect(deriveToolName({ title: 'terminal: ls -la /tmp' })).toBe('terminal');
+            expect(deriveToolName({ title: 'write_file: src/chat/types.ts' })).toBe('write_file');
+            expect(deriveToolName({ title: 'todo_list: 3 items updated' })).toBe('todo_list');
+        });
+
+        it('strips down to mounted MCP tool identifiers', () => {
+            expect(deriveToolName({ title: 'mcp__editor_hapi_ab12cd34__write_file: draft.md' }))
+                .toBe('mcp__editor_hapi_ab12cd34__write_file');
+        });
+
+        it('keeps the title verbatim when the pre-colon token is a sentence', () => {
+            expect(deriveToolName({ title: 'Fix the bug: rewrite the parser' }))
+                .toBe('Fix the bug: rewrite the parser');
+            expect(deriveToolName({ title: 'Step 1: collect inputs' }))
+                .toBe('Step 1: collect inputs');
+        });
+
+        it('keeps titles without an identifier-shaped prefix verbatim', () => {
+            // No ': ' separator at all.
+            expect(deriveToolName({ title: 'Bash(npm test)' })).toBe('Bash(npm test)');
+            // Colon is not followed by a space.
+            expect(deriveToolName({ title: 'grep:http' })).toBe('grep:http');
+            // Pre-colon token carries characters no identifier has.
+            expect(deriveToolName({ title: 'src/app.ts: 42 lines' })).toBe('src/app.ts: 42 lines');
+        });
+
+        it('strips a single identifier-shaped word before the colon', () => {
+            // The charset guard is the only sentence filter (a real sentence
+            // always carries whitespace/punctuation); a lone word like this
+            // is indistinguishable from a tool name and strips by design.
+            expect(deriveToolName({ title: 'Error: something failed' })).toBe('Error');
+        });
+
+        it('reports the stripped name with the title source', () => {
+            const derived = deriveToolNameWithSource({ title: 'web_extract: https://example.com/a' });
+            expect(derived).toEqual({ name: 'web_extract', source: 'title' });
+        });
+    });
+
     describe('kind=edit _meta.kind mapping (Gemini write_file / replace)', () => {
         // Gemini ACP: kind=edit with _meta.kind distinguishes write_file (add)
         // from replace (modify). Map to canonical Claude tool names.

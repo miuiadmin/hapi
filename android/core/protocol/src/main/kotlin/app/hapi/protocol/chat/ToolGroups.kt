@@ -75,6 +75,10 @@ fun normalizeToolIdentifier(value: String?): String {
 
 private val PLAN_TOOL_NAMES = setOf(
     "todowrite",
+    // hermes todo_list — same plan-milestone treatment as dsh's
+    // todo_write: keep it standalone, never grouped.
+    "todolist",
+    "todo_list",
     "updateplan",
     "exitplanmode",
     "codexreasoning",
@@ -157,6 +161,8 @@ private val MUTATION_TOOL_NAMES = setOf(
 private val WEB_TOOL_NAMES = setOf(
     "webfetch",
     "websearch",
+    // hermes web_extract — same URL-driven bucket as web_fetch.
+    "webextract",
     "fetchurl",
     "openurl",
     "urlfetch",

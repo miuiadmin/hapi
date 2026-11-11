@@ -489,3 +489,115 @@ describe('getToolPresentation — dsh lowercase snake aliases', () => {
         expect(presentation.minimal).toBe(true)
     })
 })
+
+describe('getToolPresentation — hermes lowercase snake aliases', () => {
+    // Hermes tool_call updates carry the raw lowercase snake names below
+    // (titles arrive as "<name>: <preview>" and are stripped to the bare
+    // name at derivation); their cards must present like the capitalized
+    // twins, mirroring the dsh lowercase rows.
+    it.each(['Bash', 'bash', 'terminal'])('titles %s cards from the command', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { command: 'git status --short' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('git status')
+        expect(presentation.subtitle).toBe('git status --short')
+    })
+
+    it.each(['TodoWrite', 'todo_write', 'todo_list'])('renders %s as a checklist card', (toolName) => {
+        const withItems = getToolPresentation({
+            toolName,
+            input: { todos: [{ id: '1', content: 'Ship the fix', status: 'in_progress' }] },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        expect(withItems.minimal).toBe(false)
+        expect(withItems.subtitle).toBe('1 item')
+    })
+
+    it.each(['Read', 'read', 'read_file'])('titles %s cards from the target file', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { file_path: '/repo/cli/src/agent/utils.ts' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        expect(presentation.title).toBe('/repo/cli/src/agent/utils.ts')
+    })
+
+    it.each(['Write', 'write', 'write_file'])('titles %s cards from the target file with a size subtitle', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { file_path: '/repo/README.md', content: 'one\ntwo\nthree' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        expect(presentation.title).toBe('/repo/README.md')
+        expect(presentation.subtitle).toBe('3 lines')
+    })
+
+    it.each(['apply_patch', 'patch'])('presents %s as a thin mutation chip', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { patch: '*** Begin Patch\n*** Update File: README.md' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Apply patch')
+        expect(presentation.minimal).toBe(true)
+    })
+
+    it('titles search_files cards from the pattern', () => {
+        const presentation = getToolPresentation({
+            toolName: 'search_files',
+            input: { pattern: '*.test.ts' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('*.test.ts')
+    })
+
+    it.each(['web_fetch', 'web_extract'])('titles %s cards by hostname', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { url: 'https://example.com/docs/page' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('example.com')
+        expect(presentation.subtitle).toBe('https://example.com/docs/page')
+    })
+
+    it.each(['web_search'])('titles %s cards from the query', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { query: 'acp protocol' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('acp protocol')
+    })
+})

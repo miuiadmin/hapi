@@ -50,6 +50,20 @@ class ToolContentPresentationTest {
         assertEquals("update_plan", toolPresentationName("update_plan"))
     }
 
+    @Test fun hermesBuiltinNamesResolveOntoTheirCapitalizedTwins() {
+        // Hermes titles its tool calls "<name>: <preview>"; the preview is
+        // stripped at derivation and the bare name must resolve through the
+        // same alias table (web `knownTools.tsx` hermes entries).
+        for ((raw, twin) in listOf(
+            "terminal" to "Bash", "read_file" to "Read", "write_file" to "Write",
+            "search_files" to "Glob", "web_extract" to "WebFetch",
+            "web_search" to "WebSearch", "todo_list" to "TodoWrite",
+            "patch" to "CodexPatch",
+        )) {
+            assertEquals(twin, toolPresentationName(raw), raw)
+        }
+    }
+
     @Test fun aliasedResultStylesMatchTheirTwinsAndDegradeOnForeignShapes() {
         // Result-view selection follows the alias: dsh web results render
         // markdown, reads render source, bash renders terminal — while empty

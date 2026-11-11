@@ -223,6 +223,18 @@ export const knownTools: Record<string, {
         subtitle: getTerminalSubtitle,
         minimal: true
     },
+    // Hermes tool names are the lowercase snake set below (terminal,
+    // read_file, write_file, patch, search_files, web_search, web_extract,
+    // todo_list); titles arrive as "<name>: <preview>" and are stripped to
+    // the bare name at derivation, so these rows resolve them onto the same
+    // presentations as their capitalized twins — exactly like the dsh
+    // lowercase entries above. web_search already has a lowercase row.
+    terminal: {
+        icon: () => <TerminalIcon className={DEFAULT_ICON_CLASS} />,
+        title: getTerminalTitle,
+        subtitle: getTerminalSubtitle,
+        minimal: true
+    },
     Glob: {
         icon: () => <SearchIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => getInputStringAny(opts.input, ['pattern']) ?? 'Search files',
@@ -231,6 +243,12 @@ export const knownTools: Record<string, {
     glob: {
         icon: () => <SearchIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => getInputStringAny(opts.input, ['pattern']) ?? 'Search files',
+        minimal: true
+    },
+    // hermes search_files (pattern-driven file search, like glob)
+    search_files: {
+        icon: () => <SearchIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => getInputStringAny(opts.input, ['pattern', 'query']) ?? 'Search files',
         minimal: true
     },
     Grep: {
@@ -339,6 +357,15 @@ export const knownTools: Record<string, {
         },
         minimal: true
     },
+    // hermes read_file
+    read_file: {
+        icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['filePath', 'file_path', 'path', 'file'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Read file'
+        },
+        minimal: true
+    },
     Edit: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
@@ -358,6 +385,15 @@ export const knownTools: Record<string, {
     // DSH's apply_patch carries a unified-patch payload; keep the card a thin
     // mutation chip (the generic JSON fallback would dump the whole patch).
     apply_patch: {
+        icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Apply patch'
+        },
+        minimal: true
+    },
+    // hermes patch carries the same unified-patch payload shape.
+    patch: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
             const file = getInputStringAny(opts.input, ['file_path', 'path'])
@@ -405,6 +441,21 @@ export const knownTools: Record<string, {
         },
         minimal: true
     },
+    // hermes write_file
+    write_file: {
+        icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['file_path', 'path'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Write file'
+        },
+        subtitle: (opts) => {
+            const content = getInputStringAny(opts.input, ['content', 'text'])
+            if (!content) return null
+            const lines = countLines(content)
+            return lines > 1 ? `${lines} lines` : `${content.length} chars`
+        },
+        minimal: true
+    },
     WebFetch: {
         icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
@@ -424,6 +475,25 @@ export const knownTools: Record<string, {
         minimal: true
     },
     web_fetch: {
+        icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const url = getInputStringAny(opts.input, ['url'])
+            if (!url) return 'Web fetch'
+            try {
+                return new URL(url).hostname
+            } catch {
+                return url
+            }
+        },
+        subtitle: (opts) => {
+            const url = getInputStringAny(opts.input, ['url'])
+            if (!url) return null
+            return url
+        },
+        minimal: true
+    },
+    // hermes web_extract (URL-driven content extraction, like web_fetch)
+    web_extract: {
         icon: () => <GlobeIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
             const url = getInputStringAny(opts.input, ['url'])
@@ -486,6 +556,13 @@ export const knownTools: Record<string, {
         minimal: (opts) => extractTodoChecklist(opts.input, opts.result).length === 0
     },
     todo_write: {
+        icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Todo list',
+        subtitle: (opts) => formatChecklistCount(extractTodoChecklist(opts.input, opts.result), 'item'),
+        minimal: (opts) => extractTodoChecklist(opts.input, opts.result).length === 0
+    },
+    // hermes todo_list
+    todo_list: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Todo list',
         subtitle: (opts) => formatChecklistCount(extractTodoChecklist(opts.input, opts.result), 'item'),

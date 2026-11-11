@@ -86,37 +86,39 @@ public struct ToolPresentation: Equatable, Sendable {
     public static func forTool(_ tool: ChatToolCall) -> ToolPresentation {
         let input = tool.input
         switch tool.name {
-        case "Bash", "CodexBash", "shell_command", "run_shell_command":
+        case "Bash", "CodexBash", "shell_command", "run_shell_command", "bash", "terminal":
             return ToolPresentation(
                 title: tool.description ?? "Terminal",
                 subtitle: getInputStringAny(input, ["command", "cmd"])
             )
-        case "Read", "NotebookRead":
+        case "Read", "NotebookRead", "read", "read_file":
             return ToolPresentation(
                 title: "Read",
                 subtitle: getInputStringAny(input, ["file_path", "path", "notebook_path"])
             )
-        case "Write":
+        case "Write", "write", "write_file":
             return ToolPresentation(title: "Write", subtitle: getInputStringAny(input, ["file_path", "path"]))
-        case "Edit", "MultiEdit":
+        case "Edit", "MultiEdit", "edit", "apply_patch", "patch":
             return ToolPresentation(title: "Edit", subtitle: getInputStringAny(input, ["file_path", "path"]))
-        case "Grep":
+        case "Grep", "grep":
             return ToolPresentation(title: "Grep", subtitle: getInputStringAny(input, ["pattern", "query"]))
-        case "Glob":
+        case "Glob", "glob", "search_files":
             return ToolPresentation(title: "Glob", subtitle: getInputStringAny(input, ["pattern"]))
         case "LS":
             return ToolPresentation(title: "List files", subtitle: getInputStringAny(input, ["path"]))
-        case "WebFetch", "WebSearch":
+        case "WebFetch", "web_fetch", "web_extract":
             return ToolPresentation(
-                title: tool.name == "WebFetch" ? "Fetch" : "Web search",
+                title: "Fetch",
                 subtitle: getInputStringAny(input, ["url", "query"])
             )
+        case "WebSearch", "web_search":
+            return ToolPresentation(title: "Web search", subtitle: getInputStringAny(input, ["query", "url"]))
         case "Task", "Agent":
             return ToolPresentation(
                 title: getInputStringAny(input, ["description"]) ?? "Subagent",
                 subtitle: getInputStringAny(input, ["subagent_type"])
             )
-        case "TodoWrite", "update_plan":
+        case "TodoWrite", "update_plan", "todo_write", "todo_list":
             return ToolPresentation(title: "Plan", subtitle: nil)
         case "AskUserQuestion", "ask_user_question", "CursorAskQuestion":
             return ToolPresentation(title: "Question", subtitle: nil)
