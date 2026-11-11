@@ -202,10 +202,11 @@ export function useSessionActions(
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            // dsh rides the same rail: its `reasoning_effort` config option
-            // (thought_level) is applied through the shared set-config mutation.
-            if (agentFlavor !== 'codex' && agentFlavor !== 'opencode' && agentFlavor !== 'dsh') {
-                throw new Error('Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions')
+            // dsh and hermes ride the same rail: their `reasoning_effort`
+            // config option (thought_level) is applied through the shared
+            // set-config mutation.
+            if (agentFlavor !== 'codex' && agentFlavor !== 'opencode' && agentFlavor !== 'dsh' && agentFlavor !== 'hermes') {
+                throw new Error('Model reasoning effort is only supported for Codex, OpenCode, DSH, and Hermes sessions')
             }
             if (agentFlavor === 'codex' && !codexCollaborationModeSupported) {
                 throw new Error('Model reasoning effort is only supported for remote sessions')

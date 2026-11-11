@@ -64,6 +64,10 @@ type ToolGroupingOptions = {
 
 const PLAN_TOOL_NAMES = new Set([
     'todowrite',
+    // hermes todo_list (and its normalized spelling) — same plan-milestone
+    // treatment as dsh's todo_write: keep it standalone, never grouped.
+    'todolist',
+    'todo_list',
     'updateplan',
     'exitplanmode',
     'codexreasoning'
@@ -146,6 +150,8 @@ const MUTATION_TOOL_NAMES = new Set([
 const WEB_TOOL_NAMES = new Set([
     'webfetch',
     'websearch',
+    // hermes web_extract — same URL-driven bucket as web_fetch.
+    'webextract',
     'fetchurl',
     'openurl',
     'urlfetch'

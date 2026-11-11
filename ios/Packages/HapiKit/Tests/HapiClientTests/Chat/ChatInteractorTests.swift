@@ -973,6 +973,40 @@ struct ChatInteractorTests {
         #expect(cleared.last == #"{"modelReasoningEffort":null}"#)
     }
 
+    @Test func hermesEffortRoutesToModelReasoningEffort() async throws {
+        // hermes's reset value is 'default' (Provider default); the picker
+        // maps it onto the nil Default row and posts through the shared rail.
+        var detail = chatDetail(flavor: "hermes")
+        detail.modelReasoningEffort = "default"
+        let harness = try await ChatInteractionHarness(detail: detail)
+
+        // Fixed presets show without any catalog load ('default' normalizes to nil).
+        #expect(harness.interactor.config.effort == nil)
+        #expect(harness.interactor.config.effortOptions?.map(\.value)
+            == [nil, "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
+
+        harness.interactor.setEffort("ultra")
+
+        // Wait out the pending op so the clear post can't be dropped.
+        #expect(await eventually {
+            await harness.performer.count("POST", pathSuffix: "/model-reasoning-effort") == 1
+                && !harness.interactor.configOpPending
+        })
+        let bodies = await harness.performer.bodies("POST", pathSuffix: "/model-reasoning-effort")
+        #expect(bodies == [#"{"modelReasoningEffort":"ultra"}"#])
+        #expect(harness.store.detail(for: chatSessionID)?.modelReasoningEffort == "ultra")
+
+        // Clearing posts null (back to the Provider default; the CLI maps
+        // null onto hermes's 'default').
+        harness.interactor.setEffort(nil)
+        #expect(await eventually {
+            await harness.performer.count("POST", pathSuffix: "/model-reasoning-effort") == 2
+                && harness.store.detail(for: chatSessionID)?.modelReasoningEffort == nil
+        })
+        let cleared = await harness.performer.bodies("POST", pathSuffix: "/model-reasoning-effort")
+        #expect(cleared.last == #"{"modelReasoningEffort":null}"#)
+    }
+
     @Test func codexModelOptionsLoadThroughTheSessionCatalogEndpoint() async throws {
         let harness = try await ChatInteractionHarness(
             detail: chatDetail(flavor: "codex", model: "gpt-5.3-codex")

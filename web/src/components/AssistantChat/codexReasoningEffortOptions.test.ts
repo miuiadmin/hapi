@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
     DSH_REASONING_EFFORT_PRESETS,
+    HERMES_REASONING_EFFORT_PRESETS,
     getCodexComposerReasoningEffortOptions,
-    getDshReasoningEffortSourceOptions
+    getDshReasoningEffortSourceOptions,
+    getHermesReasoningEffortSourceOptions
 } from './codexReasoningEffortOptions'
 
 describe('getCodexComposerReasoningEffortOptions', () => {
@@ -136,6 +138,72 @@ describe('getCodexComposerReasoningEffortOptions — dsh thought_level', () => {
             { value: 'low', label: 'Low' },
             { value: 'high', label: 'High' },
             { value: 'max', label: 'Max' }
+        ])
+    })
+})
+
+describe('getCodexComposerReasoningEffortOptions — hermes thought_level', () => {
+    // Hermes advertises the same `reasoning_effort` config option (category
+    // thought_level) with the fuller fixed value set none/minimal/low/medium/
+    // high/xhigh/max/ultra plus 'default' meaning "Provider default" (mapped
+    // onto the null Default entry).
+    it('advertises the fixed hermes value set with natural labels', () => {
+        expect([...HERMES_REASONING_EFFORT_PRESETS]).toEqual([
+            'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'
+        ])
+        expect(getHermesReasoningEffortSourceOptions()).toEqual([
+            { value: 'none', name: 'Off' },
+            { value: 'minimal', name: 'Minimal' },
+            { value: 'low', name: 'Low' },
+            { value: 'medium', name: 'Medium' },
+            { value: 'high', name: 'High' },
+            { value: 'xhigh', name: 'XHigh' },
+            { value: 'max', name: 'Max' },
+            { value: 'ultra', name: 'Ultra' }
+        ])
+    })
+
+    it('builds Default + the full preset ladder without dynamic options', () => {
+        expect(getCodexComposerReasoningEffortOptions(null, 'hermes')).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'none', label: 'Off' },
+            { value: 'minimal', label: 'Minimal' },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' },
+            { value: 'xhigh', label: 'XHigh' },
+            { value: 'max', label: 'Max' },
+            { value: 'ultra', label: 'Ultra' }
+        ])
+    })
+
+    it('prefers discovered dynamic options when provided', () => {
+        expect(getCodexComposerReasoningEffortOptions(null, 'hermes', [{ value: 'low' }, { value: 'xhigh' }])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'xhigh', label: 'XHigh' }
+        ])
+    })
+
+    it('normalizes the hermes default value (Provider default) onto the null Default entry', () => {
+        const options = getCodexComposerReasoningEffortOptions('default', 'hermes')
+        expect(options[0]).toEqual({ value: null, label: 'Default' })
+        // No duplicate 'default' entry: 'default' is the provider default.
+        expect(options.filter((option) => option.value === 'default' || option.value === null)).toHaveLength(1)
+    })
+
+    it('keeps an out-of-set current effort visible so the picker never loses the selection', () => {
+        expect(getCodexComposerReasoningEffortOptions('extreme', 'hermes')).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'extreme', label: 'Extreme' },
+            { value: 'none', label: 'Off' },
+            { value: 'minimal', label: 'Minimal' },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' },
+            { value: 'xhigh', label: 'XHigh' },
+            { value: 'max', label: 'Max' },
+            { value: 'ultra', label: 'Ultra' }
         ])
     })
 })

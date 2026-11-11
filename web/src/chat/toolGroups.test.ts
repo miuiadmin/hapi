@@ -151,6 +151,47 @@ describe('isEligibleForToolGrouping', () => {
         expect(isEligibleForToolGrouping(makeToolBlock('todo-1', 'todowrite'))).toBe(false)
     })
 
+    it('excludes the hermes todo_list plan tool', () => {
+        // hermes names its plan tool todo_list; it must stay standalone like
+        // dsh's todo_write instead of being folded into a tool group.
+        expect(isEligibleForToolGrouping(makeToolBlock('todo-1', 'todo_list'))).toBe(false)
+        expect(isEligibleForToolGrouping(makeToolBlock('todo-2', 'Todo-List'))).toBe(false)
+    })
+
+    it('classifies the hermes tool-name set through the name fallback', () => {
+        // Hermes reports uninformative kinds for its builtin tools; the bare
+        // names must classify through the normalized name tables while the
+        // nativeKind-first ordering stays intact (nativeKind 'other' never
+        // wins over a known name).
+        const terminal = makeToolBlock('t-1', 'terminal')
+        terminal.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(terminal)).toBe('command')
+
+        const writeFile = makeToolBlock('w-1', 'write_file')
+        writeFile.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(writeFile)).toBe('mutation')
+
+        const readFile = makeToolBlock('r-1', 'read_file')
+        readFile.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(readFile)).toBe('read')
+
+        const patch = makeToolBlock('p-1', 'patch')
+        patch.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(patch)).toBe('mutation')
+
+        const searchFiles = makeToolBlock('s-1', 'search_files')
+        searchFiles.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(searchFiles)).toBe('search')
+
+        const webSearch = makeToolBlock('ws-1', 'web_search')
+        webSearch.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(webSearch)).toBe('web')
+
+        const webExtract = makeToolBlock('we-1', 'web_extract')
+        webExtract.tool.nativeKind = 'other'
+        expect(getToolGroupActionKind(webExtract)).toBe('web')
+    })
+
     it('keeps Antigravity lifecycle markers standalone', () => {
         expect(isEligibleForToolGrouping(makeToolBlock('log-1', 'AgyTaskLog'))).toBe(false)
         expect(isEligibleForToolGrouping(makeToolBlock('task-1', 'AgyAsyncTask'))).toBe(false)

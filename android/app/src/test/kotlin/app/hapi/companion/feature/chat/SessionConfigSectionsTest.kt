@@ -138,6 +138,36 @@ class SessionConfigSectionsTest {
     }
 
     @Test
+    fun `hermes rows are the fuller fixed preset set with natural labels`() {
+        // none…ultra presets, Default first (web HERMES_REASONING_EFFORT_PRESETS);
+        // dsh's `off` level corresponds to hermes's `none`, labeled "Off".
+        val rows = SessionConfigSections.hermesReasoningEffortOptions("high")
+        assertEquals(
+            listOf(
+                null to "Default", "none" to "Off", "minimal" to "Minimal", "low" to "Low",
+                "medium" to "Medium", "high" to "High", "xhigh" to "XHigh", "max" to "Max", "ultra" to "Ultra",
+            ),
+            rows.map { it.value to it.label },
+        )
+        // 'default' (Provider default) and blank normalize onto the Default row.
+        assertEquals(
+            rows.map { it.value },
+            SessionConfigSections.hermesReasoningEffortOptions("default").map { it.value },
+        )
+        assertEquals(
+            rows.map { it.value },
+            SessionConfigSections.hermesReasoningEffortOptions(null).map { it.value },
+        )
+        // An out-of-list current stays visible, injected after Default.
+        val injected = SessionConfigSections.hermesReasoningEffortOptions("extreme")
+        assertEquals(
+            listOf(null, "extreme", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
+            injected.map { it.value },
+        )
+        assertEquals("Extreme", injected[1].label)
+    }
+
+    @Test
     fun `opencode rows hide on empty rpc list and prefer provider names`() {
         assertNull(SessionConfigSections.opencodeReasoningEffortOptions("high", null))
         assertNull(SessionConfigSections.opencodeReasoningEffortOptions("high", emptyList()))

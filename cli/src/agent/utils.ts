@@ -130,27 +130,25 @@ function normalizeToolName(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null;
 }
 
-/** Hermes tool_call titles are `"<name>: <preview>"` (acp_adapter); agents
- * that mount editor MCP tools surface the full tagged bridge name there
- * (`mcp__editor_hapi_<tag>__ask_user_question: <question preview>`). */
-const BARE_TOOL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
-
 /**
  * Strip a `": <preview>"` suffix from a tool title when what precedes the
- * colon is a bare identifier (letters/digits/underscore/dot/dash — no
- * spaces). Prose titles ("Edit file: src/foo.ts", "list peer sessions: …")
- * keep their full text: the head is not an identifier, and the historic
- * behavior for every other flavor is byte-identical.
+ * colon is a bare tool identifier (letters/underscore start, then
+ * alphanumerics/underscore/dot/dash — no spaces). Hermes titles are
+ * `"<name>: <preview>"` (verified against the hermes ACP source) and the
+ * editor-MCP bridge surfaces the full tagged name there
+ * (`mcp__editor_hapi_<tag>__ask_user_question: <question preview>`); the
+ * bare name is what every downstream alias/known-tool table matches on.
+ * Prose titles keep their full text; other flavors are byte-identical.
  */
-function toolNameFromTitle(title: string): string {
+const BARE_TOOL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+export function stripToolTitlePreviewSuffix(title: string): string {
     const separatorIndex = title.indexOf(': ');
-    if (separatorIndex > 0) {
-        const head = title.slice(0, separatorIndex);
-        if (BARE_TOOL_NAME_PATTERN.test(head)) {
-            return head;
-        }
-    }
-    return title;
+    if (separatorIndex <= 0) return title;
+    const candidate = title.slice(0, separatorIndex);
+    if (!BARE_TOOL_NAME_PATTERN.test(candidate)) return title;
+    return candidate;
+}
 }
 
 export function isPlaceholderToolName(name: string): boolean {
@@ -166,7 +164,7 @@ export function deriveToolNameWithSource(input: {
 }): { name: string; source: ToolNameSource } {
     const title = normalizeToolName(input.title);
     if (title) {
-        return { name: toolNameFromTitle(title), source: 'title' };
+        return { name: stripToolTitlePreviewSuffix(title), source: 'title' };
     }
 
     if (isObject(input.rawInput)) {

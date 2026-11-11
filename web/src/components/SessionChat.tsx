@@ -31,7 +31,7 @@ import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse
 import { isQueuedForInvocation } from '@/lib/messages'
 import { sendVoiceMessage } from '@/lib/dictationSend'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
-import { getDshReasoningEffortSourceOptions } from '@/components/AssistantChat/codexReasoningEffortOptions'
+import { getDshReasoningEffortSourceOptions, getHermesReasoningEffortSourceOptions } from '@/components/AssistantChat/codexReasoningEffortOptions'
 import {
     getCodexModelReasoningEfforts,
     supportsCodexReasoningEffort
@@ -1171,6 +1171,13 @@ function SessionChatInner(props: SessionChatProps) {
         () => agentFlavor === 'dsh' ? getDshReasoningEffortSourceOptions() : undefined,
         [agentFlavor]
     )
+    // hermes advertises the same option with the fuller fixed set
+    // (none/minimal/low/medium/high/xhigh/max/ultra + 'default' = Provider
+    // default); the composer maps 'default' onto its null "Default" entry.
+    const hermesReasoningEffortOptions = useMemo(
+        () => agentFlavor === 'hermes' ? getHermesReasoningEffortSourceOptions() : undefined,
+        [agentFlavor]
+    )
     // hermes rides the same rail: catalogs arrive through the session's
     // ACP config options (ListHermesModels RPC). Berry has no runtime model
     // face at all (its only lever is the spawn-time BERRY_AGENT_MODEL env,
@@ -2204,7 +2211,14 @@ function SessionChatInner(props: SessionChatProps) {
                                 // dsh's unset value is '' (Provider default); normalize
                                 // it onto the composer's null "Default" entry.
                                 ? (props.session.modelReasoningEffort?.trim() || null)
-                                : undefined}
+                                : agentFlavor === 'hermes'
+                                    // hermes's reset value is 'default' (Provider
+                                    // default); normalize it onto the null "Default"
+                                    // entry the same way.
+                                    ? (props.session.modelReasoningEffort?.trim().toLowerCase() === 'default'
+                                        ? null
+                                        : props.session.modelReasoningEffort?.trim() || null)
+                                    : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
                         availableModelOptions={
@@ -2257,7 +2271,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     ? opencodeReasoningEffortState.options
                                     : agentFlavor === 'dsh'
                                         ? dshReasoningEffortOptions
-                                        : undefined
+                                        : agentFlavor === 'hermes'
+                                            ? hermesReasoningEffortOptions
+                                            : undefined
                         }
                         availableEffortOptions={
                             agentFlavor === 'grok' && grokEffortState.options.length > 0
@@ -2350,7 +2366,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onModelReasoningEffortChange={
-                            (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh')
+                            (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh' || agentFlavor === 'hermes')
                                 && props.session.active
                                 && !controlledByUser
                                 && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)

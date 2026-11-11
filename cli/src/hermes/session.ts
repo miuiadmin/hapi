@@ -1,6 +1,7 @@
 import { ApiClient, ApiSessionClient } from '@/lib'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
+import type { SessionModelReasoningEffort } from '@/api/types'
 import type { PermissionMode } from '@hapi/protocol/types'
 import type { HermesMode } from './types'
 
@@ -48,6 +49,14 @@ export class HermesSession extends AgentSessionBase<HermesMode> {
 
     setModel = (model: string | null): void => {
         this.model = model;
+    };
+
+    /** Runtime/rollback updates for the reasoning-effort preference: writes
+     * the inherited field so the keepalive runtime (which the hub picker
+     * mirrors) reports the live value — the launcher's onEffortRollback
+     * corrects a failed switch through here, exactly like setModel. */
+    setModelReasoningEffort = (effort: SessionModelReasoningEffort | undefined): void => {
+        this.modelReasoningEffort = effort;
     };
 
     setPermissionMode = (mode: PermissionMode): void => {

@@ -61,12 +61,19 @@ export async function runHermes(opts: {
     // reset, string = a concrete model. Only the config RPC ever sets null.
     let currentModel: string | null | undefined = opts.model
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default'
+    // Reasoning-effort preference (undefined until the picker is used; null =
+    // the "Default" reset, mapped to Hermes's 'default' = provider default).
+    let currentReasoningEffort: string | null | undefined = undefined
 
     const syncSessionMode = () => {
         const active = sessionRef.current
         if (!active) return
         active.setModel(currentModel ?? null)
         active.setPermissionMode(currentPermissionMode)
+        // Mirror the reasoning-effort tracking into the keepalive runtime so
+        // the hub picker always shows the live preference (in particular the
+        // corrected value after a rollback below).
+        active.setModelReasoningEffort(currentReasoningEffort)
         active.pushKeepAlive()
     }
 
@@ -79,7 +86,7 @@ export async function runHermes(opts: {
             // hermes's 512 KiB inline cap (over-limit → @path fallback).
             formatHermesUserMessage(message.content.text, message.content.attachments),
             {
-                ...hermesModeForPreference(currentModel, currentPermissionMode),
+                ...hermesModeForPreference(currentModel, currentPermissionMode, currentReasoningEffort),
                 ...hermesImageAttachmentsFor(message.content.attachments)
             },
             localId
@@ -91,10 +98,11 @@ export async function runHermes(opts: {
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'hermes',
         modelMode: 'nullable',
-        modelReasoningEffortMode: 'ignore',
+        modelReasoningEffortMode: 'nullable',
         effortMode: 'ignore',
         onApply: (config) => {
             if (config.model !== undefined) currentModel = config.model
+            if (config.modelReasoningEffort !== undefined) currentReasoningEffort = config.modelReasoningEffort
             if (config.permissionMode !== undefined) currentPermissionMode = config.permissionMode
         },
         onAfterApply: syncSessionMode
@@ -126,6 +134,14 @@ export async function runHermes(opts: {
         model: opts.model,
         onModelRollback: (model) => {
             currentModel = model ?? undefined
+            syncSessionMode()
+        },
+        onEffortRollback: (effort) => {
+            // A failed effort switch never took on the Hermes side: reset the
+            // tracking to the launcher's live value and re-sync so the hub
+            // picker drops the failed pick and later turns stop carrying it
+            // (mirror of the model rollback path above).
+            currentReasoningEffort = effort
             syncSessionMode()
         },
         onConfigDiscovered: (model) => {

@@ -53,6 +53,19 @@ class ToolGroupClassificationTest {
         assertEquals(ToolGroupActionKind.OTHER, getToolGroupActionKind(tool("read_image")))
     }
 
+    @Test fun `hermes tool names classify through normalization`() {
+        // Hermes builtins carry kind 'other' with bare lowercase names (the
+        // "<name>: <preview>" title is stripped at derivation); the name
+        // fallback buckets classify them like the dsh set above.
+        assertEquals(ToolGroupActionKind.COMMAND, getToolGroupActionKind(tool("terminal", nativeKind = "other")))
+        assertEquals(ToolGroupActionKind.READ, getToolGroupActionKind(tool("read_file", nativeKind = "other")))
+        assertEquals(ToolGroupActionKind.MUTATION, getToolGroupActionKind(tool("write_file", nativeKind = "other")))
+        assertEquals(ToolGroupActionKind.MUTATION, getToolGroupActionKind(tool("patch", nativeKind = "other")))
+        assertEquals(ToolGroupActionKind.SEARCH, getToolGroupActionKind(tool("search_files", nativeKind = "other")))
+        assertEquals(ToolGroupActionKind.WEB, getToolGroupActionKind(tool("web_search", nativeKind = "other")))
+        assertEquals(ToolGroupActionKind.WEB, getToolGroupActionKind(tool("web_extract", nativeKind = "other")))
+    }
+
     @Test fun `exact case names keep their buckets`() {
         assertEquals(ToolGroupActionKind.READ, getToolGroupActionKind(tool("Read")))
         assertEquals(ToolGroupActionKind.READ, getToolGroupActionKind(tool("NotebookRead")))
@@ -88,6 +101,7 @@ class ToolGroupClassificationTest {
     @Test fun `plan and milestone tools stay out of groups`() {
         assertFalse(isEligibleForToolGrouping(tool("todo_write")))
         assertFalse(isEligibleForToolGrouping(tool("TodoWrite")))
+        assertFalse(isEligibleForToolGrouping(tool("todo_list")))
         assertFalse(isEligibleForToolGrouping(tool("update_plan")))
         assertFalse(isEligibleForToolGrouping(tool("updatePlan")))
         assertFalse(isEligibleForToolGrouping(tool("ExitPlanMode")))

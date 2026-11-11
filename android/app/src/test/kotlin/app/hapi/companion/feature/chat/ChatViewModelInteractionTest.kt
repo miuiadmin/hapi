@@ -1821,6 +1821,41 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `hermes effort rows are fixed presets riding the model-reasoning-effort rail`() = runTest {
+        // 'ultra' is persisted; the row set is the fixed none…ultra presets
+        // of hermes's `reasoning_effort` thought_level option.
+        val harness = InteractionHarness(
+            this,
+            detail(flavor = "hermes").copy(modelReasoningEffort = "ultra"),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        // No catalog dependency — the rows exist before loadModelOptions().
+        val config = harness.viewModel.config.first { it.effortOptions != null }
+        assertEquals(
+            listOf(
+                null to "Default", "none" to "Off", "minimal" to "Minimal", "low" to "Low",
+                "medium" to "Medium", "high" to "High", "xhigh" to "XHigh", "max" to "Max", "ultra" to "Ultra",
+            ),
+            config.effortOptions?.map { it.value to it.label },
+        )
+        assertEquals("ultra", config.effort)
+
+        // hermes posts through the same rail as codex/opencode/dsh.
+        harness.viewModel.setEffort("high")
+        harness.api.configCalls.first { "modelReasoningEffort:high" in it }
+        assertEquals("high", harness.sessionStore.currentDetail(IX_SESSION)?.modelReasoningEffort)
+
+        // 'default' (Provider default) normalizes onto the null Default row,
+        // so the clear post sends null (the CLI maps null onto hermes's
+        // 'default').
+        harness.viewModel.setEffort(null)
+        harness.api.configCalls.first { "modelReasoningEffort:null" in it }
+        assertNull(harness.sessionStore.currentDetail(IX_SESSION)?.modelReasoningEffort)
+    }
+
+    @Test
     fun `cursor variant rows merge machine skus and post the clicked wire`() = runTest {
         val cursorDetail = detail(flavor = "cursor", model = "composer-2.5[fast=true]").copy(
             metadata = SessionMetadata(path = "/repo/app", host = "devbox", flavor = "cursor", machineId = "m-1"),

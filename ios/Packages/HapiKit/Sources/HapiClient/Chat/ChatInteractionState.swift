@@ -261,7 +261,7 @@ public struct SessionConfigState: Equatable, Sendable {
     /// The catalog request failed (sheet offers Retry).
     public let modelLoadFailed: Bool
     /// `effort` (claude, grok, pi) or `modelReasoningEffort` (codex,
-    /// opencode, dsh), whichever applies.
+    /// opencode, dsh, hermes), whichever applies.
     public let effort: String?
     /// nil → hide the effort section.
     public let effortOptions: [CatalogOption]?
@@ -397,6 +397,14 @@ public func buildSessionConfigState(
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             effort = rawEffort.isEmpty ? nil : rawEffort
             effortOptions = AgentModelCatalog.dshSessionEffortOptions(currentValue: effort)
+        case .hermes:
+            // hermes advertises the same option with the fuller fixed set
+            // (none…ultra + 'default' = Provider default); 'default'
+            // normalizes onto the nil "Default" row. No catalog dependency.
+            let rawEffort = detail?.modelReasoningEffort?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            effort = (rawEffort.isEmpty || rawEffort == "default") ? nil : rawEffort
+            effortOptions = AgentModelCatalog.hermesSessionEffortOptions(currentValue: effort)
         case .pi:
             effort = detail?.effort
             if case .loaded(let response) = agentModels {

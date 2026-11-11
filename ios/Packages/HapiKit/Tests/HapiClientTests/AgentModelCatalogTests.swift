@@ -211,8 +211,11 @@ struct AgentSessionConfigTests {
             CatalogOption(value: "newapi:glm-5.3", label: "GLM-5.3"),
             CatalogOption(value: "newapi:deepseek-v3.2", label: "newapi:deepseek-v3.2"),
         ])
-        // No effort surface for hermes (shared caps: model-change only).
-        #expect(loaded.effortOptions == nil)
+        // Effort surface mirrors dsh now: hermes exposes the same
+        // `reasoning_effort` thought_level option (fixed none…ultra presets,
+        // no catalog dependency).
+        #expect(loaded.effortOptions?.map(\.value)
+            == [nil, "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
 
         let empty = buildSessionConfigState(
             detail: detail(flavor: "hermes"), summary: nil,
@@ -299,6 +302,47 @@ struct AgentSessionConfigTests {
         // Inactive sessions hide the discovered-agent sections entirely.
         let inactive = buildSessionConfigState(
             detail: detail(flavor: "dsh", active: false), summary: nil,
+            codexModels: .idle, agentModels: .idle
+        )
+        #expect(inactive.effortOptions == nil)
+    }
+
+    @Test func hermesEffortsAreTheFixedPresetsWithProviderDefaultOnDefault() {
+        // Fixed none…ultra presets — no catalog dependency, so the rows
+        // exist for an active session even while the model list idles.
+        let hermes = buildSessionConfigState(
+            detail: detail(flavor: "hermes", modelReasoningEffort: "high"), summary: nil,
+            codexModels: .idle, agentModels: .idle
+        )
+        #expect(hermes.effort == "high")
+        #expect(hermes.effortOptions == [
+            CatalogOption(value: nil, label: "Default"),
+            CatalogOption(value: "none", label: "Off"),
+            CatalogOption(value: "minimal", label: "Minimal"),
+            CatalogOption(value: "low", label: "Low"),
+            CatalogOption(value: "medium", label: "Medium"),
+            CatalogOption(value: "high", label: "High"),
+            CatalogOption(value: "xhigh", label: "XHigh"),
+            CatalogOption(value: "max", label: "Max"),
+            CatalogOption(value: "ultra", label: "Ultra"),
+        ])
+
+        // 'default' (Provider default) normalizes onto the nil Default row.
+        let unset = buildSessionConfigState(
+            detail: detail(flavor: "hermes", modelReasoningEffort: "default"), summary: nil,
+            codexModels: .idle, agentModels: .idle
+        )
+        #expect(unset.effort == nil)
+        #expect(unset.effortOptions?.map(\.value) == [nil, "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
+
+        // An out-of-list current stays visible, injected after Default.
+        let injected = AgentModelCatalog.hermesSessionEffortOptions(currentValue: " Extreme ")
+        #expect(injected.map(\.value) == [nil, "extreme", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
+        #expect(injected[1].label == "Extreme")
+
+        // Inactive sessions hide the discovered-agent sections entirely.
+        let inactive = buildSessionConfigState(
+            detail: detail(flavor: "hermes", active: false), summary: nil,
             codexModels: .idle, agentModels: .idle
         )
         #expect(inactive.effortOptions == nil)

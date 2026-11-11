@@ -28,6 +28,8 @@ import app.hapi.protocol.wire.PiSelectedModelRef
  * - dsh: reasoning effort always (fixed off/low/high/max presets — the
  *   agent's `reasoning_effort` config option advertises a fixed value set,
  *   '' meaning "Provider default");
+ * - hermes: reasoning effort always (the same option with the fuller fixed
+ *   none…ultra preset set, 'default' meaning "Provider default");
  * - pi: thinking levels only while the selected model is resolved and
  *   `reasoning != false`;
  * - cursor: variant rows (exact wire ids) while the current base has >1
@@ -94,6 +96,25 @@ object SessionConfigSections {
      * default", which the composer maps onto the null Default entry.
      */
     private val DSH_EFFORT_PRESETS = listOf("off", "low", "high", "max")
+
+    /**
+     * `HERMES_REASONING_EFFORT_PRESETS` — hermes exposes the same option
+     * with the fuller fixed value set none/minimal/low/medium/high/xhigh/
+     * max/ultra plus `'default'` meaning "reset to the provider default";
+     * dsh's `off` level corresponds to hermes's `none`, so it labels as
+     * "Off" too.
+     */
+    private val HERMES_EFFORT_PRESETS = listOf("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+    private val HERMES_EFFORT_LABELS = mapOf(
+        "none" to "Off",
+        "minimal" to "Minimal",
+        "low" to "Low",
+        "medium" to "Medium",
+        "high" to "High",
+        "xhigh" to "XHigh",
+        "max" to "Max",
+        "ultra" to "Ultra",
+    )
 
     /** `normalizeCodexComposerReasoningEffort` — blank/`default` → null. */
     fun normalizeCodexReasoningEffort(effort: String?): String? {
@@ -171,6 +192,18 @@ object SessionConfigSections {
         dynamicReasoningEffortOptions(
             currentEffort,
             DSH_EFFORT_PRESETS.map { OpencodeReasoningEffortOption(it) },
+        )
+
+    /**
+     * Hermes rows (`getCodexComposerReasoningEffortOptions`, flavor
+     * `hermes`): the fuller fixed thought_level preset set with Default
+     * first and an out-of-list current injected — never hidden (web parity;
+     * the presets are static, no catalog dependency).
+     */
+    fun hermesReasoningEffortOptions(currentEffort: String?): List<CatalogOption> =
+        dynamicReasoningEffortOptions(
+            currentEffort,
+            HERMES_EFFORT_PRESETS.map { OpencodeReasoningEffortOption(it, HERMES_EFFORT_LABELS[it]) },
         )
 
     /**

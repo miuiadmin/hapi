@@ -321,8 +321,8 @@ data class SessionConfigUi(
     /** True while the codex model catalog loads (sheet shows a spinner row). */
     val modelOptionsLoading: Boolean,
     /**
-     * Claude `effort`, codex/opencode/dsh `modelReasoningEffort`, grok/pi
-     * `effort`, whichever applies.
+     * Claude `effort`, codex/opencode/dsh/hermes `modelReasoningEffort`,
+     * grok/pi `effort`, whichever applies.
      */
     val effort: String?,
     /** null → hide the effort section. */
@@ -2560,15 +2560,16 @@ class ChatViewModel(
 
     /**
      * Effort switch, flavor-routed: claude → `POST /effort`; codex/opencode/
-     * dsh → `POST /model-reasoning-effort` (the hub accepts dsh since the
-     * v29.3 web rail). Null clears. Pi's rows toggle off by posting null
-     * when the clicked row is already selected (web parity). Changes apply
-     * on the next turn, like every flavor.
+     * dsh/hermes → `POST /model-reasoning-effort` (the hub accepts dsh and
+     * hermes since the v29.x web rail). Null clears. Pi's rows toggle off by
+     * posting null when the clicked row is already selected (web parity).
+     * Changes apply on the next turn, like every flavor.
      */
     fun setEffort(effort: String?) {
         val usesReasoningEffort = currentFlavor() == "codex" ||
             currentFlavor() == "opencode" ||
-            currentFlavor() == "dsh"
+            currentFlavor() == "dsh" ||
+            currentFlavor() == "hermes"
         runConfigChange(
             optimistic = {
                 if (usesReasoningEffort) it.copy(modelReasoningEffort = effort) else it.copy(effort = effort)
@@ -2887,6 +2888,13 @@ class ChatViewModel(
                     listOf(CatalogOption(null, "Default")) +
                         hermesModels.map { CatalogOption(it.modelId, it.name ?: it.modelId) }
                 }
+                // Fixed none…ultra presets ('default' = Provider default
+                // maps onto the null Default row); no catalog dependency, so
+                // the section shows even while the model list loads (web
+                // parity — same shape as the dsh branch above).
+                val rawEffort = detail?.modelReasoningEffort?.trim()?.lowercase()
+                effort = rawEffort?.takeIf { it.isNotEmpty() && it != "default" }
+                effortOptions = SessionConfigSections.hermesReasoningEffortOptions(effort)
             }
             "cursor" -> {
                 modelOptions = null

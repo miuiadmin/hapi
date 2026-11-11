@@ -136,6 +136,9 @@ func normalizeToolIdentifier(_ value: String?) -> String {
 
 private let planToolNames: Set<String> = [
     "todowrite",
+    // hermes todo_list — same plan-milestone treatment as dsh's
+    // todo_write: keep it standalone, never grouped.
+    "todolist",
     "updateplan",
     "exitplanmode",
     "codexreasoning",
@@ -220,6 +223,8 @@ private let mutationToolNames: Set<String> = [
 private let webToolNames: Set<String> = [
     "webfetch",
     "websearch",
+    // hermes web_extract — same URL-driven bucket as web_fetch.
+    "webextract",
     "fetchurl",
     "openurl",
     "urlfetch",

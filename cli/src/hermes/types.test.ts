@@ -38,4 +38,17 @@ describe('hermesModeForPreference', () => {
         expect(hashObject(withImage)).not.toBe(hashObject(plain))
         expect(hashObject(hermesModeForPreference(GLM_MODEL))).toBe(hashObject(plain))
     })
+
+        it('attaches the reasoning-effort preference only once one is set', () => {
+        // undefined = ordinary turn (no field at all); null = the picker's
+        // "Default" reset; string = a concrete thought level.
+        expect(hermesModeForPreference(GLM_MODEL)).toEqual({ model: GLM_MODEL })
+        expect(hermesModeForPreference(GLM_MODEL, undefined, null)).toEqual({
+            model: GLM_MODEL,
+            modelReasoningEffort: null
+        })
+        expect(hermesModeForPreference(undefined, undefined, 'xhigh')).toEqual({
+            modelReasoningEffort: 'xhigh'
+        })
+    })
 })
