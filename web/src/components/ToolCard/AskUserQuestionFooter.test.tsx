@@ -119,3 +119,54 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false')
     })
 })
+
+describe('hermes clarify cards rendered through the ask-user pipeline', () => {
+    // The ACP bridge registers a hermes clarify permission card (elicitation
+    // fallback: option NAMES are the answers) as a pending ask_user_question
+    // entry whose single question carries the choices as its options. The
+    // footer must render it as an interactive question card and submit the
+    // picked label as the answer payload the bridge maps back to choice ids.
+    function clarifyTool(): ChatToolCall {
+        return {
+            id: 'clarify-7f3a', name: 'ask_user_question', state: 'pending',
+            input: {
+                questions: [{
+                    question: 'Which database should the migration target?',
+                    header: null,
+                    multiSelect: false,
+                    options: [
+                        { label: 'Use staging' },
+                        { label: 'Use production' },
+                        { label: 'Abort' }
+                    ]
+                }]
+            },
+            createdAt: 1, startedAt: null, completedAt: null, execStartedAt: null, execCompletedAt: null, description: null,
+            permission: { id: 'clarify-7f3a', status: 'pending' }
+        } as unknown as ChatToolCall
+    }
+
+    it('renders the clarify card as a question card with one answer per choice', () => {
+        renderFooter('session-hermes', clarifyTool())
+
+        expect(screen.getByText('tool.question')).toBeInTheDocument()
+        expect(screen.getByText('Which database should the migration target?')).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: /Use staging/ })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: /Use production/ })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: /Abort/ })).toBeInTheDocument()
+    })
+
+    it('submits the selected choice as the answer payload', async () => {
+        const approvePermission = vi.fn().mockResolvedValue(undefined)
+        renderFooter('session-hermes', clarifyTool(), approvePermission)
+
+        fireEvent.click(screen.getByRole('radio', { name: /Abort/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+
+        await vi.waitFor(() => {
+            expect(approvePermission).toHaveBeenCalledWith('session-hermes', 'clarify-7f3a', {
+                answers: { '0': ['Abort'] }
+            })
+        })
+    })
+})

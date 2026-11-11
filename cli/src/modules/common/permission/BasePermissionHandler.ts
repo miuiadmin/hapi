@@ -83,6 +83,17 @@ const AUTO_APPROVE_WRITE_TOOL_HINTS = [
 ];
 
 /**
+ * Whether a derived tool name classifies as write-like under the bridge's
+ * auto-approval rules (the same hint list {@link resolveToolAutoApprovalDecision}
+ * uses to fail read-only closed). Shared with the sensitive-path valve so
+ * "edit-shaped" keeps one definition across both checks.
+ */
+export function isWriteClassifiedToolName(toolName: string): boolean {
+    const lowerTool = toolName.toLowerCase();
+    return AUTO_APPROVE_WRITE_TOOL_HINTS.some((name) => lowerTool.includes(name));
+}
+
+/**
  * Whether a permission request carries any machine-readable tool identity
  * (a non-empty `kind`, or any `rawInput`) after backend-side correlation.
  *
@@ -235,7 +246,11 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         id: string,
         toolName: string,
         input: unknown,
-        handlers: { resolve: (value: TResult) => void; reject: (error: Error) => void }
+        handlers: { resolve: (value: TResult) => void; reject: (error: Error) => void },
+        /** Extra fields merged into the agent-state `requests[id]` entry
+         * (e.g. the ACP bridge forwards the agent-side permission options so
+         * clients can render footers that match what the agent offers). */
+        stateExtras?: Record<string, unknown>
     ): void {
         this.pendingRequests.set(id, { ...handlers, toolName, input });
         this.onRequestRegistered(id, toolName, input);
@@ -246,7 +261,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 [id]: {
                     tool: toolName,
                     arguments: input,
-                    createdAt: Date.now()
+                    createdAt: Date.now(),
+                    ...(stateExtras ?? {})
                 }
             }
         }));

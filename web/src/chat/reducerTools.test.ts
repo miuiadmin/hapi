@@ -29,4 +29,24 @@ describe('local permission identity', () => {
         expect(permissions.get('tool-1')?.permission).toMatchObject({ id: 'next', status: 'pending' })
         expect(getPermissions({ requests: { old: entry }, completedRequests: { old: completed } }).get('tool-1')?.permission.status).toBe('canceled')
     })
+
+    it('carries the offered permission options onto the ToolPermission (one-shot footer gating)', () => {
+        // The ACP bridge forwards the agent-side option list (id/name/kind)
+        // on the pending agent-state entry so footers can hide grant buttons
+        // the agent cannot express (no allow_always kind → no session grant).
+        const options = [
+            { optionId: 'allow_once', name: 'Allow edit', kind: 'allow_once' },
+            { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+        ]
+        const permissions = getPermissions({
+            requests: {
+                'edit-approval-4': { tool: 'Approve edit: /repo/a.ts', arguments: { path: '/repo/a.ts' }, options }
+            }
+        })
+        expect(permissions.get('edit-approval-4')?.permission.options).toEqual(options)
+
+        // Entries without options (claude/legacy) stay option-less.
+        const legacy = getPermissions({ requests: { 'toolu_1': { tool: 'Bash', arguments: {} } } })
+        expect(legacy.get('toolu_1')?.permission.options).toBeUndefined()
+    })
 })

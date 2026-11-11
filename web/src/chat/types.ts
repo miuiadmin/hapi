@@ -185,6 +185,10 @@ export type ToolPermission = {
     allowedTools?: string[]
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+    /** The agent-side permission options (id/name/kind) the card offers,
+     * when the agent state entry carries them (ACP bridge). Lets the footer
+     * promise only grants the agent can actually express. */
+    options?: Array<{ optionId: string; name?: string; kind?: string }>
     date?: number
     createdAt?: number | null
     completedAt?: number | null
