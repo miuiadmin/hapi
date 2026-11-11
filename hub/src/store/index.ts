@@ -42,7 +42,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 27
+const SCHEMA_VERSION: number = 28
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -353,6 +353,7 @@ export class Store {
             24: () => this.migrateFromV24ToV25(),
             25: () => this.migrateFromV25ToV26(),
             26: () => this.migrateFromV26ToV27(),
+            27: () => this.migrateFromV27ToV28(),
         })
 
         if (currentVersion === 0) {
@@ -474,6 +475,9 @@ export class Store {
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS message_epochs (
                 session_id TEXT PRIMARY KEY,
@@ -1027,6 +1031,28 @@ export class Store {
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
+        `)
+    }
+
+    /**
+     * v27→v28: index the uninvoked-local-message lookup (PR #2342).
+     * getUninvokedLocalMessages (messages.ts) runs
+     * `WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL
+     * [AND delivery_state = 'queued'] ORDER BY seq ASC` on every latest-page
+     * sync read and queued-message replay. The narrower immediate/future
+     * scheduled indexes cannot serve it (their predicates add scheduled_at /
+     * delivery_state terms the query does not imply), so SQLite fell back to
+     * probing idx_messages_local_id — one pass over every local message of
+     * the session. This partial index covers the shared predicate prefix and
+     * exposes (session_id, seq), turning both variants into a near-empty
+     * index range scan.
+     */
+    private migrateFromV27ToV28(): void {
+        if (this.getMessageColumnNames().size === 0) return
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL
         `)
     }
 
