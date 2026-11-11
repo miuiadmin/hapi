@@ -197,12 +197,25 @@ export const MetadataSchema = z.object({
 
 export type Metadata = z.infer<typeof MetadataSchema>
 
+export const AgentStatePermissionOptionSchema = z.object({
+    optionId: z.string(),
+    name: z.string().optional(),
+    kind: z.string().optional()
+})
+
+export type AgentStatePermissionOption = z.infer<typeof AgentStatePermissionOptionSchema>
+
 export const AgentStateRequestSchema = z.object({
     tool: z.string(),
     // Correlation only; replies use the request map key, never this tool id.
     toolCallId: z.string().optional(),
     arguments: z.unknown(),
-    createdAt: z.number().nullish()
+    createdAt: z.number().nullish(),
+    // The agent-side permission options (id/name/kind) the pending card
+    // offers, forwarded by the ACP bridge so clients can gate their footers
+    // on what the agent actually supports (e.g. no allow_always kind → no
+    // "Allow for session" button). Absent on flavors/entries without it.
+    options: z.array(AgentStatePermissionOptionSchema).optional()
 })
 
 export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>
@@ -218,6 +231,9 @@ export const AgentStateCompletedRequestSchema = z.object({
     mode: z.string().optional(),
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
     allowTools: z.array(z.string()).optional(),
+    // Permission options the card offered (see AgentStateRequestSchema);
+    // carried through completion so a resumed viewer sees the same shape.
+    options: z.array(AgentStatePermissionOptionSchema).optional(),
     // Flat format: Record<string, string[]> (AskUserQuestion)
     // Nested format: Record<string, { answers: string[] }> (request_user_input)
     answers: z.union([

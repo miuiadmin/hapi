@@ -85,6 +85,24 @@ export function mapAskUserAnswers(input: unknown, answers: WebAnswers | undefine
 }
 
 /**
+ * The first non-empty answer string in a web/mobile answer payload, in
+ * payload order — the label a single-question card (e.g. a hermes clarify
+ * permission card answered through the AskUserQuestion footer) was answered
+ * with. Null when the payload carries no answer text at all.
+ */
+export function firstAnswerLabel(answers: WebAnswers | undefined): string | null {
+    const flat = normalizeWebAnswers(answers)
+    for (const values of Object.values(flat)) {
+        for (const value of values) {
+            if (typeof value !== 'string') continue
+            const trimmed = value.trim()
+            if (trimmed.length > 0) return trimmed
+        }
+    }
+    return null
+}
+
+/**
  * Render the answer batch the way the model-facing tool result spells it —
  * a single JSON text block, identical to DSH's native tool result contract.
  */

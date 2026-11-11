@@ -161,7 +161,16 @@ export function PermissionFooter(props: {
     // durable "for session"/"all edits" grant exists on its ACP surface. The
     // all-edits button is already claude-only; the explicit !dsh keeps that
     // invariant local instead of relying on the claude gate.
-    const canAllowForSession = !codex && !dsh && isPending && !hideAllowForSession
+    // Generalized: whenever the pending card's own option list is known, the
+    // "Allow for session" button only appears when the agent actually offers
+    // an allow_always-kind option — hermes edit-approval and model-confirm
+    // cards are allow_once+deny only, so promising a session grant would be
+    // a phantom button. Unknown option lists keep the flavor gates.
+    const permissionOptions = permission.options
+    const offersSessionGrant = permissionOptions && permissionOptions.length > 0
+        ? permissionOptions.some((option) => option.kind === 'allow_always')
+        : !dsh
+    const canAllowForSession = !codex && isPending && !hideAllowForSession && offersSessionGrant
     const canAllowAllEdits = claude && !dsh && isPending && isEditTool
 
     const approve = async () => {
