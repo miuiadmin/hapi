@@ -1760,6 +1760,16 @@ export function SessionList(props: {
                 groupHeaderPress.onMouseUp(event)
             },
             onMouseLeave: groupHeaderPress.onMouseLeave,
+            // Plain mouse clicks still toggle collapse. The hook's click
+            // handler suppresses long-press and touch-ghost clicks; resolve
+            // the group from this binding's closure so a click whose press
+            // never went through onMouseDown (tests, synthesized clicks)
+            // still activates the right group.
+            onClick: (event: React.MouseEvent) => {
+                if (!fromPlainSurface(event)) return
+                groupPressRef.current = { group, onActivate }
+                groupHeaderPress.onClick?.(event)
+            },
             onTouchStart: (event: React.TouchEvent) => {
                 if (!fromPlainSurface(event)) return
                 groupPressRef.current = { group, onActivate }
