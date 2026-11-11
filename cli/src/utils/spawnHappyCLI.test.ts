@@ -41,6 +41,7 @@ const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'pla
 const originalInvokedCwd = process.env.HAPI_INVOKED_CWD;
 const originalCliExecutable = process.env.HAPI_CLI_EXECUTABLE;
 const originalBunExec = process.env.HAPI_BUN_EXEC;
+const originalAgentNice = process.env.HAPI_AGENT_NICE;
 
 function setPlatform(value: string) {
   Object.defineProperty(process, 'platform', {
@@ -449,5 +450,179 @@ describe('applyNofileBump', () => {
 
     const [command] = spawnMock.mock.calls[0] as unknown[];
     expect(command).not.toBe('/bin/sh');
+  });
+});
+
+describe('lowerPriority (nice demotion)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    existsSyncMock.mockImplementation((path: string) => !path.includes('missing-hapi.exe'));
+    isBunCompiledMock.mockReturnValue(false);
+    projectPathMock.mockReturnValue(process.cwd());
+    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '1048576\n' }) as any);
+    if (originalAgentNice === undefined) {
+      delete process.env.HAPI_AGENT_NICE;
+    } else {
+      process.env.HAPI_AGENT_NICE = originalAgentNice;
+    }
+    if (originalCliExecutable === undefined) {
+      delete process.env.HAPI_CLI_EXECUTABLE;
+    } else {
+      process.env.HAPI_CLI_EXECUTABLE = originalCliExecutable;
+    }
+    if (originalBunExec === undefined) {
+      delete process.env.HAPI_BUN_EXEC;
+    } else {
+      process.env.HAPI_BUN_EXEC = originalBunExec;
+    }
+  });
+
+  afterAll(() => {
+    if (originalAgentNice === undefined) {
+      delete process.env.HAPI_AGENT_NICE;
+    } else {
+      process.env.HAPI_AGENT_NICE = originalAgentNice;
+    }
+  });
+
+  it('prefixes dev-mode spawns with nice when lowerPriority is set', async () => {
+    setPlatform('darwin');
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    // Baseline: without lowerPriority the command line is exactly the old one.
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { stdio: 'ignore' });
+    const [baseCommand, baseArgs] = spawnMock.mock.calls[0] as unknown[];
+    expect(baseCommand).not.toBe('/usr/bin/nice');
+
+    spawnMock.mockClear();
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { lowerPriority: true, stdio: 'ignore' });
+
+    const [command, args, options] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).toBe('/usr/bin/nice');
+    expect((args as string[]).slice(0, 3)).toEqual(['-n', '15', baseCommand]);
+    expect((args as string[]).slice(3)).toEqual(baseArgs);
+    // Our own option must not leak into the child_process spawn options.
+    expect('lowerPriority' in (options as SpawnOptions)).toBe(false);
+  });
+
+  it('nests nice inside the ulimit wrapper for low-soft-limit compiled spawns', async () => {
+    setPlatform('darwin');
+    spawnSyncMock.mockImplementation((cmd: string, args: string[]) =>
+      (args?.[1] === 'ulimit -Sn'
+        ? { status: 0, stdout: '10240\n' }
+        : { status: 0, stdout: '1048576\n' }) as any
+    );
+    isBunCompiledMock.mockReturnValue(true);
+    process.env.HAPI_CLI_EXECUTABLE = '/opt/hapi-test/hapi';
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { lowerPriority: true, stdio: 'ignore' });
+
+    const [command, args, options] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).toBe('/bin/sh');
+    expect((args as string[]).slice(0, 3)).toEqual([
+      '-c',
+      'ulimit -n 1048576 2>/dev/null; exec /usr/bin/nice -n 15 "$@"',
+      'sh'
+    ]);
+    expect((args as string[])[3]).toBe('/opt/hapi-test/hapi');
+    expect((args as string[]).slice(4)).toEqual(['claude', '--started-by', 'runner']);
+    // The env override keeps pointing at the real binary, not the wrapper.
+    expect((options as SpawnOptions).env?.HAPI_CLI_EXECUTABLE).toBe('/opt/hapi-test/hapi');
+  });
+
+  it('keeps compiled spawns without lowerPriority on the exact previous shape', async () => {
+    setPlatform('darwin');
+    spawnSyncMock.mockImplementation((cmd: string, args: string[]) =>
+      (args?.[1] === 'ulimit -Sn'
+        ? { status: 0, stdout: '10240\n' }
+        : { status: 0, stdout: '1048576\n' }) as any
+    );
+    isBunCompiledMock.mockReturnValue(true);
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { stdio: 'ignore' });
+
+    const [command, args] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).toBe('/bin/sh');
+    expect((args as string[])[1]).toBe('ulimit -n 1048576 2>/dev/null; exec "$@"');
+    expect((args as string[]).join(' ')).not.toContain('nice');
+  });
+
+  it('ignores lowerPriority on windows', async () => {
+    setPlatform('win32');
+    isBunCompiledMock.mockReturnValue(true);
+    process.env.HAPI_CLI_EXECUTABLE = 'C:\\hapi\\hapi.exe';
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { lowerPriority: true, stdio: 'ignore' });
+
+    const [command, args] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).toBe('C:\\hapi\\hapi.exe');
+    expect((args as string[]).join(' ')).not.toContain('nice');
+    // No ulimit probing on windows either.
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('honors HAPI_AGENT_NICE for the level and treats 0 as opt-out', async () => {
+    setPlatform('darwin');
+    process.env.HAPI_AGENT_NICE = '7';
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { lowerPriority: true, stdio: 'ignore' });
+    const [command, args] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).toBe('/usr/bin/nice');
+    expect((args as string[]).slice(0, 2)).toEqual(['-n', '7']);
+
+    process.env.HAPI_AGENT_NICE = '0';
+    spawnMock.mockClear();
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { lowerPriority: true, stdio: 'ignore' });
+    const [optOutCommand] = spawnMock.mock.calls[0] as unknown[];
+    expect(optOutCommand).not.toBe('/usr/bin/nice');
+  });
+
+  it('resolves the nice level with safe fallbacks', async () => {
+    const { resolveAgentNiceLevel } = await import('./spawnHappyCLI');
+
+    expect(resolveAgentNiceLevel(undefined)).toBe(15);
+    expect(resolveAgentNiceLevel('')).toBe(15);
+    expect(resolveAgentNiceLevel('   ')).toBe(15);
+    expect(resolveAgentNiceLevel('0')).toBeNull();
+    expect(resolveAgentNiceLevel('abc')).toBe(15);
+    expect(resolveAgentNiceLevel('-5')).toBe(15);
+    expect(resolveAgentNiceLevel('7')).toBe(7);
+  });
+
+  it('applySpawnHardening prefixes a comfortable-limit command directly', async () => {
+    const { applySpawnHardening } = await import('./spawnHappyCLI');
+
+    const result = applySpawnHardening('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: 1048576,
+      lowerPriority: true,
+      niceLevel: 10
+    });
+
+    expect(result).toEqual({
+      command: '/usr/bin/nice',
+      args: ['-n', '10', '/usr/local/bin/hapi', 'claude']
+    });
+  });
+
+  it('applySpawnHardening returns the command unchanged when the nice level is disabled', async () => {
+    const { applySpawnHardening } = await import('./spawnHappyCLI');
+
+    const result = applySpawnHardening('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: 10240,
+      lowerPriority: true,
+      niceLevel: null
+    });
+
+    expect(result).toEqual({
+      command: '/bin/sh',
+      args: ['-c', 'ulimit -n 1048576 2>/dev/null; exec "$@"', 'sh', '/usr/local/bin/hapi', 'claude']
+    });
   });
 });

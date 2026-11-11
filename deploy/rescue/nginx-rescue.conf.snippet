@@ -1,0 +1,44 @@
+# deploy/rescue/nginx-rescue.conf.snippet
+#
+# Out-of-band rescue command endpoint for the hapi runner rescue channel.
+# Serves the static file written on the hub host by enqueue-rescue-cmd.sh.
+# Full SOP: deploy/rescue/README.md
+#
+# ---------------------------------------------------------------------------
+# <RANDOM_PATH> REPLACEMENT RULES:
+#   1. Generate ONCE per deployment, e.g.:   openssl rand -hex 12
+#   2. The exact same value must appear in BOTH places:
+#        - this location line (hub, nginx config)
+#        - RESCUE_URL in ~/.hapi-rescue/env.sh on every enrolled machine
+#      (https://hapi.supertoken.lol/rescue-cmd-<RANDOM_PATH>)
+#   3. Treat the value as a secret: never commit or paste the generated
+#      value anywhere (this snippet ships with the placeholder only).
+#   4. To rotate: generate a new value, update both sides, reload nginx.
+#
+# WHERE TO PUT IT:
+#   Inside the existing TLS server block of
+#     /opt/1panel/www/conf.d/hapi.supertoken.lol.conf
+#   (the :443 server {} that also proxies the hapi hub), then validate and
+#   reload the 1Panel openresty container:
+#     docker exec <openresty-container> nginx -t && \
+#       docker exec <openresty-container> nginx -s reload
+#   (find the container name via: docker ps | grep openresty)
+#
+# PATH MAPPING (1Panel openresty):
+#   `root /www/hapi-diag/` is the path INSIDE the openresty container.
+#   1Panel maps host /opt/1panel/www -> container /www, so the operator
+#   script writes the HOST file /opt/1panel/www/hapi-diag/rescue.cmd which
+#   nginx serves from this location.
+#
+# BEHAVIOUR:
+#   - GET with no file present -> 204 (pollers treat as "no command")
+#   - GET with file present    -> 200, text/plain body = the JSON payload
+#   - Cache-Control no-store keeps CF / intermediaries from caching it
+# ---------------------------------------------------------------------------
+
+location = /rescue-cmd-<RANDOM_PATH> {
+    default_type text/plain;
+    add_header Cache-Control "no-store";
+    root /www/hapi-diag/;
+    try_files /rescue.cmd =204;
+}
