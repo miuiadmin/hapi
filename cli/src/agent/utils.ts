@@ -149,7 +149,6 @@ export function stripToolTitlePreviewSuffix(title: string): string {
     if (!BARE_TOOL_NAME_PATTERN.test(candidate)) return title;
     return candidate;
 }
-}
 
 export function isPlaceholderToolName(name: string): boolean {
     const normalized = name.trim().toLowerCase();
