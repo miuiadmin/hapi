@@ -1,4 +1,7 @@
-import { beforeAll, describe, expect, it } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Database } from 'bun:sqlite'
 import { Hono } from 'hono'
 import { createConfiguration } from '../../configuration'
@@ -29,9 +32,27 @@ function nullOutActiveAt(store: Store, sessionId: string): void {
     db.prepare('UPDATE sessions SET active_at = NULL WHERE id = ?').run(sessionId)
 }
 
+// Hermetic HAPI_HOME: Configuration.create() mkdir/writes settings.json and
+// the API-token file under HAPI_HOME (default: the operator's real ~/.hapi).
+// Point it at a throwaway dir so the suite never touches real hub state —
+// and never hangs on sandboxed runs where $HOME writes are blocked (the
+// pre-existing 5s beforeAll-hook timeout).
+const originalHapiHome = process.env.HAPI_HOME
+const testHapiHome = mkdtempSync(join(tmpdir(), 'hapi-cli-activeat-test-'))
+
 beforeAll(async () => {
+    process.env.HAPI_HOME = testHapiHome
     const config = await createConfiguration()
     config._setCliApiToken('test-token', 'env', false)
+})
+
+afterAll(() => {
+    if (originalHapiHome === undefined) {
+        delete process.env.HAPI_HOME
+    } else {
+        process.env.HAPI_HOME = originalHapiHome
+    }
+    try { rmSync(testHapiHome, { recursive: true, force: true }) } catch {}
 })
 
 describe('CLI GET /sessions/:id with null active_at', () => {

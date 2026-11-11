@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, mock } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import * as nodeOs from 'node:os'
 import { join, relative } from 'node:path'
 import { generateKeyPairSync } from 'node:crypto'
 
@@ -11,11 +11,14 @@ afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
         rmSync(dir, { recursive: true, force: true })
     }
+    // Drop any homedir() override installed by a test in this file so the
+    // mock never leaks into other test files sharing the process.
+    mock.restore()
 })
 
 function makeServiceAccountFile(
     contents: object,
-    baseDir: string = tmpdir()
+    baseDir: string = nodeOs.tmpdir()
 ): string {
     const dir = mkdtempSync(join(baseDir, 'hapi-fcm-sa-'))
     tempDirs.push(dir)
@@ -58,9 +61,17 @@ describe('resolveFcmConfig', () => {
     })
 
     it('expands ~ in the configured path', () => {
-        const path = makeServiceAccountFile(VALID_ACCOUNT, homedir())
+        // Hermetic: resolveFcmConfig expands ~ against os.homedir(), and Bun
+        // caches homedir() from the process env at startup — writing the
+        // fixture into the operator's real $HOME is the only thing the old
+        // test did, and it fails (EACCES) under sandboxed test runs. Override
+        // homedir() to a throwaway dir instead.
+        const fakeHome = mkdtempSync(join(nodeOs.tmpdir(), 'hapi-fcm-home-'))
+        tempDirs.push(fakeHome)
+        mock.module('node:os', () => ({ ...nodeOs, homedir: () => fakeHome }))
+        const path = makeServiceAccountFile(VALID_ACCOUNT, fakeHome)
         const config = resolveFcmConfig({
-            fcmServiceAccountPath: `~/${relative(homedir(), path)}`
+            fcmServiceAccountPath: `~/${relative(fakeHome, path)}`
         })
         expect(config?.projectId).toBe('proj-1')
         expect(config?.serviceAccountPath).toBe(path)

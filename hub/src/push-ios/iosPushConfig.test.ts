@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, mock } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import * as nodeOs from 'node:os'
 import { join, relative } from 'node:path'
 
 import { APNS_PRODUCTION_HOST, APNS_SANDBOX_HOST } from './apnsClient'
@@ -12,9 +12,12 @@ afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
         rmSync(dir, { recursive: true, force: true })
     }
+    // Drop any homedir() override installed by a test in this file so the
+    // mock never leaks into other test files sharing the process.
+    mock.restore()
 })
 
-function makeP8File(baseDir: string = tmpdir()): string {
+function makeP8File(baseDir: string = nodeOs.tmpdir()): string {
     const dir = mkdtempSync(join(baseDir, 'hapi-apns-key-'))
     tempDirs.push(dir)
     const path = join(dir, 'AuthKey_TEST.p8')
@@ -81,10 +84,18 @@ describe('resolveIosPushConfig', () => {
     })
 
     it('expands ~ in the .p8 path', () => {
-        const p8Path = makeP8File(homedir())
+        // Hermetic: resolveIosPushConfig expands ~ against os.homedir(), and
+        // Bun caches homedir() from the process env at startup — writing the
+        // fixture into the operator's real $HOME is the only thing the old
+        // test did, and it fails (EACCES) under sandboxed test runs. Override
+        // homedir() to a throwaway dir instead.
+        const fakeHome = mkdtempSync(join(nodeOs.tmpdir(), 'hapi-apns-home-'))
+        tempDirs.push(fakeHome)
+        mock.module('node:os', () => ({ ...nodeOs, homedir: () => fakeHome }))
+        const p8Path = makeP8File(fakeHome)
         const config = resolveIosPushConfig(settings({
             iosPushMode: 'apns',
-            apnsKeyP8Path: `~/${relative(homedir(), p8Path)}`,
+            apnsKeyP8Path: `~/${relative(fakeHome, p8Path)}`,
             apnsKeyId: 'K',
             apnsTeamId: 'T',
             apnsBundleId: 'b'
