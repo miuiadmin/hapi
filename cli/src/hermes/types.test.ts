@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { hashObject } from '@/utils/deterministicJson'
 import { hermesModeForPreference } from './types'
 
 const GLM_MODEL = 'newapi:glm-5.3'
@@ -24,5 +25,17 @@ describe('hermesModeForPreference', () => {
         expect(hermesModeForPreference(GLM_MODEL)).toEqual({ model: GLM_MODEL })
         expect(hermesModeForPreference(GLM_MODEL, 'yolo')).toEqual({ model: GLM_MODEL, permissionMode: 'yolo' })
         expect(hermesModeForPreference(undefined, 'safe-yolo')).toEqual({ permissionMode: 'safe-yolo' })
+    })
+
+    it('hashes image-carrying modes apart from image-less ones', () => {
+        // The queue keys batches by mode hash: an image turn must never merge
+        // into a batch whose mode would silently drop its images.
+        const plain = hermesModeForPreference(GLM_MODEL)
+        const withImage = {
+            ...plain,
+            imageAttachments: [{ path: '/uploads/shot.png', mimeType: 'image/png', size: 4 }]
+        }
+        expect(hashObject(withImage)).not.toBe(hashObject(plain))
+        expect(hashObject(hermesModeForPreference(GLM_MODEL))).toBe(hashObject(plain))
     })
 })

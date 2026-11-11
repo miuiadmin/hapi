@@ -15,6 +15,13 @@ import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools'
 import { createHermesBackend } from './utils/hermesBackend'
+import { buildHermesPromptContent } from './utils/hermesPromptContent'
+import { escapeHermesDestructiveSlash } from './utils/hermesSlashGuard'
+import {
+    HERMES_RESUME_TIMEOUT_MS,
+    isHermesResumeUnsupportedError,
+    isHermesSessionGoneError
+} from './utils/hermesResume'
 import type { HermesSession } from './session'
 
 /** Hermes ACP edit-approval axis (acp_adapter/modes.py). Sensitive paths still
@@ -63,6 +70,13 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     /** Server default captured at session creation, before any override. */
     private initialBackendModel: string | null = null
     private lastAppliedEditMode: string | null = null
+    /** Edit mode currently being pushed via session/set_mode — the async
+     * current_mode_update echo of OUR OWN switch must not be mistaken for a
+     * foreign change while this is set. */
+    private applyingEditMode: string | null = null
+    /** Last foreign mode a "changed elsewhere" notice was emitted for —
+     * suppresses repeat notices for repeated echoes of the same change. */
+    private lastForeignModeNotice: string | null = null
     private displayPermissionMode: PermissionMode | undefined
     /** ACP session id on the CURRENT backend — swapped by every respawn so
      * the main loop, abort path, and catalog RPC never act on a stale one. */
@@ -165,10 +179,18 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             // batch returns to the model in-band as the tool result. The
             // closure reads the CURRENT handler: establishBackend swaps it
             // on every respawn, and the tool can only run once a session
-            // exists. (Auto-approval of the agent-side approval prompt
-            // needs no hermes-specific wiring: the shared layer's exact-name
-            // allowlist already includes ask_user_question and its
-            // mcp__hapi__ alias.)
+            // exists.
+            //
+            // Agent-side approval of the MCP call needs no hermes-specific
+            // wiring, but the name it arrives under is NOT `mcp__hapi__*`:
+            // hermes scopes editor MCP servers per session
+            // (gateway/session_local_mcp._server_names), so the model — and
+            // the tool_call title, which is "<name>: <preview>" — uses the
+            // tagged bridge form `mcp__editor_hapi_<8-hex-tag>__<tool>`.
+            // The shared layer matches the allowlist names as '__'-segments
+            // of that derived name (BasePermissionHandler), and the title
+            // derivation strips the ": <preview>" suffix
+            // (agent/utils.deriveToolNameWithSource).
             askUserTool: {
                 escalate: async (input) => {
                     const handler = this.permissionHandler
@@ -182,7 +204,28 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         this.happyServer = happyServer
         this.acpMcpServers = toAcpMcpServers(mcpServers)
 
-        await this.establishBackend({ respawn: false })
+        // A failed INITIAL establishment no longer kills the session: the
+        // stored hermesSessionId is kept and the loop's per-message respawn
+        // attempt retries the resume later (e.g. the gateway daemon coming
+        // back after a restart). Silent forking to a new session only
+        // happens when hermes itself reports the session gone (see
+        // establishBackend).
+        try {
+            await this.establishBackend({ respawn: false })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn('[hermes-acp] initial establishment failed', { message })
+            this.session.sendSessionEvent({ type: 'message', message: `Hermes session failed to start: ${message}` })
+            this.messageBuffer.addMessage(`Hermes session failed to start: ${message}`, 'status')
+            const partial = this.backend
+            this.backend = null
+            this.acpSessionId = null
+            try {
+                await partial?.disconnect()
+            } catch (disconnectError) {
+                logger.debug('[hermes-acp] disconnect of partial backend failed', disconnectError)
+            }
+        }
 
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -279,8 +322,37 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             }
 
             this.session.onThinkingChange(true)
-            this.messageBuffer.addMessage(batch.message, 'user')
-            const prompt: PromptContent[] = [{ type: 'text', text: batch.message }]
+            // Slash-verb guard (hermes intercepts REGISTERED slash commands
+            // inside the prompt text — /clear wipes the conversation): a
+            // plain chat send matching a destructive verb is escaped with a
+            // notice line (prefixing a space would NOT work: hermes lstrips
+            // before matching). Read-only verbs (/help /model …) and paths
+            // (/etc/hosts) pass through untouched.
+            const slashGuard = escapeHermesDestructiveSlash(batch.message)
+            if (slashGuard.escaped) {
+                logger.warn(`[hermes-acp] escaped destructive slash verb /${slashGuard.verb} in a plain send`)
+            }
+            const batchText = slashGuard.text
+            this.messageBuffer.addMessage(batchText, 'user')
+            // Image attachments are read once here (authorized per session)
+            // and the built content is reused verbatim by the respawn retry,
+            // so a reconnect never re-reads or re-orders the batch's images.
+            let prompt: PromptContent[]
+            try {
+                prompt = await buildHermesPromptContent(
+                    backend,
+                    batchText,
+                    batch.mode.imageAttachments,
+                    {
+                        sessionId: this.session.client.sessionId,
+                        onNotice: (message) => this.session.sendSessionEvent({ type: 'message', message })
+                    }
+                )
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.warn('[hermes-acp] prompt preparation failed', { message })
+                prompt = [{ type: 'text', text: batchText }]
+            }
             let failureMessage: string | null = null
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
@@ -373,12 +445,19 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
      * Create a Hermes backend and drive it to a live, fully configured ACP
      * session: initialize → resume-or-new session (replay-suppressed) → pin +
      * flush hermesSessionId → model discovery/override → catalog readiness →
-     * permission handler → edit mode.
+     * edit mode.
      *
      * Shared by the initial launch and by post-death respawns. The `respawn`
      * flag only changes model handling: an initial establishment captures the
      * server default and applies the spawn-time override, while a respawn
      * keeps the captured default and re-applies the LIVE user preference.
+     *
+     * The permission handler is created BEFORE initialize: hermes re-offers
+     * pending permission cards as session/request_permission during
+     * initialize/resume/reattach — BEFORE the RPC resolves — and a backend
+     * with no registered handler would answer them away (no-answer semantics
+     * at best, a cancelled card at worst). Registered early, the re-offered
+     * cards surface as real HAPI cards and answers travel on THIS backend.
      */
     private async establishBackend(opts: { respawn: boolean }): Promise<void> {
         const backend = createHermesBackend(
@@ -396,6 +475,20 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             this.session.sendSessionEvent({ type: 'message', message: error.message })
             this.messageBuffer.addMessage(error.message, 'status')
         })
+
+        // Auto-approval consults the LIVE session mode: a mid-turn switch to
+        // yolo starts auto-approving request_permission immediately, while the
+        // Hermes-side edit mode (session/set_mode) catches up at the next turn
+        // boundary below.
+        this.permissionHandler = new AcpPermissionHandler(
+            this.session.client,
+            backend,
+            () => this.session.getPermissionMode() as PermissionMode | undefined
+        )
+
+        // Foreign edit-policy changes arrive as current_mode_update while
+        // this backend is attached (hermes pumps them from session.info).
+        backend.setCurrentModeUpdateListener?.((update) => this.handleHermesModeUpdate(update))
 
         // Adopt the pending handshake armed before this establishment began
         // (a query that parked during the bridge build or the respawn
@@ -417,9 +510,11 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 try {
                     // Hermes implements `session/resume` and — unlike DSH —
                     // REPLAYS the restored session history as session/update
-                    // notifications. HAPI's hub remains the transcript source
-                    // for the UI, so the replay is suppressed; without this
-                    // every resume would duplicate the transcript.
+                    // notifications before the RPC resolves (unbounded on
+                    // long histories — hence the explicit 10-minute
+                    // per-request budget). HAPI's hub remains the transcript
+                    // source for the UI, so the replay is suppressed; without
+                    // this every resume would duplicate the transcript.
                     if (!backend.supportsSessionResume()) {
                         throw new Error('Hermes ACP server does not advertise session/resume')
                     }
@@ -430,14 +525,33 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                             // Hermes mounts client MCP servers on resume too:
                             // same bridge list as session/new so a respawned
                             // child remounts the hapi tools.
-                            mcpServers: this.acpMcpServers
+                            mcpServers: this.acpMcpServers,
+                            resumeTimeoutMs: HERMES_RESUME_TIMEOUT_MS
                         })
                     )
                 } catch (error) {
-                    logger.warn('[hermes-acp] resume failed, starting a new session', error)
+                    const message = error instanceof Error ? error.message : String(error)
+                    // Fork to a fresh session ONLY when hermes itself says the
+                    // stored id is gone/unknown (gateway not_found reason,
+                    // invalidParams, or no session/resume support at all).
+                    // Any other failure — a replay timeout, transport loss,
+                    // an internal error — leaves the stored hermesSessionId
+                    // in place and surfaces instead: silently forking would
+                    // strand the user on a new session that lost the whole
+                    // transcript while the old one may still be alive.
+                    if (!isHermesSessionGoneError(error) && !isHermesResumeUnsupportedError(error)) {
+                        logger.warn('[hermes-acp] resume failed; keeping the stored session id', error)
+                        this.session.sendSessionEvent({
+                            type: 'message',
+                            message: `Hermes resume failed: ${message}. Keeping the previous session; will retry.`
+                        })
+                        this.messageBuffer.addMessage(`Hermes resume failed: ${message}`, 'status')
+                        throw error
+                    }
+                    logger.warn('[hermes-acp] resume failed (session gone); starting a new session', error)
                     this.session.sendSessionEvent({
                         type: 'message',
-                        message: 'Hermes resume failed; starting a new session.'
+                        message: 'Hermes session was not found on the agent; starting a new session.'
                     })
                     acpSessionId = await backend.newSession({
                         cwd: this.session.path,
@@ -493,18 +607,54 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         }
         readiness.resolve(acpSessionId)
 
-        // Auto-approval consults the LIVE session mode: a mid-turn switch to
-        // yolo starts auto-approving request_permission immediately, while the
-        // Hermes-side edit mode (session/set_mode) catches up at the next turn
-        // boundary below.
-        this.permissionHandler = new AcpPermissionHandler(
-            this.session.client,
-            backend,
-            () => this.session.getPermissionMode() as PermissionMode | undefined
-        )
         const sessionPermissionMode = this.session.getPermissionMode() as PermissionMode | undefined
         this.applyDisplayMode(sessionPermissionMode)
+        // Inspect the mode hermes itself reports for this session (seeded by
+        // the backend from the resume/new response and any live
+        // current_mode_update): a respawned child may have started at the
+        // server default — or another surface changed the policy while this
+        // client was detached. Seeding the dedupe from the OBSERVED mode
+        // means the set_mode below only fires when hermes actually differs
+        // from what HAPI wants, and a mismatch is surfaced as a re-assert.
+        const observedMode = backend.getSessionCurrentMode?.(acpSessionId)
+        if (observedMode) {
+            const desiredEditMode = HERMES_EDIT_MODE_BY_PERMISSION[sessionPermissionMode ?? 'default'] ?? 'default'
+            if (observedMode !== desiredEditMode) {
+                this.session.sendSessionEvent({
+                    type: 'message',
+                    message: 'Hermes mode changed elsewhere; re-asserting'
+                })
+                this.messageBuffer.addMessage('Hermes mode changed elsewhere; re-asserting', 'status')
+                this.lastForeignModeNotice = observedMode
+            }
+            this.lastAppliedEditMode = observedMode
+            logger.debug(`[hermes-acp] hermes reported current mode ${observedMode}`)
+        }
         await this.applyHermesEditMode(backend, acpSessionId, sessionPermissionMode)
+    }
+
+    /**
+     * `current_mode_update` from the CURRENT backend: hermes emits it when
+     * another surface changed the session's edit-approval policy. Echoes of
+     * our own session/set_mode are filtered (applyingEditMode /
+     * lastAppliedEditMode); a genuinely foreign mode drops the apply-dedupe
+     * so the next queued batch re-asserts HAPI's mode, and says so once per
+     * distinct foreign mode (repeated echoes of the same mode stay quiet).
+     */
+    private handleHermesModeUpdate(update: { sessionId: string | null; currentModeId: string }): void {
+        if (update.currentModeId === this.applyingEditMode) return
+        if (update.currentModeId === this.lastAppliedEditMode) return
+        if (update.currentModeId === this.lastForeignModeNotice) return
+        this.lastForeignModeNotice = update.currentModeId
+        logger.warn('[hermes-acp] hermes mode changed elsewhere', { currentModeId: update.currentModeId })
+        this.session.sendSessionEvent({
+            type: 'message',
+            message: 'Hermes mode changed elsewhere; re-asserting'
+        })
+        this.messageBuffer.addMessage('Hermes mode changed elsewhere; re-asserting', 'status')
+        // Drop the dedupe: the next batch re-issues session/set_mode with the
+        // HAPI-side preference.
+        this.lastAppliedEditMode = null
     }
 
     /**
@@ -571,10 +721,15 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             const deadPermissionHandler = this.permissionHandler
             // Detach everything bound to the dead backend BEFORE rebuilding so
             // concurrent aborts, catalog queries, and the retry below can only
-            // ever observe the replacement.
+            // ever observe the replacement. The permission handler detaches
+            // last: cancelAll settles ITS pending cards first, and the
+            // replacement backend registers its own handler inside
+            // establishBackend before initialize — the re-offer window is
+            // covered from both sides.
             this.backend = null
             this.acpSessionId = null
             this.permissionHandler = null
+            deadBackend?.setCurrentModeUpdateListener?.(null)
             // Swap the catalog readiness to a fresh pending handshake BEFORE
             // the teardown awaits below: the standing one is settled on the
             // dead backend, and a picker query that lands while
@@ -680,9 +835,13 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     ): Promise<void> {
         const editMode = HERMES_EDIT_MODE_BY_PERMISSION[permissionMode ?? 'default'] ?? 'default'
         if (editMode === this.lastAppliedEditMode) return
+        this.applyingEditMode = editMode
         try {
             await backend.setMode(acpSessionId, editMode, { syncThoughtLevel: false })
             this.lastAppliedEditMode = editMode
+            // Our own mode is authoritative again — a later current_mode_update
+            // reporting something else is a NEW foreign change.
+            this.lastForeignModeNotice = null
             logger.debug(`[hermes-acp] Applied edit mode via set_mode: ${editMode}`)
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -691,6 +850,8 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 type: 'message',
                 message: `Hermes edit mode switch failed: ${message}`
             })
+        } finally {
+            this.applyingEditMode = null
         }
     }
 

@@ -189,6 +189,76 @@ describe('AcpSdkBackend', () => {
         expect(capturedRequestId).toBe('tool-approve');
     });
 
+    it('leaves a permission request UNANSWERED when no handler is registered (no-answer, not cancelled)', async () => {
+        // Hermes ground truth: a non-allow outcome closes the re-offered card
+        // (failed/rejected) while a NO-answer keeps the canonical card
+        // pending for other viewers — hermes re-offers it on the next
+        // resume/reattach. The unhandled window is a backend swap (launchers
+        // null their handler while the replacement establishes), so the
+        // backend must park the request instead of answering `cancelled`.
+        const backend = new AcpSdkBackend({ command: 'hermes', args: ['acp'] });
+        const backendInternal = backend as unknown as {
+            handlePermissionRequest: (params: unknown, requestId: string | number | null) => Promise<unknown>;
+        };
+
+        const pending = backendInternal.handlePermissionRequest({
+            sessionId: 'session-1',
+            toolCall: { toolCallId: 'tool-window', title: 'bash: rm -rf build' },
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        }, null);
+
+        // The promise must stay parked (no `cancelled` answer races back).
+        const settled = await Promise.race([
+            pending.then(() => true, () => true),
+            new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 25); })
+        ]);
+        expect(settled).toBe(false);
+    });
+
+    it('captures current_mode_update notifications per session and forwards them', () => {
+        const backend = new AcpSdkBackend({ command: 'hermes', args: ['acp'] });
+        const updates: Array<{ sessionId: string | null; currentModeId: string }> = [];
+        backend.setCurrentModeUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.currentModeUpdate,
+                currentModeId: 'dont_ask'
+            }
+        });
+        // A mode update for another session stays visible but is not ours.
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-other',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.currentModeUpdate,
+                currentModeId: 'accept_edits'
+            }
+        });
+
+        expect(updates).toEqual([
+            { sessionId: 'session-1', currentModeId: 'dont_ask' },
+            { sessionId: 'session-other', currentModeId: 'accept_edits' }
+        ]);
+        expect(backend.getSessionCurrentMode('session-1')).toBe('dont_ask');
+    });
+
+    it('seeds the current-mode cache from a session response modes block', () => {
+        const backend = new AcpSdkBackend({ command: 'hermes', args: ['acp'] });
+        const backendInternal = backend as unknown as {
+            captureSessionMetadata: (sessionId: string, response: unknown) => void;
+        };
+        backendInternal.captureSessionMetadata('session-1', {
+            modes: { currentModeId: 'accept_edits', availableModes: [] }
+        });
+
+        expect(backend.getSessionCurrentMode('session-1')).toBe('accept_edits');
+        expect(backend.getSessionCurrentMode('session-2')).toBeUndefined();
+    });
+
     it('uses session/set_model by default (gemini flavor)', async () => {
         const backend = new AcpSdkBackend({ command: 'gemini' });
         const calls: Array<{ method: string; params: unknown }> = [];

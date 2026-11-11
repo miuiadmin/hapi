@@ -1,7 +1,7 @@
 import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
-import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
+import { AcpStdioTransport, isAcpIndeterminateError, isAcpTimeoutError, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, isUsableRawInput, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
@@ -56,6 +56,15 @@ export type AcpSessionModelsMetadata = {
 export type AcpSessionInfoUpdate = {
     sessionId: string | null;
     title: string | null;
+};
+
+/** `session/update { sessionUpdate: 'current_mode_update' }` payload (ACP
+ * CurrentModeUpdate: the agent's current mode id, e.g. hermes's edit-approval
+ * axis default / accept_edits / dont_ask). Emitted on resume responses and on
+ * FOREIGN mode changes made from another client surface. */
+export type AcpCurrentModeUpdate = {
+    sessionId: string | null;
+    currentModeId: string;
 };
 
 export type AcpConfigOptionDescriptor = {
@@ -118,6 +127,10 @@ export class AcpSdkBackend implements AgentBackend {
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
+    /** sessionId → most recent `current_mode_update` mode id (captured live,
+     * like config_option_update; read by launchers after a respawn to detect
+     * a mode changed from another surface while this client was detached). */
+    private readonly sessionCurrentModes = new Map<string, string>();
     /**
      * toolCallId → title/kind/rawInput of the tool_call updates this backend
      * has drained, used to correlate bare `session/request_permission`
@@ -152,6 +165,8 @@ export class AcpSdkBackend implements AgentBackend {
     private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
+    /** Fired on every captured current_mode_update (foreign mode changes). */
+    private currentModeUpdateListener: ((update: AcpCurrentModeUpdate) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
     private agentActivityListener: ((thinking: boolean) => void) | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
@@ -386,8 +401,15 @@ export class AcpSdkBackend implements AgentBackend {
      *
      * Unlike `session/load` responses, dsh 0.2.x returns configOptions
      * without a `sessionId` — the resumed session keeps the requested id.
+     *
+     * `resumeTimeoutMs` opts this call into an explicit per-request timeout:
+     * hermes replays the whole restored transcript through session/update
+     * BEFORE the RPC resolves (unbounded on long histories), so the caller
+     * pins a long budget. While a custom timeout is set, timeout failures
+     * are NOT retried — the first request is still outstanding server-side
+     * and a retry would replay the transcript a second (and third) time.
      */
-    async resumeSession(config: AgentSessionConfig & { sessionId: string }): Promise<string> {
+    async resumeSession(config: AgentSessionConfig & { sessionId: string; resumeTimeoutMs?: number }): Promise<string> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
         }
@@ -397,7 +419,7 @@ export class AcpSdkBackend implements AgentBackend {
                 sessionId: config.sessionId,
                 cwd: config.cwd,
                 mcpServers: config.mcpServers
-            }),
+            }, config.resumeTimeoutMs !== undefined ? { timeoutMs: config.resumeTimeoutMs } : undefined),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
                 // Only transport-indeterminate failures (child exited,
@@ -405,8 +427,13 @@ export class AcpSdkBackend implements AgentBackend {
                 // dsh answers a mismatched cwd (compared by realpath) or an
                 // already-active session with a TERMINAL invalidParams
                 // rejection; retrying it just delays the caller's
-                // fresh-session fallback by the full backoff chain.
-                shouldRetry: isAcpIndeterminateError,
+                // fresh-session fallback by the full backoff chain. A TIMEOUT
+                // under an explicit resumeTimeoutMs is excluded too: the
+                // agent may still be replaying the transcript for the first
+                // request — re-sending it would replay twice more.
+                shouldRetry: (error) =>
+                    isAcpIndeterminateError(error)
+                    && !(config.resumeTimeoutMs !== undefined && isAcpTimeoutError(error)),
                 onRetry: (error, attempt, nextDelayMs) => {
                     logger.debug(`[ACP] session/resume attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
                 }
@@ -694,6 +721,18 @@ export class AcpSdkBackend implements AgentBackend {
     /** Forwards stable ACP session metadata updates independently of prompt streaming. */
     setSessionInfoUpdateListener(listener: ((update: AcpSessionInfoUpdate) => void) | null): void {
         this.sessionInfoUpdateListener = listener;
+    }
+
+    /** Forwards captured `current_mode_update` notifications (foreign mode
+     * changes) so launchers can re-assert their own mode on the next turn. */
+    setCurrentModeUpdateListener(listener: ((update: AcpCurrentModeUpdate) => void) | null): void {
+        this.currentModeUpdateListener = listener;
+    }
+
+    /** Most recent `current_mode_update` mode id seen for a session (also
+     * seeded from resume/new responses), or undefined when none arrived. */
+    getSessionCurrentMode(sessionId: string): string | undefined {
+        return this.sessionCurrentModes.get(sessionId);
     }
 
     /**
@@ -1169,6 +1208,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.foregroundPromptRequests = 0;
         this.isProcessingMessage = false;
         this.sessionModelsMetadata.clear();
+        this.sessionCurrentModes.clear();
         this.observedToolCalls.clear();
         this.initialAvailableCommands.clear();
         this.sessionAvailableCommands.clear();
@@ -1311,6 +1351,7 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.captureObservedToolCall(update);
         this.captureConfigOptionUpdate(sessionId, update);
+        this.captureCurrentModeUpdate(sessionId, update);
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);
         this.notifyAgentActivity(update);
@@ -1445,6 +1486,27 @@ export class AcpSdkBackend implements AgentBackend {
         const targetSessionId = sessionId ?? this.activeSessionId;
         if (!targetSessionId) return;
         this.captureSessionMetadata(targetSessionId, update);
+    }
+
+    /**
+     * `session/update { sessionUpdate: 'current_mode_update' }`: hermes
+     * emits this when ANOTHER surface changed the session's edit-approval
+     * policy while this client was attached. Captured like
+     * {@link captureConfigOptionUpdate} (sessionId → mode id) and forwarded
+     * to {@link setCurrentModeUpdateListener} so launchers can drop their
+     * apply-dedupe and re-assert their own mode on the next turn.
+     */
+    private captureCurrentModeUpdate(sessionId: string | null, update: unknown): void {
+        if (!isObject(update) || update.sessionUpdate !== ACP_SESSION_UPDATE_TYPES.currentModeUpdate) {
+            return;
+        }
+        const currentModeId = asString(update.currentModeId);
+        if (!currentModeId) return;
+        const targetSessionId = sessionId ?? this.activeSessionId;
+        if (targetSessionId) {
+            this.sessionCurrentModes.set(targetSessionId, currentModeId);
+        }
+        this.currentModeUpdateListener?.({ sessionId: targetSessionId, currentModeId });
     }
 
     private captureUsageUpdate(update: unknown): void {
@@ -1637,9 +1699,19 @@ export class AcpSdkBackend implements AgentBackend {
                 throw error;
             }
         } else {
-            logger.debug('[ACP] No permission handler registered; cancelling request');
+            // NO-ANSWER semantics: never resolve the request. Answering
+            // `cancelled` closes the agent-side card (hermes marks its
+            // viewer card failed; the gateway retires the re-offer key), but
+            // the canonical waiter may still be answerable by another
+            // viewer — hermes keeps a card pending when the client gives no
+            // answer, and re-offers it on the next resume/reattach. The
+            // unhandled window is a backend swap (launchers null their
+            // handler while a replacement backend establishes); the promise
+            // dies with the transport when that backend disconnects, which
+            // the agent treats as viewer-detached, not denied.
+            logger.debug('[ACP] No permission handler registered; leaving the request unanswered');
             this.pendingPermissions.delete(toolCallId);
-            return { outcome: { outcome: 'cancelled' } };
+            return await new Promise<unknown>(() => {});
         }
 
         return await responsePromise;
@@ -1754,6 +1826,18 @@ export class AcpSdkBackend implements AgentBackend {
         this.captureSessionModelsMetadata(sessionId, response);
         this.captureSessionConfigOptions(sessionId, response);
         this.captureAvailableCommands(sessionId, response);
+        this.captureSessionCurrentMode(sessionId, response);
+    }
+
+    /** Seeds the current-mode cache from a session/new / resume / set_mode
+     * response's `modes.currentModeId` block (agents that expose modes). */
+    private captureSessionCurrentMode(sessionId: string, response: unknown): void {
+        if (!isObject(response)) return;
+        const modes = isObject(response.modes) ? response.modes : null;
+        const currentModeId = asString(response.currentModeId)
+            ?? (modes ? asString(modes.currentModeId) : null);
+        if (!currentModeId) return;
+        this.sessionCurrentModes.set(sessionId, currentModeId);
     }
 
     private captureAvailableCommands(sessionId: string | null, source: unknown): void {

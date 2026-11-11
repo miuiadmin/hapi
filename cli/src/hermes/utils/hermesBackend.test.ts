@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveHermesAcpCommand } from './hermesBackend'
+import { createHermesBackend, resolveHermesAcpCommand } from './hermesBackend'
 
 describe('resolveHermesAcpCommand', () => {
     it('defaults to the hermes CLI with the acp subcommand', () => {
@@ -33,5 +33,16 @@ describe('resolveHermesAcpCommand', () => {
             .toThrow('HAPI_HERMES_ACP_ARGS_JSON must be a JSON array of strings')
         expect(() => resolveHermesAcpCommand({ HAPI_HERMES_ACP_ARGS_JSON: '["hermes", 1]' }))
             .toThrow('HAPI_HERMES_ACP_ARGS_JSON must be a JSON array of strings')
+    })
+})
+
+describe('createHermesBackend', () => {
+    it('pins delta text chunk mode (hermes streams pure append deltas)', () => {
+        // Hermes agent_message_chunk is a delta stream keyed by messageId;
+        // the default dedupe would drop repeated tokens as buffered suffixes.
+        const backend = createHermesBackend({})
+        const options = (backend as unknown as { options: { textChunkMode?: string; flavor?: string } }).options
+        expect(options.textChunkMode).toBe('delta')
+        expect(options.flavor).toBe('hermes')
     })
 })

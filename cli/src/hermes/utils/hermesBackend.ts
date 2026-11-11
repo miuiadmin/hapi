@@ -46,6 +46,12 @@ export function createHermesBackend(env: NodeJS.ProcessEnv = process.env): AcpSd
         command,
         args,
         env: filterEnv(env),
-        flavor: 'hermes'
+        flavor: 'hermes',
+        // Hermes agent_message_chunk streams are pure APPEND deltas keyed by
+        // messageId (verified in the hermes-agent ACP adapter): the default
+        // overlap dedupe treats a repeated token as an already-buffered
+        // suffix and drops it, corrupting the transcript — the same reason
+        // berry/grok/opencode pin delta mode.
+        textChunkMode: 'delta'
     })
 }

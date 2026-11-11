@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const transportState = vi.hoisted(() => ({
     calls: [] as Array<{ method: string; params?: unknown }>,
+    // (method, options) pairs for sendRequest calls that carried options —
+    // kept separate so the options-less assertions above stay unchanged.
+    optionCalls: [] as Array<{ method: string; options: unknown }>,
     initializeResponse: {} as Record<string, unknown>,
     resumeResponse: { configOptions: [] } as Record<string, unknown>,
     loadResponse: {} as Record<string, unknown> | null,
@@ -16,8 +19,11 @@ vi.mock('./AcpStdioTransport', () => {
         onNotification = vi.fn();
         onStderrError = vi.fn();
         registerRequestHandler = vi.fn();
-        sendRequest = vi.fn(async (method: string, params?: unknown) => {
+        sendRequest = vi.fn(async (method: string, params?: unknown, options?: unknown) => {
             transportState.calls.push({ method, params });
+            if (options !== undefined) {
+                transportState.optionCalls.push({ method, options });
+            }
             if (method === 'initialize') {
                 return transportState.initializeResponse;
             }
@@ -40,17 +46,23 @@ vi.mock('./AcpStdioTransport', () => {
         sendNotification = vi.fn();
         close = vi.fn(async () => {});
     }
-    // Mirrors the real module's indeterminate marker (the mock replaces the
-    // module, so AcpSdkBackend's own import must resolve to a working copy).
-    // Registered globally so tests can mark errors with the same symbol.
+    // Mirrors the real module's indeterminate/timeout markers (the mock
+    // replaces the module, so AcpSdkBackend's own imports must resolve to
+    // working copies). Registered globally so tests can mark errors with the
+    // same symbols.
     const indeterminateSymbol = Symbol.for('acp-indeterminate-mock');
+    const timeoutSymbol = Symbol.for('acp-timeout-mock');
     return {
         AcpStdioTransport: MockAcpStdioTransport,
         ACP_INDETERMINATE_SYMBOL: indeterminateSymbol,
         isAcpIndeterminateError: (error: unknown) =>
             typeof error === 'object'
             && error !== null
-            && (error as Record<symbol, unknown>)[indeterminateSymbol] === true
+            && (error as Record<symbol, unknown>)[indeterminateSymbol] === true,
+        isAcpTimeoutError: (error: unknown) =>
+            typeof error === 'object'
+            && error !== null
+            && (error as Record<symbol, unknown>)[timeoutSymbol] === true
     };
 });
 
@@ -63,9 +75,19 @@ function indeterminateError(message = 'ACP process exited (code=1, signal=null)'
     return error
 }
 
+/** A resume timeout the way AcpStdioTransport marks one (timeout ⊂
+ * indeterminate: the outcome is unknown, but the request may still be
+ * replaying server-side). */
+function resumeTimeoutError(message = `ACP request 'session/resume' timed out after 600000ms`): Error {
+    const error = indeterminateError(message)
+    Object.defineProperty(error, Symbol.for('acp-timeout-mock'), { value: true })
+    return error
+}
+
 describe('AcpSdkBackend.sessionResume', () => {
     beforeEach(() => {
         transportState.calls = [];
+        transportState.optionCalls = [];
         transportState.initializeResponse = { protocolVersion: 1, authMethods: [] };
         transportState.resumeResponse = { configOptions: [] };
         transportState.loadResponse = {};
@@ -188,6 +210,56 @@ describe('AcpSdkBackend.sessionResume', () => {
         expect(sessionId).toBe('dsh-stored-1');
         const resumeCalls = transportState.calls.filter((call) => call.method === 'session/resume');
         expect(resumeCalls).toHaveLength(2);
+    });
+
+    it('passes an explicit resumeTimeoutMs to the transport', async () => {
+        transportState.initializeResponse = {
+            protocolVersion: 1,
+            agentCapabilities: {
+                sessionCapabilities: { close: {}, list: {}, resume: {} }
+            }
+        };
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        await backend.initialize();
+
+        // Hermes replays the whole transcript before session/resume resolves;
+        // the caller pins a long per-request budget (unbounded replay).
+        await backend.resumeSession({
+            sessionId: 'hermes-stored-1',
+            cwd: '/tmp',
+            mcpServers: [],
+            resumeTimeoutMs: 600_000
+        });
+
+        expect(transportState.optionCalls).toContainEqual({
+            method: 'session/resume',
+            options: { timeoutMs: 600_000 }
+        });
+    });
+
+    it('does not retry a resume timeout when an explicit resumeTimeoutMs is set', async () => {
+        transportState.initializeResponse = {
+            protocolVersion: 1,
+            agentCapabilities: {
+                sessionCapabilities: { close: {}, list: {}, resume: {} }
+            }
+        };
+        // The first session/resume timed out mid-replay: the request is
+        // still outstanding server-side, so re-sending it would replay the
+        // transcript a second (and third) time. One attempt, then surface.
+        transportState.resumeErrorQueue = [resumeTimeoutError()];
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        await backend.initialize();
+
+        await expect(backend.resumeSession({
+            sessionId: 'hermes-stored-1',
+            cwd: '/tmp',
+            mcpServers: [],
+            resumeTimeoutMs: 600_000
+        })).rejects.toThrow('timed out');
+
+        const resumeCalls = transportState.calls.filter((call) => call.method === 'session/resume');
+        expect(resumeCalls).toHaveLength(1);
     });
 
     it('does not retry a terminal session/new rejection', async () => {

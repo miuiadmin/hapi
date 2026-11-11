@@ -9,6 +9,25 @@ export type HermesMode = {
      * session default ('default'); the launcher pushes changes to Hermes via
      * session/set_mode before prompting. */
     permissionMode?: PermissionMode
+    /** Inline image attachments upgraded to ACP image content blocks at
+     * prompt time (see utils/hermesPromptContent). Part of the mode so the
+     * queue's mode hash separates image-carrying turns: collectBatch only
+     * keeps the first item's mode, so an image message must never merge
+     * into a batch whose mode would silently drop its images. */
+    imageAttachments?: HermesImageAttachment[]
+}
+
+/** Image attachment metadata traveling with a queued turn. The file is read
+ * (authorized per session) only at prompt time, when the backend's
+ * advertised image capability is known. */
+export type HermesImageAttachment = {
+    /** Registered upload path. */
+    path: string
+    mimeType: string
+    /** Decoded size from the upload metadata, used to pre-check the Hermes
+     * 512 KiB inline cap before reading the file. */
+    size?: number
+    filename?: string
 }
 
 /** Mode attached to an outgoing turn. The model preference is three-state:

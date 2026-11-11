@@ -79,6 +79,8 @@ import { runHermes } from './runHermes'
 describe('runHermes', () => {
     beforeEach(() => {
         harness.session.rpcHandlerManager.registerHandler.mockClear()
+        harness.session.onUserMessage.mockClear()
+        harness.session.onCancelQueuedMessage.mockClear()
         harness.lifecycleOptions.stopKeepAlive = undefined
         harness.lifecycleOptions.onBeforeClose = undefined
         harness.bootstrapExistingSession.mockReset()
@@ -155,5 +157,62 @@ describe('runHermes', () => {
             getPermissionMode?: () => string | undefined
         }
         expect(sessionArg.getPermissionMode?.()).toBe('yolo')
+    })
+
+    it('routes image attachments onto the queued mode and excludes them from the text form', async () => {
+        await runHermes({
+            existingSessionId: 'hapi-session-hermes',
+            startedBy: 'terminal',
+            startingMode: 'remote',
+            workingDirectory: '/tmp/project'
+        })
+
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)?.[0] as
+            | ((message: {
+                content: { text: string; attachments?: Array<{ id: string; filename: string; mimeType: string; size: number; path: string }> }
+              }, localId?: string) => void)
+            | undefined
+        expect(onUserMessage).toBeInstanceOf(Function)
+        onUserMessage!({
+            content: {
+                text: 'look at this',
+                attachments: [
+                    { id: 'a1', filename: 'shot.png', mimeType: 'image/png', size: 4, path: '/uploads/shot.png' },
+                    { id: 'a2', filename: 'notes.txt', mimeType: 'text/plain', size: 10, path: '/uploads/notes.txt' }
+                ]
+            }
+        }, 'local-1')
+
+        // Images ride the mode (inline blocks are built at prompt time);
+        // only the non-image attachment keeps the @path text reference.
+        const sessionArg = harness.launcherConstructor.mock.calls[0]?.[0] as {
+            queue: { queue: Array<{ message: string; mode: Record<string, unknown> }> }
+        }
+        const item = sessionArg.queue.queue.at(-1)
+        expect(item?.message).toBe('@/uploads/notes.txt\n\nlook at this')
+        expect(item?.mode.imageAttachments).toEqual([
+            { path: '/uploads/shot.png', mimeType: 'image/png', size: 4, filename: 'shot.png' }
+        ])
+    })
+
+    it('keeps plain text turns free of image mode metadata', async () => {
+        await runHermes({
+            existingSessionId: 'hapi-session-hermes',
+            startedBy: 'terminal',
+            startingMode: 'remote',
+            workingDirectory: '/tmp/project'
+        })
+
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)?.[0] as
+            | ((message: { content: { text: string } }, localId?: string) => void)
+            | undefined
+        onUserMessage!({ content: { text: 'plain hello' } })
+
+        const sessionArg = harness.launcherConstructor.mock.calls[0]?.[0] as {
+            queue: { queue: Array<{ message: string; mode: Record<string, unknown> }> }
+        }
+        const item = sessionArg.queue.queue.at(-1)
+        expect(item?.message).toBe('plain hello')
+        expect('imageAttachments' in (item?.mode ?? {})).toBe(false)
     })
 })

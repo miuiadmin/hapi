@@ -30,6 +30,30 @@ export function isAcpIndeterminateError(error: unknown): boolean {
         && (error as Record<symbol, unknown>)[ACP_INDETERMINATE_SYMBOL] === true;
 }
 
+/** Marks request timeouts (the response never arrived before timeoutMs). Also
+ * carries {@link ACP_INDETERMINATE_SYMBOL}: the outcome is unknown server-side,
+ * but re-sending the same request is NOT safe for replaying calls (a resume
+ * replays the whole transcript), so callers can exclude timeouts from retries. */
+export const ACP_TIMEOUT_SYMBOL = Symbol('acp-timeout');
+
+function markAcpTimeout(error: Error): Error {
+    Object.defineProperty(error, ACP_TIMEOUT_SYMBOL, { value: true });
+    return markAcpIndeterminate(error);
+}
+
+export function isAcpTimeoutError(error: unknown): boolean {
+    return typeof error === 'object' && error !== null
+        && (error as Record<symbol, unknown>)[ACP_TIMEOUT_SYMBOL] === true;
+}
+
+/**
+ * A rejected `sendRequest` whose agent answered with a JSON-RPC error object.
+ * `code` / `data` mirror the wire error fields (they are what flavor-specific
+ * error classifiers key on — e.g. hermes's dead-session markers — the message
+ * alone is generic: "Invalid params" / "Internal error").
+ */
+export type AcpJsonRpcError = Error & { code?: number; data?: unknown };
+
 interface JsonRpcRequest {
     jsonrpc: '2.0';
     id: string | number | null;
@@ -329,7 +353,7 @@ export class AcpStdioTransport {
         if (Number.isFinite(timeoutMs)) {
             timer = setTimeout(() => {
                 if (this.pending.has(id)) {
-                    failRequest(markAcpIndeterminate(new Error(`ACP request '${method}' timed out after ${timeoutMs}ms`)));
+                    failRequest(markAcpTimeout(new Error(`ACP request '${method}' timed out after ${timeoutMs}ms`)));
                 }
             }, timeoutMs);
             timer.unref();
@@ -337,7 +361,7 @@ export class AcpStdioTransport {
         if (Number.isFinite(dispatchTimeoutMs)) {
             dispatchTimer = setTimeout(() => {
                 if (this.pending.has(id) && !dispatchSettled) {
-                    const error = markAcpIndeterminate(new Error(`ACP request '${method}' dispatch timed out after ${dispatchTimeoutMs}ms`));
+                    const error = markAcpTimeout(new Error(`ACP request '${method}' dispatch timed out after ${dispatchTimeoutMs}ms`));
                     try {
                         this.process.stdin.destroy();
                     } catch (destroyError) {
@@ -549,7 +573,17 @@ export class AcpStdioTransport {
         this.pending.delete(response.id);
 
         if (response.error) {
-            pending.reject(new Error(response.error.message));
+            // Keep the historical message string (tests and launchers match
+            // it) but attach the machine-readable identity so callers can
+            // classify by JSON-RPC code / error.data instead of parsing
+            // prose — hermes answers a dead-session resume with the generic
+            // "Internal error" message and carries the reason in data.
+            const error = new Error(response.error.message) as AcpJsonRpcError;
+            error.code = response.error.code;
+            if (response.error.data !== undefined) {
+                error.data = response.error.data;
+            }
+            pending.reject(error);
             return;
         }
 

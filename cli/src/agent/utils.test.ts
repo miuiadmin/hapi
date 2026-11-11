@@ -67,6 +67,30 @@ describe('agent tool name helpers', () => {
             expect(derived.name).toBe('MyCustomTool');
             expect(derived.source).toBe('title');
         });
+
+        it('strips a ": <preview>" suffix when the pre-colon head is a bare identifier', () => {
+            // Hermes tool_call titles are "<name>: <preview>", and editor MCP
+            // tools surface the full tagged bridge name there.
+            expect(deriveToolNameWithSource({
+                title: 'mcp__editor_hapi_1a2b3c4d__ask_user_question: Which color?'
+            })).toEqual({ name: 'mcp__editor_hapi_1a2b3c4d__ask_user_question', source: 'title' });
+            expect(deriveToolNameWithSource({
+                title: 'ask_user_question: Which color?'
+            })).toEqual({ name: 'ask_user_question', source: 'title' });
+            expect(deriveToolNameWithSource({ title: 'bash: rm -rf build' })).toEqual({
+                name: 'bash',
+                source: 'title'
+            });
+        });
+
+        it('keeps prose titles with colons intact when the head is not a bare identifier', () => {
+            // Spaces / slashes / colons in the head mean human prose, not a
+            // tool identifier — every other flavor's behavior is unchanged.
+            expect(deriveToolName({ title: 'Edit file: src/foo.ts' })).toBe('Edit file: src/foo.ts');
+            expect(deriveToolName({ title: 'list peer sessions: preview' })).toBe('list peer sessions: preview');
+            expect(deriveToolName({ title: 'MyCustomTool:' })).toBe('MyCustomTool:');
+            expect(deriveToolName({ title: 'a/b: x' })).toBe('a/b: x');
+        });
     });
 
     describe('canonicalizeDiffToolInput (OpenCode native diff shapes)', () => {

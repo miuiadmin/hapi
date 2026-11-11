@@ -41,6 +41,41 @@ describe('resolveToolAutoApprovalDecision skill_lookup', () => {
     })
 })
 
+describe('resolveToolAutoApprovalDecision tagged bridge names (hermes editor MCP)', () => {
+    it.each([
+        'mcp__editor_hapi_1a2b3c4d__ask_user_question',
+        'mcp__editor_hapi_9f8e7d6c__skill_lookup',
+        'mcp__editor_hapi_abcdef01__list_peers',
+        'editor_hapi__ask_user_question'
+    ])('auto-approves the allowlisted tool as a __ segment of %s', (toolName) => {
+        // Hermes scopes editor MCP servers per session, so the derived tool
+        // name carries the tagged bridge form — the allowlist entry must
+        // match as a '__'-delimited segment.
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBe('approved')
+    })
+
+    it('does not approve a tagged name whose segments are not allowlisted', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'mcp__editor_hapi_1a2b3c4d__delete_everything',
+            'call-1'
+        )).toBeNull()
+        expect(resolveToolAutoApprovalDecision(
+            'read-only',
+            'mcp__editor_hapi_1a2b3c4d__edit',
+            'call-2'
+        )).toBeNull()
+    })
+
+    it('derives the tagged name from a hermes "<name>: <preview>" title end to end', () => {
+        const derived = deriveToolName({
+            title: 'mcp__editor_hapi_1a2b3c4d__ask_user_question: Which database should I use?'
+        })
+        expect(derived).toBe('mcp__editor_hapi_1a2b3c4d__ask_user_question')
+        expect(resolveToolAutoApprovalDecision('default', derived, 'perm-check-1')).toBe('approved')
+    })
+})
+
 describe('resolveToolAutoApprovalDecision ping_peer', () => {
     it.each([
         'ping_peer',

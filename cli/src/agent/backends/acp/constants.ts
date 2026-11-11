@@ -8,7 +8,11 @@ export const ACP_SESSION_UPDATE_TYPES = {
     sessionInfoUpdate: 'session_info_update',
     /** dsh 0.2.x pushes a refreshed configOptions catalog mid-session
      * (e.g. after llm/adapters-updated); captured like an RPC echo. */
-    configOptionUpdate: 'config_option_update'
+    configOptionUpdate: 'config_option_update',
+    /** ACP CurrentModeUpdate: the agent's current mode id. Hermes emits it
+     * on resume/set_mode echoes and on FOREIGN edit-policy changes made
+     * from another client surface (gateway pumps it from session.info). */
+    currentModeUpdate: 'current_mode_update'
 } as const;
 
 /** OpenCode v2 client capability (`_meta` key) that enables child session updates. */

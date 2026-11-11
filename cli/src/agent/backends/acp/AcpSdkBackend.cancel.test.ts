@@ -31,14 +31,18 @@ vi.mock('./AcpStdioTransport', () => {
         });
         close = vi.fn(async () => {});
     }
-    // AcpSdkBackend imports this alongside the transport class; keep the
+    // AcpSdkBackend imports these alongside the transport class; keep the
     // mock module shape complete.
     return {
         AcpStdioTransport: MockAcpStdioTransport,
         isAcpIndeterminateError: (error: unknown) =>
             typeof error === 'object'
             && error !== null
-            && (error as Record<symbol, unknown>)[Symbol.for('acp-indeterminate')] === true
+            && (error as Record<symbol, unknown>)[Symbol.for('acp-indeterminate')] === true,
+        isAcpTimeoutError: (error: unknown) =>
+            typeof error === 'object'
+            && error !== null
+            && (error as Record<symbol, unknown>)[Symbol.for('acp-timeout')] === true
     };
 });
 

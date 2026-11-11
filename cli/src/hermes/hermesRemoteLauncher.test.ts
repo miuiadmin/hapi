@@ -41,12 +41,21 @@ const harness = vi.hoisted(() => ({
     // askUser escalations routed through the permission handler mock.
     askUserCalls: [] as unknown[],
     askUserOutcome: null as unknown,
+    // When non-empty, each prompt() call parks on the next entry (shifted
+    // off the front) AFTER recording — lets tests act between batches.
+    promptBlockerQueue: [] as Array<Promise<void>>,
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
     newSessionBlocker: null as null | Promise<void>,
     // When set, disconnect() parks on this promise — lets tests query the
     // catalog RPC while a respawn is still tearing the dead backend down.
-    disconnectBlocker: null as null | Promise<void>
+    disconnectBlocker: null as null | Promise<void>,
+    // Whether the (mocked) backend advertises promptCapabilities.image.
+    imagePrompts: false,
+    // Captured current-mode listener of the latest backend.
+    modeListener: null as ((update: { sessionId: string | null; currentModeId: string }) => void) | null,
+    // What the (mocked) backend reports as the session's current mode.
+    currentMode: null as string | null
 }))
 
 vi.mock('./utils/hermesBackend', () => ({
@@ -89,6 +98,10 @@ vi.mock('./utils/hermesBackend', () => ({
                 // Record every attempt (failed ones too) so respawn tests can
                 // prove the SAME batch was retried.
                 harness.prompts.push(content)
+                const blocker = harness.promptBlockerQueue.shift()
+                if (blocker) {
+                    await blocker
+                }
                 if (harness.promptErrorQueue.length > 0) {
                     const error = harness.promptErrorQueue.shift()
                     if (error) throw error
@@ -110,6 +123,11 @@ vi.mock('./utils/hermesBackend', () => ({
             }),
             onStderrError: vi.fn(),
             onPermissionRequest: vi.fn(),
+            supportsImagePrompts: vi.fn(() => harness.imagePrompts),
+            setCurrentModeUpdateListener: vi.fn((listener: (update: { sessionId: string | null; currentModeId: string }) => void) => {
+                harness.modeListener = listener
+            }),
+            getSessionCurrentMode: vi.fn(() => harness.currentMode ?? undefined),
             setSessionInfoUpdateListener: vi.fn((listener: (update: { title?: unknown }) => void) => {
                 harness.titleListener = listener
             }),
@@ -127,6 +145,15 @@ vi.mock('./utils/hermesBackend', () => ({
 
 vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
     AcpPermissionHandler: class {
+        // Mirrors the real handler: constructing it registers the backend's
+        // permission callback (that registration is what the re-offer-window
+        // test observes).
+        constructor(
+            _session: unknown,
+            backend?: { onPermissionRequest?: (handler: (request: unknown) => void) => void }
+        ) {
+            backend?.onPermissionRequest?.(() => {})
+        }
         // Captured instances: the askUserTool MCP callback routes here.
         async askUser(input: unknown): Promise<unknown> {
             harness.askUserCalls.push(input)
@@ -228,6 +255,10 @@ describe('HermesRemoteLauncher', () => {
         harness.disconnectBlocker = null
         harness.askUserCalls = []
         harness.askUserOutcome = null
+        harness.promptBlockerQueue = []
+        harness.imagePrompts = false
+        harness.modeListener = null
+        harness.currentMode = null
     })
 
     it('creates a fresh ACP session and forwards text prompts', async () => {
@@ -262,7 +293,8 @@ describe('HermesRemoteLauncher', () => {
         expect(harness.backend?.resumeSession).toHaveBeenCalledWith({
             sessionId: 'hermes-existing-1',
             cwd: '/tmp/hermes-test',
-            mcpServers: []
+            mcpServers: [],
+            resumeTimeoutMs: 600_000
         })
         expect(harness.resumeInsideSuppress).toBe(true)
         expect(harness.suppressCalls).toBe(1)
@@ -281,7 +313,7 @@ describe('HermesRemoteLauncher', () => {
         expect(harness.backend?.newSession).toHaveBeenCalledWith({ cwd: '/tmp/hermes-test', mcpServers: [] })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
-            message: 'Hermes resume failed; starting a new session.'
+            message: 'Hermes session was not found on the agent; starting a new session.'
         })
     })
 
@@ -296,8 +328,47 @@ describe('HermesRemoteLauncher', () => {
         expect(harness.backend?.newSession).toHaveBeenCalledWith({ cwd: '/tmp/hermes-test', mcpServers: [] })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
-            message: 'Hermes resume failed; starting a new session.'
+            message: 'Hermes session was not found on the agent; starting a new session.'
         })
+    })
+
+    it('forks to a fresh session when hermes reports the stored id gone (not_found)', async () => {
+        const session = createSession(undefined, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+        // hermes answers a resume of an unknown gateway session with an
+        // internal error whose data carries the bounded "not_found" reason.
+        harness.resumeError = Object.assign(new Error('Internal error'), {
+            code: -32603,
+            data: { details: 'not_found' }
+        })
+
+        await launcher.launch()
+
+        expect(harness.backend?.newSession).toHaveBeenCalledWith({ cwd: '/tmp/hermes-test', mcpServers: [] })
+        expect(session.onSessionFound).toHaveBeenCalledWith('hermes-session-1')
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Hermes session was not found on the agent; starting a new session.'
+        })
+    })
+
+    it('keeps the stored session id and surfaces the error when a resume times out mid-replay', async () => {
+        const session = createSessionWithBatches([['hello', {}]], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+        harness.resumeError = new Error(`ACP request 'session/resume' timed out after 600000ms`)
+
+        await launcher.launch()
+
+        // No silent fork: the stored hermesSessionId stays, the failure is
+        // surfaced (initial establishment, then the per-message respawn
+        // attempt), and the batch is dropped rather than run on a fork.
+        expect(harness.backends[0].newSession).not.toHaveBeenCalled()
+        expect(session.onSessionFound).not.toHaveBeenCalled()
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+            .map((call) => String((call[0] as { message?: string } | undefined)?.message ?? ''))
+        expect(events.some((message) => message.includes('Hermes resume failed:'))).toBe(true)
+        expect(events.some((message) => message.includes('Keeping the previous session'))).toBe(true)
+        expect(harness.prompts).toEqual([])
     })
 
     it('does not mirror native session_info_update titles (the Hub owns titles)', async () => {
@@ -674,7 +745,8 @@ describe('HermesRemoteLauncher', () => {
         expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
             sessionId: 'hermes-existing-1',
             cwd: '/tmp/hermes-test',
-            mcpServers: []
+            mcpServers: [],
+            resumeTimeoutMs: 600_000
         })
         expect(harness.resumeInsideSuppress).toBe(true)
         // The SAME batch ran against the dead transport and again on the
@@ -801,7 +873,8 @@ describe('HermesRemoteLauncher', () => {
         expect(harness.backends[2].resumeSession).toHaveBeenCalledWith({
             sessionId: 'hermes-existing-1',
             cwd: '/tmp/hermes-test',
-            mcpServers: []
+            mcpServers: [],
+            resumeTimeoutMs: 600_000
         })
     })
 
@@ -882,12 +955,14 @@ describe('HermesRemoteLauncher', () => {
         expect(harness.backends[0].resumeSession).toHaveBeenCalledWith({
             sessionId: 'hermes-existing-1',
             cwd: '/tmp/hermes-test',
-            mcpServers: expectedServers
+            mcpServers: expectedServers,
+            resumeTimeoutMs: 600_000
         })
         expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
             sessionId: 'hermes-existing-1',
             cwd: '/tmp/hermes-test',
-            mcpServers: expectedServers
+            mcpServers: expectedServers,
+            resumeTimeoutMs: 600_000
         })
         expect(harness.prompts).toEqual([
             [{ type: 'text', text: 'hello' }],
@@ -956,5 +1031,136 @@ describe('HermesRemoteLauncher', () => {
                 process.env.HAPI_DISABLE_PEER_TOOLS = previous
             }
         }
+    })
+
+    it('registers the permission handler before initialize/resume (re-offered cards in the window)', async () => {
+        // Hermes re-offers pending permission cards as request_permission
+        // DURING initialize/resume, before the RPC resolves: the handler must
+        // already be registered on the new backend at that point, or the
+        // re-offer hits a handler-less backend and gets answered away.
+        let releaseResume!: () => void
+        const park = new Promise<void>((resolve) => { releaseResume = resolve })
+        harness.resumeBlockerQueue = [park]
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('hello', {})
+        queue.close()
+        const session = createSessionFromQueue(queue, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.backends[0].resumeSession).toHaveBeenCalled())
+
+        // Mid-resume: the backend already carries a permission handler.
+        expect(harness.backends[0].onPermissionRequest).toHaveBeenCalled()
+        releaseResume()
+        await done
+    })
+
+    it('emits a mode-change notice and re-asserts after a foreign current_mode_update', async () => {
+        // Another surface (hermes TUI / dashboard) switched the edit policy:
+        // the launcher says so, drops the apply dedupe, and the NEXT batch
+        // re-issues session/set_mode with the HAPI-side preference. The
+        // first prompt parks so the change demonstrably lands BETWEEN the
+        // two batches (distinct modes keep them separate).
+        let releaseFirst!: () => void
+        const park = new Promise<void>((resolve) => { releaseFirst = resolve })
+        harness.promptBlockerQueue = [park]
+        const session = createSessionWithBatches([
+            ['first', {}],
+            ['second', { permissionMode: 'default' }]
+        ])
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        harness.modeListener!({ sessionId: 'hermes-session-1', currentModeId: 'dont_ask' })
+        releaseFirst()
+        await done
+
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Hermes mode changed elsewhere; re-asserting'
+        })
+        // Startup default, then default AGAIN on the second batch (the dedupe
+        // was cleared by the foreign change) — not silently left in dont_ask.
+        expect(harness.setModeCalls.map((call) => call.modeId)).toEqual(['default', 'default'])
+    })
+
+    it('ignores the current_mode_update echo of its own set_mode', async () => {
+        let releaseFirst!: () => void
+        const park = new Promise<void>((resolve) => { releaseFirst = resolve })
+        harness.promptBlockerQueue = [park]
+        const session = createSessionWithBatches([
+            ['first', {}],
+            ['second', { permissionMode: 'default' }]
+        ])
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        // The async echo of the launcher's own 'default' switch (and a repeat
+        // of it) is not a foreign change: no notice, no extra set_mode.
+        harness.modeListener!({ sessionId: 'hermes-session-1', currentModeId: 'default' })
+        harness.modeListener!({ sessionId: 'hermes-session-1', currentModeId: 'default' })
+        releaseFirst()
+        await done
+
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+            .map((call) => String((call[0] as { message?: string } | undefined)?.message ?? ''))
+        expect(events).not.toContain('Hermes mode changed elsewhere; re-asserting')
+        expect(harness.setModeCalls.map((call) => call.modeId)).toEqual(['default'])
+    })
+
+    it('re-asserts the HAPI mode when the established session reports a different one', async () => {
+        // Resume after a respawn: hermes reports dont_ask (left over from
+        // another surface), HAPI's session mode is default — the launcher
+        // notices and pushes its own mode back.
+        harness.currentMode = 'dont_ask'
+        const session = createSession(undefined, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Hermes mode changed elsewhere; re-asserting'
+        })
+        expect(harness.setModeCalls.map((call) => call.modeId)).toEqual(['default'])
+    })
+
+    it('escapes destructive slash verbs in plain sends but passes read-only verbs through', async () => {
+        // (Distinct modes keep the two messages as separate batches.)
+        const session = createSessionWithBatches([
+            ['/clear the whole context', {}],
+            ['/status of the build', { permissionMode: 'default' }]
+        ])
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        const [escaped, passthrough] = harness.prompts as Array<Array<{ type: string; text: string }>>
+        // Destructive verb: a notice line precedes the user's words (a
+        // leading space would NOT escape — hermes lstrips before matching).
+        expect(escaped[0].text).toContain('Hermes slash guard')
+        expect(escaped[0].text).toContain('/clear the whole context')
+        expect(escaped[0].text.startsWith('/')).toBe(false)
+        // Read-only verb: byte-identical passthrough.
+        expect(passthrough[0].text).toBe('/status of the build')
+    })
+
+    it('sends image attachments from the queued mode through the hermes prompt builder', async () => {
+        // Capability absent (pinned community wrapper): the image falls back
+        // to the @path text form instead of an image block.
+        const session = createSessionWithBatches([
+            ['look at this', {
+                imageAttachments: [{ path: '/uploads/shot.png', mimeType: 'image/png', size: 4 }]
+            }]
+        ])
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backends[0].supportsImagePrompts).toHaveBeenCalled()
+        expect(harness.prompts).toEqual([[{ type: 'text', text: '@/uploads/shot.png\n\nlook at this' }]])
     })
 })

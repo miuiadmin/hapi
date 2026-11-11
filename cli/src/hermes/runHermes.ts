@@ -5,7 +5,6 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
 import type { PermissionMode } from '@hapi/protocol/types'
@@ -13,6 +12,7 @@ import type { AgentState } from '@/api/types'
 import { HermesRemoteLauncher } from './hermesRemoteLauncher'
 import { HermesSession } from './session'
 import { hermesModeForPreference, type HermesMode } from './types'
+import { formatHermesUserMessage, hermesImageAttachmentsFor } from './utils/hermesPromptContent'
 
 export async function runHermes(opts: {
     startedBy?: 'runner' | 'terminal'
@@ -72,8 +72,16 @@ export async function runHermes(opts: {
 
     session.onUserMessage((message, localId) => {
         queue.push(
-            formatMessageWithAttachments(message.content.text, message.content.attachments),
-            hermesModeForPreference(currentModel, currentPermissionMode),
+            // Non-image attachments keep the @path text form; inline-capable
+            // images ride the mode and become ACP image content blocks at
+            // prompt time (utils/hermesPromptContent), gated on the
+            // backend's advertised promptCapabilities.image and clamped to
+            // hermes's 512 KiB inline cap (over-limit → @path fallback).
+            formatHermesUserMessage(message.content.text, message.content.attachments),
+            {
+                ...hermesModeForPreference(currentModel, currentPermissionMode),
+                ...hermesImageAttachmentsFor(message.content.attachments)
+            },
             localId
         )
     })

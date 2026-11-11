@@ -104,6 +104,24 @@ export function isUnclassifiablePermissionRequest(request: {
     return request.rawInput === undefined || request.rawInput === null;
 }
 
+/**
+ * Exact allowlist match for a derived tool name, tolerating tagged bridge
+ * forms. Hermes mounts editor MCP tools under a per-session tag — the model
+ * (and therefore the tool_call title / derived name) sees
+ * `mcp__editor_hapi_<8-hex-tag>__ask_user_question` — so an allowlist entry
+ * must also match as a `__`-delimited SEGMENT of the derived name. Only the
+ * exact-name set is segment-matched; substring hint rules stay whole-name.
+ */
+function matchesAutoApproveExactName(lowerTool: string): boolean {
+    if (AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)) {
+        return true;
+    }
+    if (!lowerTool.includes('__')) {
+        return false;
+    }
+    return lowerTool.split('__').some((segment) => AUTO_APPROVE_EXACT_TOOL_NAMES.has(segment));
+}
+
 export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
     toolName: string,
@@ -122,7 +140,7 @@ export function resolveToolAutoApprovalDecision(
     const decisionForMode: AutoApprovalDecision = (mode === 'yolo' || mode === 'always-proceed') ? 'approved_for_session' : 'approved';
 
     if (
-        AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
+        matchesAutoApproveExactName(lowerTool)
         || rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))
     ) {
         return decisionForMode;
