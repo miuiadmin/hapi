@@ -1620,7 +1620,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // whose wrapper may still be finishing cleanup after tracking loss.
         // Sibling protection alone remains insufficient proof of archival.
         const binding = sessionRegistryBindingState(liveRuntimes, sessionId);
-        if (binding !== 'absent' || sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId) || protectedTrackedPids.size > 0) {
+        // Protected wrappers hosting only other sessions must not mask this
+        // session's verified exit, or hub-side stop reconciles (resume cleanup,
+        // KillSession archival) stall on 'unknown' instead of 'already_gone'.
+        if (binding !== 'absent' || sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId)
+            || (protectedTrackedPids.size > 0 && !hasVerifiedExit(sessionId))) {
           const decision = decideKeepWrapperArchive(binding);
           logger.debug(
             `[RUNNER RUN] Session ${sessionId}; shared binding=${binding}; archive=${decision}`
