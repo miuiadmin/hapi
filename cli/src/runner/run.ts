@@ -14,6 +14,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { isBunCompiled } from '@/projectPath';
 import { describeChildFatalContext } from './childFatalDiagnostics';
+import { ensureWatchdogInstalled, touchRunnerHeartbeat } from './watchdog';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
@@ -864,6 +865,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           cwd: spawnDirectory,
           detached: true,  // Sessions stay alive when runner stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
+          // Demote agent children below the runner: during a load storm the
+          // runner's event loop must keep winning CPU contention or the whole
+          // machine goes dark (2026-11-11 incident). The handoff self-restart
+          // spawn below intentionally does NOT set this — the runner itself
+          // always stays high priority.
+          lowerPriority: true,
           env: {
             ...process.env,
             ...extraEnv
@@ -1735,6 +1742,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     writeRunnerState(fileState);
     logger.debug('[RUNNER RUN] Runner state written');
 
+    // Prime the out-of-process watchdog heartbeat immediately so the
+    // watchdog sees a live runner right away (the first interval tick may be
+    // a full heartbeat interval away), and install the watchdog LaunchAgent.
+    // Fire-and-forget: the watchdog is best-effort and must never block
+    // runner startup.
+    touchRunnerHeartbeat();
+    void ensureWatchdogInstalled().catch(() => {
+      // Swallowed inside ensureWatchdogInstalled too; belt and braces so an
+      // unexpected rejection can never surface as an unhandled rejection.
+    });
+
     // Prepare initial runner state
     const initialRunnerState: RunnerState = {
       status: 'offline',
@@ -1909,6 +1927,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     let nextHandoffAttemptAt = 0;
     const HANDOFF_RETRY_BACKOFF_MS = 5 * 60_000;
     const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
+      // Out-of-process watchdog heartbeat: refresh unconditionally at the
+      // very top of the tick, before any await/network work, so the file only
+      // goes stale when the event loop itself is frozen (a previous tick
+      // stuck on network I/O still leaves this timer firing — that runner is
+      // alive and none of the watchdog's business). When the file does go
+      // stale, the external watchdog script kill -9's this process and the
+      // guard respawns a fresh runner.
+      touchRunnerHeartbeat();
+
       if (heartbeatRunning) {
         return;
       }

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.hapi.rescue.plist — LaunchAgent for the hapi out-of-band rescue poller.
+
+  Runs ~/.hapi-rescue/rescue.sh once at load and then every 60 seconds.
+  Full SOP: deploy/rescue/README.md
+
+  INSTALL — the &lt;HOME&gt; placeholder (XML-escaped form of <HOME>) below
+  MUST be replaced with the target user's real home directory first;
+  launchd does NOT expand ~ or $HOME:
+
+    1) sed "s|&lt;HOME&gt;|$HOME|g" com.hapi.rescue.plist \
+         > ~/Library/LaunchAgents/com.hapi.rescue.plist
+
+    2) launchctl bootstrap gui/$(id -u) \
+         ~/Library/LaunchAgents/com.hapi.rescue.plist
+
+    3) verify:  launchctl print gui/$(id -u)/com.hapi.rescue
+
+  UNINSTALL:
+    launchctl bootout gui/$(id -u)/com.hapi.rescue
+    rm ~/Library/LaunchAgents/com.hapi.rescue.plist
+
+  Prerequisites: ~/.hapi-rescue/rescue.sh (chmod 700) and
+  ~/.hapi-rescue/env.sh (chmod 600) — see README.md.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hapi.rescue</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>&lt;HOME&gt;/.hapi-rescue/rescue.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+</dict>
+</plist>

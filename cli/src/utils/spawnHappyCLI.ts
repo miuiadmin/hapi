@@ -46,6 +46,41 @@ const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
 export const NOFILE_BUMP_THRESHOLD = 65536;
 const NOFILE_BUMP_TARGET = 1048576;
 
+const AGENT_NICE_ENV = 'HAPI_AGENT_NICE';
+// Demoting agent children keeps the runner's event loop winning CPU
+// contention during load storms (2026-11-11: agents burned every core for 39
+// minutes while the runner's loop starved and the machine went dark). 15 is
+// aggressive enough to matter under contention yet free on an idle machine —
+// nice only reweights scheduling, it does not cap CPU.
+const DEFAULT_AGENT_NICE_LEVEL = 15;
+const NICE_BIN = '/usr/bin/nice';
+
+/**
+ * Resolve the nice adjustment used for lower-priority spawns from
+ * HAPI_AGENT_NICE. Returns null when the nice prefix is disabled.
+ *
+ * - unset/empty → default (15)
+ * - '0' → disabled (explicit opt-out)
+ * - unparseable or < 1 → default (a negative nice would *raise* priority,
+ *   which is never what lowerPriority means)
+ */
+export function resolveAgentNiceLevel(
+  rawValue: string | undefined = process.env[AGENT_NICE_ENV]
+): number | null {
+  const raw = rawValue?.trim();
+  if (raw === undefined || raw === '') {
+    return DEFAULT_AGENT_NICE_LEVEL;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (parsed === 0) {
+    return null;
+  }
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_AGENT_NICE_LEVEL;
+  }
+  return parsed;
+}
+
 let cachedNofileSoft: number | undefined;
 let cachedNofileHard: number | undefined;
 
@@ -129,6 +164,72 @@ export function applyNofileBump(
   };
 }
 
+export interface SpawnHardeningOptions {
+  platform?: NodeJS.Platform;
+  softLimit?: number;
+  hardLimit?: number;
+  /**
+   * Apply the RLIMIT_NOFILE bump wrapper. Only Bun-compiled children need it;
+   * dev-mode spawns keep their direct command line. Defaults to true so the
+   * exported helper composes the same hardening compiled production spawns
+   * get.
+   */
+  enableNofileBump?: boolean;
+  /** Prefix the final command with `nice` (lower CPU scheduling priority). */
+  lowerPriority?: boolean;
+  /** Injectable for tests; defaults to resolving HAPI_AGENT_NICE. null disables. */
+  niceLevel?: number | null;
+}
+
+/**
+ * Compose spawn hardening for a resolved HAPI command:
+ *
+ * 1. the RLIMIT_NOFILE bump wrapper (applyNofileBump) for compiled binaries,
+ * 2. a `nice` prefix when lowerPriority is requested (agent children only —
+ *    the runner itself must stay high priority to survive load storms).
+ *
+ * When both apply, `nice` is nested *inside* the existing /bin/sh wrapper
+ * (`ulimit -n N; exec nice -n M "$@"`) so the exec chain stays a single hop
+ * and pid/signal semantics stay identical. Windows ignores lowerPriority
+ * entirely (there is no /usr/bin/nice there); the nofile wrapper is already
+ * a no-op on Windows, so the two never fight.
+ */
+export function applySpawnHardening(
+  command: string,
+  args: string[],
+  opts: SpawnHardeningOptions = {}
+): HappyCliCommand {
+  const platform = opts.platform ?? process.platform;
+  const hardened = opts.enableNofileBump === false
+    ? { command, args }
+    : applyNofileBump(command, args, opts);
+
+  let niceLevel: number | null = null;
+  if (opts.lowerPriority === true) {
+    niceLevel = opts.niceLevel !== undefined ? opts.niceLevel : resolveAgentNiceLevel();
+  }
+  if (niceLevel === null || niceLevel < 1 || platform === 'win32') {
+    return hardened;
+  }
+
+  const isShWrapped =
+    hardened.command === '/bin/sh' &&
+    hardened.args[0] === '-c' &&
+    typeof hardened.args[1] === 'string' &&
+    hardened.args[1].endsWith('exec "$@"');
+  if (isShWrapped) {
+    // `exec nice ...` replaces the shell image while keeping the (already
+    // demoted) scheduling priority — one process hop, same pid, and the
+    // ulimit bump stays in front.
+    const script = (hardened.args[1] as string).replace(
+      /exec "\$@"$/,
+      `exec ${NICE_BIN} -n ${niceLevel} "$@"`
+    );
+    return { command: '/bin/sh', args: ['-c', script, ...hardened.args.slice(2)] };
+  }
+  return { command: NICE_BIN, args: ['-n', String(niceLevel), hardened.command, ...hardened.args] };
+}
+
 /**
  * Resolve the TypeScript entrypoint for development mode.
  */
@@ -144,6 +245,16 @@ function resolveEntrypoint(projectRoot: string): string {
 export interface HappyCliCommand {
   command: string;
   args: string[];
+}
+
+export interface HappyCliSpawnOptions extends SpawnOptions {
+  /**
+   * Demote the spawned child's CPU scheduling priority via `nice`
+   * (HAPI_AGENT_NICE, default 15; '0' disables the prefix). Used for agent
+   * children so a load storm cannot starve the runner's event loop. Ignored
+   * on Windows.
+   */
+  lowerPriority?: boolean;
 }
 
 function isCrossPlatformAbsolutePath(value: string): boolean {
@@ -228,7 +339,7 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
   };
 }
 
-export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
+export function spawnHappyCLI(args: string[], options: HappyCliSpawnOptions = {}): ChildProcess {
 
   let directory: string | URL | undefined;
   if ('cwd' in options) {
@@ -259,7 +370,10 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   
   // On Windows, detached processes allocate a new console window by default.
   // windowsHide: true suppresses this to prevent cmd windows from accumulating.
-  const finalOptions: SpawnOptions = { ...options };
+  // `lowerPriority` is our own option, not a real child_process field — strip
+  // it before handing the options object to spawn.
+  const { lowerPriority: _lowerPriority, ...passthroughOptions } = options;
+  const finalOptions: SpawnOptions = { ...passthroughOptions };
   const finalEnv = { ...process.env, ...options.env };
   let shouldSetEnv = false;
   if (compiledMode) {
@@ -282,9 +396,13 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
     finalOptions.windowsHide = true;
   }
   // Only Bun-compiled binaries crash at low RLIMIT_NOFILE (plain `bun` runs
-  // fine) — dev-mode spawns keep their direct command line.
-  // Applied after the env assembly above so HAPI_CLI_EXECUTABLE keeps pointing
-  // at the real hapi binary even when the exec line is wrapped.
-  const bumped = compiledMode ? applyNofileBump(spawnCommand, spawnArgs) : { command: spawnCommand, args: spawnArgs };
-  return spawn(bumped.command, bumped.args, finalOptions);
+  // fine) — dev-mode spawns keep their direct command line (but still get the
+  // nice prefix when requested). Applied after the env assembly above so
+  // HAPI_CLI_EXECUTABLE keeps pointing at the real hapi binary even when the
+  // exec line is wrapped.
+  const hardened = applySpawnHardening(spawnCommand, spawnArgs, {
+    enableNofileBump: compiledMode,
+    lowerPriority: options.lowerPriority === true
+  });
+  return spawn(hardened.command, hardened.args, finalOptions);
 }
