@@ -22,7 +22,7 @@ import type {
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
-import { reduceChatBlocks } from '@/chat/reducer'
+import { reduceChatBlocksWithTailAppend, type TailAppendReduceState } from '@/chat/reducerTailAppend'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
@@ -731,6 +731,9 @@ function SessionChatInner(props: SessionChatProps) {
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const focusComposerRef = useRef<(() => void) | null>(null)
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
+    // Incremental state for the tail-append fast path of the block reducer;
+    // reset together with the other caches whenever the session changes.
+    const tailAppendReduceRef = useRef<TailAppendReduceState | null>(null)
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const visibleGroupsModeRef = useRef(toolGroupingMode)
     const [rememberedTailBoundary, setRememberedTailBoundary] = useState<{
@@ -1509,6 +1512,7 @@ function SessionChatInner(props: SessionChatProps) {
     useEffect(() => {
         normalizedCacheRef.current.clear()
         blocksByIdRef.current.clear()
+        tailAppendReduceRef.current = null
         visibleGroupsRef.current = []
         setOutlineOpen(false)
     }, [props.session.id])
@@ -1527,6 +1531,7 @@ function SessionChatInner(props: SessionChatProps) {
         if (prevSessionIdRef.current !== null && prevSessionIdRef.current !== props.session.id) {
             normalizedCacheRef.current.clear()
             blocksByIdRef.current.clear()
+            tailAppendReduceRef.current = null
             visibleGroupsRef.current = []
         }
         prevSessionIdRef.current = props.session.id
@@ -1570,12 +1575,22 @@ function SessionChatInner(props: SessionChatProps) {
         return normalized
     }, [goalStateSourceMessages])
 
-    const reduced = useMemo(
-        () => reduceChatBlocks(normalizedMessages, props.session.agentState, {
+    // Streaming appends only a few rows to the windowed transcript, yet a full
+    // reduceChatBlocks pass is O(n) over the whole window. The tail-append
+    // wrapper reuses the previous reduction for the unchanged prefix whenever
+    // the update is provably append-only (identity-preserved prefix, no
+    // backward-attaching tool results / stream snapshots / sidechains); any
+    // other signal falls back to the exact full reduction.
+    const reduced = useMemo(() => {
+        const outcome = reduceChatBlocksWithTailAppend(tailAppendReduceRef.current, {
+            sessionId: props.session.id,
+            normalized: normalizedMessages,
+            agentState: props.session.agentState,
             goalStateMessages: normalizedGoalStateMessages
-        }),
-        [normalizedMessages, normalizedGoalStateMessages, props.session.agentState]
-    )
+        })
+        tailAppendReduceRef.current = outcome.state
+        return outcome.result
+    }, [normalizedMessages, normalizedGoalStateMessages, props.session.agentState, props.session.id])
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),
         [reduced.blocks]

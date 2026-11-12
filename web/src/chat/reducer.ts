@@ -51,7 +51,7 @@ export type ReduceChatBlocksOptions = {
     goalStateMessages?: NormalizedMessage[]
 }
 
-function getLatestThreadGoal(normalized: NormalizedMessage[]): ThreadGoal | null {
+export function getLatestThreadGoal(normalized: NormalizedMessage[]): ThreadGoal | null {
     let sawNewerNonGoalUserMessage = false
     for (let i = normalized.length - 1; i >= 0; i--) {
         const msg = normalized[i]
