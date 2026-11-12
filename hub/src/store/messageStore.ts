@@ -6,11 +6,13 @@ import { decodeMessageContent } from './contentCodec'
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    addMessageSweepingLiveSnapshots,
     upsertToolCallMessage,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
     deleteLiveReasoningSnapshots,
+    deleteLiveTextSnapshots,
     deleteQueuedMessageById,
     claimIndeterminateMessage,
     lookupQueuedMessage,
@@ -44,6 +46,7 @@ import {
     getMinSeq,
     getMessageSeqById,
     truncateMessagesFromLocalId,
+    type AddMessageSweepResult,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
     type LocalMessageState,
@@ -62,6 +65,16 @@ export class MessageStore {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
     }
 
+    addMessageSweepingLiveSnapshots(
+        sessionId: string,
+        content: unknown,
+        localId?: string,
+        scheduledAt?: number | null,
+        createdAt?: number
+    ): AddMessageSweepResult {
+        return addMessageSweepingLiveSnapshots(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
     upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
         return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
     }
@@ -72,6 +85,10 @@ export class MessageStore {
 
     deleteLiveReasoningSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
         return deleteLiveReasoningSnapshots(this.db, sessionId, streamId, keepMessageId)
+    }
+
+    deleteLiveTextSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
+        return deleteLiveTextSnapshots(this.db, sessionId, streamId, keepMessageId)
     }
 
     addImportedMessage(sessionId: string, content: unknown, localId: string, createdAt: number): { message: StoredMessage; inserted: boolean } {

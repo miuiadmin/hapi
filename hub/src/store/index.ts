@@ -5,6 +5,7 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { addMessage } from './messages'
+import { runTextSnapshotBackfill, type TextSnapshotBackfillStats } from './textSnapshotBackfill'
 import type { StoredMessage } from './types'
 import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
@@ -42,12 +43,13 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 28
+const SCHEMA_VERSION: number = 29
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
     'message_epochs',
+    'store_maintenance',
     'users',
     'push_subscriptions',
     'fcm_devices',
@@ -130,6 +132,16 @@ export class Store {
 
     runInTransaction<T>(work: () => T): T {
         return this.db.transaction(work)()
+    }
+
+    /**
+     * One-time, idempotent transcript cleanup: retire the stale live text
+     * snapshot rows stored before the runtime sweep existed (see
+     * textSnapshotBackfill.ts). Returns null when a previous run already
+     * completed (durable marker in store_maintenance).
+     */
+    runTextSnapshotBackfill(): Promise<TextSnapshotBackfillStats | null> {
+        return runTextSnapshotBackfill(this.db)
     }
 
     /**
@@ -354,6 +366,7 @@ export class Store {
             25: () => this.migrateFromV25ToV26(),
             26: () => this.migrateFromV26ToV27(),
             27: () => this.migrateFromV27ToV28(),
+            28: () => this.migrateFromV28ToV29(),
         })
 
         if (currentVersion === 0) {
@@ -483,6 +496,11 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 epoch INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS store_maintenance (
+                name TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS users (
@@ -1053,6 +1071,21 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
                 ON messages(session_id, seq)
                 WHERE invoked_at IS NULL AND local_id IS NOT NULL
+        `)
+    }
+
+    /**
+     * v28→v29: durable marker table for one-time store maintenance jobs
+     * (first user: textSnapshotBackfill.ts). Fork-ladder rung — upstream
+     * migrations landing on later version numbers are renumbered onto this
+     * fork's ladder when picked, exactly like v27→v28 before it.
+     */
+    private migrateFromV28ToV29(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS store_maintenance (
+                name TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            )
         `)
     }
 

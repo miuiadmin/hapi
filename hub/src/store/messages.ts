@@ -4,11 +4,24 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { getLiveReasoningStreamId, getToolCallId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import {
+    getLiveReasoningStreamId,
+    getReasoningStreamId,
+    getTextLiveStreamId,
+    getTextStreamId,
+    getToolCallId,
+    unwrapRoleWrappedRecordEnvelope
+} from '@hapi/protocol/messages'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
+import {
+    dropCachedToolCallRow,
+    dropCachedToolCallRowsForSession,
+    getCachedToolCallRowId,
+    setCachedToolCallRowId
+} from './toolCallRowCache'
 
 type DbMessageRow = {
     id: string
@@ -56,6 +69,9 @@ export function addImportedMessage(
 
     const now = Date.now()
     const stampedAt = Number.isFinite(createdAt) ? Math.min(createdAt, now) : now
+    // Imported transcript rows can be user turns landing after live tool
+    // calls; those entries must not survive (see addMessage).
+    if (isUserMessageRow(content)) dropCachedToolCallRowsForSession(db, sessionId)
     return db.transaction(() => {
         const previousHead = getNewestMessagePosition(db, sessionId)
         const msgSeqRow = prepareCached(db, 
@@ -152,6 +168,17 @@ export function addMessage(
     // COALESCE(invoked_at, created_at) sort reflects the transcript's own jsonl order instead of
     // hub arrival order.
     const invokedAt = localId ? null : stampedAt
+
+    // Fresh rows close what the tool-call upsert cache considers live: a
+    // tool-call-result with this callId settles the call, and a user message
+    // row starts a new turn that closes every live call of the session. Drop
+    // the affected memo entries so a later tick never merges into a dead row.
+    const settledCallId = toolCallResultCallId(content)
+    if (settledCallId !== null) {
+        dropCachedToolCallRow(db, sessionId, settledCallId)
+    } else if (isUserMessageRow(content)) {
+        dropCachedToolCallRowsForSession(db, sessionId)
+    }
 
     return db.transaction(() => {
         const previousHead = getNewestMessagePosition(db, sessionId)
@@ -304,6 +331,25 @@ function findLiveToolCallRow(db: Database, sessionId: string, callId: string): D
     return null
 }
 
+/** Merge an incoming tool-call snapshot into a known live row. Shared by the
+ *  cache-hit path and the tail-scan path so both produce identical rows. */
+function mergeIntoToolCallRow(db: Database, existing: DbMessageRow, content: unknown): UpsertToolCallResult {
+    const storedContent = decodeMessageContent(existing.content)
+    const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
+    // A re-emitted tick that changes nothing must not rewrite the row:
+    // only observable content changes touch the database.
+    if (isDeepStrictEqual(mergedContent, storedContent)) {
+        return { message: toStoredMessage(existing), updated: true }
+    }
+    const encoded = encodeMessageContent(mergedContent)
+    // Same in-place content swap as the queued-message edit path
+    // (syncNativeQueuedMessage): no new seq, no content_revision bump.
+    prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
+    const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
+    if (!row) throw new Error('Failed to update tool-call message')
+    return { message: toStoredMessage(row), updated: true }
+}
+
 /** Store one ACP `tool-call` agent message, updating the call's existing row
  *  in place when the same callId is still live in the session tail.
  *
@@ -311,7 +357,13 @@ function findLiveToolCallRow(db: Database, sessionId: string, callId: string): D
  *  its own row filled history pages with duplicates the web then folded back
  *  into one card. Updating the single row keeps history pages honest. The
  *  row's id/seq/createdAt/localId never move, so live clients can merge the
- *  rebroadcast by id and stored ordering stays stable. */
+ *  rebroadcast by id and stored ordering stays stable.
+ *
+ *  The live row is remembered in a per-process callId→rowId memo
+ *  (toolCallRowCache.ts); a hit skips the 200-row tail scan and its zstd
+ *  decodes entirely. The memo is dropped when a result/user row or a
+ *  delete/move closes the call, and a hit re-verifies the row before use, so
+ *  the fallback scan stays the authority for anything the memo missed. */
 export function upsertToolCallMessage(
     db: Database,
     sessionId: string,
@@ -321,24 +373,25 @@ export function upsertToolCallMessage(
     createdAt?: number
 ): UpsertToolCallResult {
     return db.transaction(() => {
+        const cachedRowId = getCachedToolCallRowId(db, sessionId, callId)
+        if (cachedRowId !== null) {
+            const cached = prepareCached(db, 'SELECT * FROM messages WHERE id = ? AND session_id = ?')
+                .get(cachedRowId, sessionId) as DbMessageRow | undefined
+            if (cached && getToolCallId(decodeMessageContent(cached.content)) === callId) {
+                return mergeIntoToolCallRow(db, cached, content)
+            }
+            // Row deleted/moved or no longer holds this call: fall through to
+            // the authoritative scan after forgetting the stale entry.
+            dropCachedToolCallRow(db, sessionId, callId)
+        }
         const existing = findLiveToolCallRow(db, sessionId, callId)
         if (!existing) {
-            return { message: addMessage(db, sessionId, content, localId, undefined, createdAt), updated: false }
+            const message = addMessage(db, sessionId, content, localId, undefined, createdAt)
+            setCachedToolCallRowId(db, sessionId, callId, message.id)
+            return { message, updated: false }
         }
-        const storedContent = decodeMessageContent(existing.content)
-        const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
-        // A re-emitted tick that changes nothing must not rewrite the row:
-        // only observable content changes touch the database.
-        if (isDeepStrictEqual(mergedContent, storedContent)) {
-            return { message: toStoredMessage(existing), updated: true }
-        }
-        const encoded = encodeMessageContent(mergedContent)
-        // Same in-place content swap as the queued-message edit path
-        // (syncNativeQueuedMessage): no new seq, no content_revision bump.
-        prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
-        const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
-        if (!row) throw new Error('Failed to update tool-call message')
-        return { message: toStoredMessage(row), updated: true }
+        setCachedToolCallRowId(db, sessionId, callId, existing.id)
+        return mergeIntoToolCallRow(db, existing, content)
     })()
 }
 
@@ -412,6 +465,9 @@ export function copyMessageToSession(
     // Copies preserve the source display timestamp, so a new high-seq row can
     // still land behind a Web client's cached composite tail cursor. Mark the
     // target history as structurally changed so incremental readers reset.
+    // Copied rows can be user turns appended after live tool calls, so the
+    // target's upsert memo must not survive them.
+    dropCachedToolCallRowsForSession(db, sessionId)
     bumpMessageEpoch(db, sessionId)
     return toStoredMessage(row)
 }
@@ -467,6 +523,7 @@ export function copyMessagesToSession(
             nextSeq += 1
         }
 
+        dropCachedToolCallRowsForSession(db, sessionId)
         bumpMessageEpoch(db, sessionId)
         return messages.length
     })()
@@ -568,45 +625,113 @@ export function getDeliverableMessagesAfter(
 
 /** How far back to look for a stream's replaceable snapshots.
  *
- *  The CLI re-sends a growing reasoning buffer every few hundred milliseconds,
- *  so the previous snapshot of a stream is always among the newest rows of its
- *  session. Scanning a bounded tail keeps this off the hot path on sessions
- *  with tens of thousands of messages; anything older than the window is left
- *  alone, which errs toward keeping data. */
-const REASONING_SNAPSHOT_LOOKBACK = 50
+ *  The CLI re-sends a growing reasoning/text buffer every few hundred
+ *  milliseconds, so the previous snapshot of a stream is always among the
+ *  newest rows of its session. Scanning a bounded tail keeps this off the hot
+ *  path on sessions with tens of thousands of messages; anything older than
+ *  the window is left alone, which errs toward keeping data. */
+const SNAPSHOT_SWEEP_LOOKBACK = 50
 
-/** Drop the replaceable snapshots of one reasoning stream.
+/** Drop the replaceable live snapshots of one stream.
  *
  *  Only messages explicitly marked live are eligible, and `keepMessageId` is
- *  always spared. Callers run this *after* storing the message that supersedes
- *  them, so the stream never passes through a moment with no row at all — the
- *  two statements are separate transactions, and a crash between them must not
- *  be able to take the whole stream with it. Returns how many rows were
- *  removed. */
-export function deleteLiveReasoningSnapshots(
+ *  always spared. The settled message that closes a stream carries no live
+ *  marker, so it survives and sweeps up its own leftovers. Snapshot rows are
+ *  the only thing this can ever delete — never a tool-call row — so the
+ *  tool-call upsert memo needs no invalidation here. Returns how many rows
+ *  were removed. */
+function deleteLiveStreamSnapshots(
     db: Database,
     sessionId: string,
     streamId: string,
-    keepMessageId?: string
+    keepMessageId: string | undefined,
+    liveStreamIdOf: (value: unknown) => string | null
 ): number {
     const rows = prepareCached(db, `
         SELECT id, content FROM messages
         WHERE session_id = ?
         ORDER BY seq DESC
         LIMIT ?
-    `).all(sessionId, REASONING_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+    `).all(sessionId, SNAPSHOT_SWEEP_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
 
     const staleIds = rows
         .filter((row) => row.id !== keepMessageId
-            && getLiveReasoningStreamId(decodeMessageContent(row.content)) === streamId)
+            && liveStreamIdOf(decodeMessageContent(row.content)) === streamId)
         .map((row) => row.id)
     if (staleIds.length === 0) return 0
 
     const placeholders = staleIds.map(() => '?').join(', ')
-    const result = prepareCached(db, 
+    const result = prepareCached(db,
         `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
     ).run(sessionId, ...staleIds)
     return Number(result.changes)
+}
+
+/** Drop the replaceable live snapshots of one reasoning stream. */
+export function deleteLiveReasoningSnapshots(
+    db: Database,
+    sessionId: string,
+    streamId: string,
+    keepMessageId?: string
+): number {
+    return deleteLiveStreamSnapshots(db, sessionId, streamId, keepMessageId, getLiveReasoningStreamId)
+}
+
+/** Drop the replaceable live snapshots of one text stream.
+ *
+ *  Mirrors the reasoning sweep: the CLI re-sends an open text segment as a
+ *  growing `live` snapshot under a stable id on every typing pause, and the
+ *  boundary flush re-sends the full text under the same id without the live
+ *  marker. Without this sweep every pause >1s left a stale prefix row in the
+ *  transcript forever. Plain text messages (no stream id) never match. */
+export function deleteLiveTextSnapshots(
+    db: Database,
+    sessionId: string,
+    streamId: string,
+    keepMessageId?: string
+): number {
+    return deleteLiveStreamSnapshots(db, sessionId, streamId, keepMessageId, getTextLiveStreamId)
+}
+
+export type AddMessageSweepResult = {
+    message: StoredMessage
+    /** Discriminates against UpsertToolCallResult at the call site. */
+    updated: false
+    /** Replaceable live snapshot rows retired by the same transaction. */
+    sweptSnapshots: number
+}
+
+/** Store a message and retire the live snapshots its streams supersede, in
+ *  one transaction (INSERT first, then DELETE).
+ *
+ *  The CLI streams reasoning and text as growing `live` snapshots under a
+ *  stable id; every stored stream message makes the earlier snapshots of
+ *  that same id dead weight, and the settled message that closes the stream
+ *  is never live so it always survives. Doing both statements in a single
+ *  transaction is strictly crash-safer than the previous two-commit sequence
+ *  (insert, then sweep): a crash now rolls back both, so the stream cannot
+ *  lose its newest row either. */
+export function addMessageSweepingLiveSnapshots(
+    db: Database,
+    sessionId: string,
+    content: unknown,
+    localId?: string,
+    scheduledAt?: number | null,
+    createdAt?: number
+): AddMessageSweepResult {
+    return db.transaction(() => {
+        const message = addMessage(db, sessionId, content, localId, scheduledAt, createdAt)
+        let sweptSnapshots = 0
+        const reasoningStreamId = getReasoningStreamId(content)
+        if (reasoningStreamId !== null) {
+            sweptSnapshots += deleteLiveReasoningSnapshots(db, sessionId, reasoningStreamId, message.id)
+        }
+        const textStreamId = getTextStreamId(content)
+        if (textStreamId !== null) {
+            sweptSnapshots += deleteLiveTextSnapshots(db, sessionId, textStreamId, message.id)
+        }
+        return { message, updated: false as const, sweptSnapshots }
+    })()
 }
 
 /** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.
@@ -956,6 +1081,9 @@ export function cancelQueuedMessage(
         `).run(sessionId, messageId, messageId)
 
         if (deleted.changes > 0) {
+            // Rows of this session changed; stale upsert memos must not
+            // outlive them.
+            dropCachedToolCallRowsForSession(db, sessionId)
             bumpMessageEpoch(db, sessionId)
         }
 
@@ -1051,6 +1179,7 @@ export function deleteQueuedMessageById(
             WHERE session_id = ? AND (id = ? OR local_id = ?) AND invoked_at IS NULL
         `).run(sessionId, messageId, messageId)
         if (deleted.changes > 0) {
+            dropCachedToolCallRowsForSession(db, sessionId)
             bumpMessageEpoch(db, sessionId)
             return true
         }
@@ -1172,6 +1301,8 @@ export function moveUninvokedScheduledMessages(
             nextSeq += 1
             update.run(toSessionId, nextSeq, row.id)
         }
+        dropCachedToolCallRowsForSession(db, fromSessionId)
+        dropCachedToolCallRowsForSession(db, toSessionId)
         bumpMessageEpoch(db, fromSessionId)
         bumpMessageEpoch(db, toSessionId)
         db.exec('COMMIT')
@@ -1221,6 +1352,8 @@ export function moveUninvokedMessages(db: Database, fromSessionId: string, toSes
         let nextSeq = invokedMax.maxSeq
         const update = prepareCached(db, 'UPDATE messages SET session_id = ?, seq = ? WHERE id = ?')
         for (const row of rows) update.run(toSessionId, ++nextSeq, row.id)
+        dropCachedToolCallRowsForSession(db, fromSessionId)
+        dropCachedToolCallRowsForSession(db, toSessionId)
         bumpMessageEpoch(db, fromSessionId)
         bumpMessageEpoch(db, toSessionId)
         return discarded + moved
@@ -1276,6 +1409,8 @@ export function mergeSessionMessages(
         ).run(toSessionId, fromSessionId)
 
         if (result.changes > 0) {
+            dropCachedToolCallRowsForSession(db, fromSessionId)
+            dropCachedToolCallRowsForSession(db, toSessionId)
             bumpMessageEpoch(db, fromSessionId)
             bumpMessageEpoch(db, toSessionId)
         }
@@ -1351,6 +1486,8 @@ export function truncateMessagesFromLocalId(
         }
 
         const epoch = bumpMessageEpoch(db, sessionId)
+        // The truncated suffix may contain cached live tool-call rows.
+        dropCachedToolCallRowsForSession(db, sessionId)
         return { deleted: deleted.changes, inserted, epoch }
     })()
 }

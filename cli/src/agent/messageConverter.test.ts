@@ -15,6 +15,23 @@ describe('convertAgentMessage', () => {
             type: 'message',
             message: 'partial response',
             id: 'text-stream-1',
+            streamSnapshot: true,
+            live: true
+        });
+    });
+
+    it('keeps the boundary text flush free of the live marker so it survives hub snapshot sweeps', () => {
+        const converted = convertAgentMessage({
+            type: 'text',
+            text: 'complete response',
+            id: 'text-stream-1',
+            streamSnapshot: true
+        });
+
+        expect(converted).toEqual({
+            type: 'message',
+            message: 'complete response',
+            id: 'text-stream-1',
             streamSnapshot: true
         });
     });
