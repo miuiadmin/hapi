@@ -48,8 +48,6 @@ const AGENT_RUN_WINDOW_SIZE = 800
 const OLDER_LOAD_WINDOW_SIZE = 800
 const PAGE_SIZE = 200
 const CACHED_REENTRY_PAGE_SIZE = 20
-// ponytail: fixed budget suggested in #2045, not field-measured; tune from load timings.
-const INITIAL_CONTEXT_WAIT_MS = 500
 
 type MessagePosition = {
     at: number
@@ -704,7 +702,11 @@ function isToolOnlyPage(messages: DecryptedMessage[]): boolean {
 
 // A cold tail page made only of tool activity renders as one collapsed card.
 // Fetch one older page before first paint so the preceding conversation is
-// visible; a timeout, failure, or epoch change falls back to the tail page.
+// visible. The request is gated on the tool-only tail (so it only fires when
+// the context is actually needed) and awaited without a fixed timeout — a
+// budget under the cross-border RTT would fire the request anyway and then
+// discard a response that lands moments later. A failure or epoch change falls
+// back to the tail page, same as the primary latest fetch.
 async function fetchInitialContextPage(
     api: ApiClient,
     sessionId: string,
@@ -714,22 +716,12 @@ async function fetchInitialContextPage(
     if (!latest.page.hasMore || !before || !isToolOnlyPage(latest.messages)) {
         return null
     }
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-        const context = await Promise.race([
-            api.getMessages(sessionId, {
-                beforeAt: before.at,
-                beforeSeq: before.seq,
-                limit: PAGE_SIZE
-            }).catch(() => null),
-            new Promise<null>((resolve) => {
-                timer = setTimeout(() => resolve(null), INITIAL_CONTEXT_WAIT_MS)
-            })
-        ])
-        return context && context.page.epoch === latest.page.epoch ? context : null
-    } finally {
-        clearTimeout(timer)
-    }
+    const context = await api.getMessages(sessionId, {
+        beforeAt: before.at,
+        beforeSeq: before.seq,
+        limit: PAGE_SIZE
+    }).catch(() => null)
+    return context && context.page.epoch === latest.page.epoch ? context : null
 }
 
 async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {

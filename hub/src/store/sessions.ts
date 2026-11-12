@@ -7,6 +7,7 @@ import { preserveSessionTitle } from './sessionTitleLock'
 import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
+import { dropCachedToolCallRowsForSession } from './toolCallRowCache'
 
 // Carry-forward fields that the hub preserves across any metadata
 // replacement when the incoming write omits them.
@@ -967,6 +968,9 @@ export function deleteSession(db: Database, id: string, namespace: string): bool
         // bumping makes their next event re-resolve instead of serving a
         // grant for a row that no longer exists.
         bumpSessionDeletionEpoch()
+        // Message rows die by ON DELETE CASCADE, so the tool-call upsert
+        // memo for this session must not outlive them.
+        dropCachedToolCallRowsForSession(db, id)
     }
     return result.changes > 0
 }

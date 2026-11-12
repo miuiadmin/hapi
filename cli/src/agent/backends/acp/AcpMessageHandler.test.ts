@@ -1455,7 +1455,9 @@ describe('AcpMessageHandler', () => {
         });
         expect(messages).toEqual([]);
 
-        now = 300;
+        // REASONING_SNAPSHOT_INTERVAL_MS is 500ms; the first chunk only arms
+        // the clock, and the snapshot fires once the next chunk lands past it.
+        now = 600;
         handler.handleUpdate({
             sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
             content: { type: 'text', text: 'second' }
