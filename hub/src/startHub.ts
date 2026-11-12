@@ -389,6 +389,25 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     console.log('')
     console.log('HAPI Hub is ready!')
 
+    // One-time transcript backfill (stale live text snapshot rows from before
+    // the runtime sweep): async, batched, and marked done in the DB so it
+    // never reruns. Disable with HAPI_TEXT_SNAPSHOT_BACKFILL=0|false.
+    const backfillDisabled = process.env.HAPI_TEXT_SNAPSHOT_BACKFILL === '0'
+        || process.env.HAPI_TEXT_SNAPSHOT_BACKFILL === 'false'
+    if (!backfillDisabled) {
+        const startedAt = Date.now()
+        void store.runTextSnapshotBackfill().then(stats => {
+            if (!stats) return
+            const kb = (stats.deletedBytes / 1024).toFixed(1)
+            console.log(
+                `[Store] Text snapshot backfill: removed ${stats.deletedRows} stale rows (${kb} KB) `
+                + `across ${stats.cleanedStreams} streams; scanned ${stats.scannedRows} rows in ${Date.now() - startedAt}ms`
+            )
+        }).catch(error => {
+            console.error('[Store] Text snapshot backfill failed (will retry on next start):', error)
+        })
+    }
+
     return {
         stop: async () => {
             await tunnelManager?.stop()

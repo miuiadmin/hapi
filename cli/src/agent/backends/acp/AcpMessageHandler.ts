@@ -41,7 +41,11 @@ function resolveToolInputFallbacks(
 
 type DerivedToolName = ReturnType<typeof deriveToolNameWithSource>;
 
-const REASONING_SNAPSHOT_INTERVAL_MS = 250;
+// Idle-flush reasoning snapshots are growing full-text prefixes, so every
+// emission costs a hub row write (and, before the hub-side sweep, a stored
+// row). 500ms keeps streaming feedback smooth while halving the write
+// amplification of the old 250ms cadence.
+const REASONING_SNAPSHOT_INTERVAL_MS = 500;
 
 // ACP gives no "message finished" signal for a turn's last text segment. HAPI
 // buffers assistant text and only emits it at explicit boundaries (tool_call /

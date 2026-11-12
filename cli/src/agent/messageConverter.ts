@@ -4,7 +4,7 @@ import type { AgentMessage, PlanItem } from './types';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 
 export type CodexMessage =
-    | { type: 'message'; message: string; id?: string; streamSnapshot?: boolean }
+    | { type: 'message'; message: string; id?: string; streamSnapshot?: boolean; live?: boolean }
     | { type: 'reasoning'; message: string; id: string; live?: boolean }
     | {
         type: 'token_count';
@@ -54,11 +54,18 @@ export type CodexMessage =
 export function convertAgentMessage(message: AgentMessage, model?: string | null): CodexMessage | null {
     switch (message.type) {
         case 'text':
+            // `live` marks an idle-flush snapshot of a still-growing text
+            // buffer, exactly like the reasoning variant below: the hub can
+            // keep just the newest one per stream id instead of storing every
+            // pause's prefix. The boundary flush re-sends the full text under
+            // the same id with no `live` marker, which is what makes it the
+            // surviving final row.
             return {
                 type: 'message',
                 message: message.text,
                 ...(message.id !== undefined ? { id: message.id } : {}),
-                ...(message.streamSnapshot === true ? { streamSnapshot: true } : {})
+                ...(message.streamSnapshot === true ? { streamSnapshot: true } : {}),
+                ...(message.live === true ? { live: true } : {})
             };
         case 'reasoning':
             // AgentMessage uses `text` (consistent with the `text` variant);
