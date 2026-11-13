@@ -9,6 +9,7 @@ import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
 import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.HermesModelsResponse
+import app.hapi.protocol.wire.ZcodeModelsResponse
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.ForkConversationResponse
 import app.hapi.protocol.wire.GrokReasoningEffortResponse

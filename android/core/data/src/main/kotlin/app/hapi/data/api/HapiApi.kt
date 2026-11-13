@@ -45,6 +45,7 @@ import app.hapi.protocol.wire.OpencodeReasoningEffortResponse
 import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.DshModelsResponse
 import app.hapi.protocol.wire.HermesModelsResponse
+import app.hapi.protocol.wire.ZcodeModelsResponse
 import app.hapi.protocol.wire.PiImportSessionsRequest
 import app.hapi.protocol.wire.PiImportSessionsResponse
 import app.hapi.protocol.wire.PiLocalSessionsResponse
