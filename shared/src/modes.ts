@@ -75,13 +75,6 @@ export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'] as const
 export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
 
-// ZCode (Zhipu GLM Coding Plan via the community zcode-acp-server bridge) maps
-// HAPI modes onto the bridge's ZCODE_ACP_MODE axis (plan/build/edit/guarded/
-// yolo): default→build, read-only→plan, safe-yolo→guarded, yolo→yolo. The
-// mapping is applied at spawn (ZCODE_ACP_MODE env) and re-asserted at runtime
-// via backend.setMode(sessionId, mapped, { syncThoughtLevel: false }).
-export const ZCODE_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
-export type ZcodePermissionMode = typeof ZCODE_PERMISSION_MODES[number]
 
 export const PERMISSION_MODES = [
     'default',

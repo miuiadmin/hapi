@@ -67,7 +67,6 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     // ZCode models are opaque runtime-discovered `providerId\modelId` values
     // (ListZcodeModels, the dsh config-options rail), so the static
     // launch-time preset list is empty like DSH.
-    zcode: [],
 }
 
 export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; label: string }[] = [
