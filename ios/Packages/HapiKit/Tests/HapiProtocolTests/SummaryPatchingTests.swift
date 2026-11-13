@@ -201,6 +201,13 @@ struct SummaryPatchingTests {
             SessionMetadata(path: "/p", host: "h", flavor: nil, piSessionId: "pi-1")
         )
         #expect(piOnly?.agentSessionId == nil)
+
+        // ZCode: the bridge's lazy session id is the resume handle;
+        // cross-flavor ids are ignored for the known flavor.
+        let zcode = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(path: "/p", host: "h", flavor: "zcode", codexSessionId: "cx", zcodeSessionId: "zc-1")
+        )
+        #expect(zcode?.agentSessionId == "zc-1")
     }
 
     // MARK: - Patch application

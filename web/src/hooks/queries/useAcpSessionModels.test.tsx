@@ -4,7 +4,7 @@ import type { PropsWithChildren } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import * as acpSessionModels from './useAcpSessionModels'
-import { useHermesModelsForSession } from './useAcpSessionModels'
+import { useHermesModelsForSession, useZcodeModelsForSession } from './useAcpSessionModels'
 
 function wrapper(queryClient: QueryClient) {
     return ({ children }: PropsWithChildren) => (
@@ -63,5 +63,65 @@ describe('useAcpSessionModels after the berry rail retirement', () => {
         // hub route — is retired. Guard against an accidental reintroduction
         // of the dead fetch path on the shared hook module.
         expect(acpSessionModels).not.toHaveProperty('useBerryModelsForSession')
+    })
+})
+
+describe('useZcodeModelsForSession', () => {
+    it('fetches the live ZCode catalog over the session connection', async () => {
+        const getSessionZcodeModels = vi.fn(async () => ({
+            success: true,
+            availableModels: [{ modelId: 'zhipu\\glm-5.3', name: 'GLM 5.3' }],
+            currentModelId: 'zhipu\\glm-5.3'
+        }))
+        const api = { getSessionZcodeModels } as unknown as ApiClient
+        const queryClient = createQueryClient()
+
+        const { result } = renderHook(() => useZcodeModelsForSession({
+            api,
+            sessionId: 'session-zcode',
+            enabled: true
+        }), { wrapper: wrapper(queryClient) })
+
+        await waitFor(() => expect(result.current.availableModels).toHaveLength(1))
+        expect(getSessionZcodeModels).toHaveBeenCalledWith('session-zcode')
+        expect(result.current.currentModelId).toBe('zhipu\\glm-5.3')
+        expect(result.current.error).toBeNull()
+    })
+
+    it('does not probe zcode models without an enabled session', () => {
+        const getSessionZcodeModels = vi.fn()
+        const api = { getSessionZcodeModels } as unknown as ApiClient
+        const queryClient = createQueryClient()
+
+        renderHook(() => useZcodeModelsForSession({
+            api,
+            sessionId: 'session-zcode',
+            enabled: false
+        }), { wrapper: wrapper(queryClient) })
+        renderHook(() => useZcodeModelsForSession({
+            api,
+            sessionId: null,
+            enabled: true
+        }), { wrapper: wrapper(queryClient) })
+
+        expect(getSessionZcodeModels).not.toHaveBeenCalled()
+    })
+
+    it('surfaces a failed catalog as an error state, not a throw', async () => {
+        const getSessionZcodeModels = vi.fn(async () => ({
+            success: false,
+            error: 'session not found'
+        }))
+        const api = { getSessionZcodeModels } as unknown as ApiClient
+        const queryClient = createQueryClient()
+
+        const { result } = renderHook(() => useZcodeModelsForSession({
+            api,
+            sessionId: 'session-zcode',
+            enabled: true
+        }), { wrapper: wrapper(queryClient) })
+
+        await waitFor(() => expect(result.current.error).toBe('session not found'))
+        expect(result.current.availableModels).toEqual([])
     })
 })

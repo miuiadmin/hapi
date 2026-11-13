@@ -11,6 +11,7 @@ import GrokMono from '@lobehub/icons/es/Grok/components/Mono'
 import HermesAgentMono from '@lobehub/icons/es/HermesAgent/components/Mono'
 import KimiMono from '@lobehub/icons/es/Kimi/components/Mono'
 import OpenCodeMono from '@lobehub/icons/es/OpenCode/components/Mono'
+import ZhipuMono from '@lobehub/icons/es/Zhipu/components/Mono'
 import type { IconType } from '@lobehub/icons/es/types'
 import { CopilotIcon } from '@/components/icons/CopilotIcon'
 
@@ -29,6 +30,9 @@ const FLAVOR_LOGOS: Record<string, IconType> = {
     hermes: HermesAgentMono,
     kimi: KimiMono,
     opencode: OpenCodeMono,
+    // ZCode = Zhipu GLM Coding Plan agent; the pack has no ZCode entry so
+    // the Zhipu mark (currentColor Mono) stands in, in the Kimi tradition.
+    zcode: ZhipuMono,
 }
 
 function PiLogo() {

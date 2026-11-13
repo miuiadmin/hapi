@@ -46,6 +46,9 @@ fun resolveAgentSessionIdFromMetadata(metadata: SessionMetadata?): String? {
         "dsh" -> metadata.dshSessionId
         "hermes" -> metadata.hermesSessionId
         "berry" -> metadata.berrySessionId
+        // ZCode persists sessions in the bridge's lazy id store and resumes
+        // through ACP `session/resume` keyed by zcodeSessionId.
+        "zcode" -> metadata.zcodeSessionId
         else -> metadata.claudeSessionId
     }
 }

@@ -2312,7 +2312,7 @@ class NewSessionViewModel(
         fun hapiYoloNativeMode(flavor: String?): PermissionMode? = when (flavor) {
             "claude", "grok" -> PermissionMode.BypassPermissions
             "agy" -> PermissionMode.AlwaysProceed
-            "codex", "copilot", "cursor", "dsh", "gemini", "hermes", "berry", "kimi", "opencode" -> PermissionMode.Yolo
+            "codex", "copilot", "cursor", "dsh", "gemini", "hermes", "berry", "kimi", "opencode", "zcode" -> PermissionMode.Yolo
             else -> null
         }
 

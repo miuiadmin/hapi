@@ -275,6 +275,41 @@ describe('sessionResume', () => {
         }), 3)).toBe(false)
     })
 
+    it('resolveAgentSessionIdFromMetadata returns zcodeSessionId for zcode flavor', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'zcode',
+            zcodeSessionId: 'zcode-lazy-session-1'
+        })).toBe('zcode-lazy-session-1')
+    })
+
+    it('does not infer a ZCode resume id from stale cross-flavor metadata', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'zcode',
+            claudeSessionId: 'stale-claude-id'
+        })).toBeUndefined()
+    })
+
+    it('inactiveSessionCanResume allows zcode resume when zcodeSessionId exists', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'zcode',
+                zcodeSessionId: 'zcode-lazy-session-1',
+            },
+        }), 5)).toBe(true)
+    })
+
+    it('inactiveSessionCanResume rejects zcode with messages but no zcodeSessionId', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'zcode' },
+        }), 3)).toBe(false)
+    })
+
     it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },

@@ -122,7 +122,7 @@ import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
-import { useHermesModelsForSession } from '@/hooks/queries/useAcpSessionModels'
+import { useHermesModelsForSession, useZcodeModelsForSession } from '@/hooks/queries/useAcpSessionModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1201,6 +1201,25 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, hermesModelsState.availableModels])
+    // zcode rides the same rail as hermes: its catalog is session-scoped
+    // (ListZcodeModels over the session's ACP config options; opaque
+    // `providerId\modelId` values sent back verbatim).
+    const zcodeModelsState = useZcodeModelsForSession({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'zcode' && props.session.active
+    })
+    const zcodeModelOptions = useMemo(() => (
+        agentFlavor === 'zcode' && zcodeModelsState.availableModels.length > 0
+            ? [
+                { value: null, label: 'Default' },
+                ...zcodeModelsState.availableModels.map((model) => ({
+                    value: model.modelId,
+                    label: model.name ?? model.modelId
+                }))
+            ]
+            : undefined
+    ), [agentFlavor, zcodeModelsState.availableModels])
     const machineCursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId: sessionMachineId,
@@ -2219,7 +2238,15 @@ function SessionChatInner(props: SessionChatProps) {
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
-                        model={props.session.model}
+                        model={agentFlavor === 'zcode'
+                            // zcode's reset value is 'default' (the bridge's
+                            // config-option default); normalize it onto the
+                            // composer's null "Default" entry so the picker
+                            // highlights the reset row instead of nothing.
+                            ? (props.session.model?.trim().toLowerCase() === 'default'
+                                ? null
+                                : props.session.model ?? null)
+                            : props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode'
                             ? props.session.modelReasoningEffort
                             : agentFlavor === 'dsh'
@@ -2261,6 +2288,8 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? dshModelOptions
                                             : agentFlavor === 'hermes'
                                                 ? hermesModelOptions
+                                            : agentFlavor === 'zcode'
+                                                ? zcodeModelOptions
                                         // Berry intentionally has no runtime
                                         // model options (no ACP config-option
                                         // face; spawn-time BERRY_AGENT_MODEL is

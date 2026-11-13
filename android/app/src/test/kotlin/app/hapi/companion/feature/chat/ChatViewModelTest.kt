@@ -227,6 +227,8 @@ internal open class FakeMessagesApi : ChatSessionApi {
         app.hapi.protocol.wire.DshModelsResponse(success = false, error = "not scripted")
     override suspend fun getSessionHermesModels(sessionId: String): app.hapi.protocol.wire.HermesModelsResponse =
         app.hapi.protocol.wire.HermesModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionZcodeModels(sessionId: String): app.hapi.protocol.wire.ZcodeModelsResponse =
+        app.hapi.protocol.wire.ZcodeModelsResponse(success = false, error = "not scripted")
     override suspend fun getSessionCursorModels(sessionId: String): app.hapi.protocol.wire.CursorModelsResponse =
         app.hapi.protocol.wire.CursorModelsResponse(success = false, error = "not scripted")
     override suspend fun getMachineCursorModels(machineId: String): app.hapi.protocol.wire.CursorModelsResponse =

@@ -53,3 +53,29 @@ export function useHermesModelsForSession(args: {
     })
     return { ...toState(query.data, query.error), isLoading: query.isLoading }
 }
+
+/**
+ * Live ZCode session catalog (ListZcodeModels — opaque `providerId\modelId`
+ * config-option values). Same session-scoped shape as hermes: the bridge
+ * only exposes models per established session.
+ */
+export function useZcodeModelsForSession(args: {
+    api: ApiClient | null
+    sessionId?: string | null
+    enabled?: boolean
+}): AcpSessionModelsState {
+    const enabled = Boolean(args.enabled && args.api && args.sessionId)
+    const query = useQuery({
+        queryKey: args.sessionId
+            ? queryKeys.sessionZcodeModels(args.sessionId)
+            : ['session-zcode-models', 'unknown'] as const,
+        queryFn: async () => {
+            if (!args.api || !args.sessionId) throw new Error('ZCode session unavailable')
+            return await args.api.getSessionZcodeModels(args.sessionId)
+        },
+        enabled,
+        staleTime: 30_000,
+        retry: false
+    })
+    return { ...toState(query.data, query.error), isLoading: query.isLoading }
+}

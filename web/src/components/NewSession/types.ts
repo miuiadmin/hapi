@@ -46,6 +46,10 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     // Hermes models are opaque runtime-discovered ids (ListHermesModels),
     // so the static launch-time preset list is empty like DSH.
     hermes: [],
+    // ZCode models are opaque runtime-discovered `providerId\modelId` values
+    // (ListZcodeModels, session-scoped like hermes), so the static
+    // launch-time preset list is empty too.
+    zcode: [],
     cursor: [],
     kimi: [
         { value: 'auto', label: 'Default' },

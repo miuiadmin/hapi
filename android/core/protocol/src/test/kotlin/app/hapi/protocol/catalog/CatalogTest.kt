@@ -74,6 +74,12 @@ class CatalogTest {
             listOf("default", "read-only", "safe-yolo", "yolo"),
             PermissionModes.forFlavor("berry").map { it.wireId }
         )
+        // ZCode maps onto the bridge's ZCODE_ACP_MODE axis (default→build,
+        // read-only→plan, safe-yolo→guarded, yolo→yolo).
+        assertEquals(
+            listOf("default", "read-only", "safe-yolo", "yolo"),
+            PermissionModes.forFlavor("zcode").map { it.wireId }
+        )
         assertEquals(
             listOf("default", "auto", "plan", "bypassPermissions"),
             PermissionModes.forFlavor("grok").map { it.wireId }
@@ -109,13 +115,14 @@ class CatalogTest {
         assertEquals(
             listOf(
                 "agy", "berry", "claude", "codex", "dsh", "copilot", "cursor",
-                "gemini", "grok", "hermes", "kimi", "opencode", "pi",
+                "gemini", "grok", "hermes", "kimi", "opencode", "pi", "zcode",
             ),
             AgentFlavor.KNOWN.map { it.id }
         )
         assertFalse(AgentFlavor.CREATABLE.contains(AgentFlavor.Gemini))
         assertEquals(AgentFlavor.KNOWN.size - 1, AgentFlavor.CREATABLE.size)
         assertEquals(AgentFlavor.Claude, AgentFlavor.from("claude"))
+        assertEquals(AgentFlavor.Zcode, AgentFlavor.from("zcode"))
         assertEquals(AgentFlavor.Other("newagent"), AgentFlavor.from("newagent"))
         assertNull(AgentFlavor.from(null))
         assertTrue(AgentFlavor.isKnown("pi"))
@@ -142,6 +149,7 @@ class CatalogTest {
         assertEquals("DeepSeek Harness", Flavors.label("dsh"))
         assertEquals("Hermes", Flavors.label("hermes"))
         assertEquals("Berry Agent", Flavors.label("berry"))
+        assertEquals("ZCode", Flavors.label("zcode"))
         assertEquals("Unknown", Flavors.label("mystery"))
         assertTrue(Flavors.isCodexFamily("copilot"))
         assertFalse(Flavors.isCodexFamily("claude"))

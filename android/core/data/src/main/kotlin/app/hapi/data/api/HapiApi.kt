@@ -607,6 +607,15 @@ class HapiApi internal constructor(
     override suspend fun getSessionHermesModels(sessionId: String): HermesModelsResponse =
         request("GET", url("api", "sessions", sessionId, "hermes-models").build())
 
+    /**
+     * `GET /api/sessions/:id/zcode-models` — the active ZCode session's
+     * model catalog (RPC-wrapped, session-scoped like hermes). Ids are
+     * opaque `providerId\modelId` config-option values that must be sent
+     * back verbatim when switching.
+     */
+    override suspend fun getSessionZcodeModels(sessionId: String): ZcodeModelsResponse =
+        request("GET", url("api", "sessions", sessionId, "zcode-models").build())
+
     /** `GET /api/sessions/:id/cursor-models` — ACP wires + CLI skus of the active cursor session. */
     override suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse =
         request("GET", url("api", "sessions", sessionId, "cursor-models").build())

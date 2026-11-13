@@ -159,6 +159,14 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
      */
     suspend fun getSessionHermesModels(sessionId: String): HermesModelsResponse
 
+    /**
+     * `GET /api/sessions/:id/zcode-models` (RPC-wrapped) — the active ZCode
+     * session's model catalog (ListZcodeModels, session-scoped like hermes).
+     * Ids are opaque `providerId\modelId` config-option values sent back
+     * verbatim when switching.
+     */
+    suspend fun getSessionZcodeModels(sessionId: String): ZcodeModelsResponse
+
     /** `GET /api/sessions/:id/cursor-models` (RPC-wrapped) — ACP wires + CLI skus. */
     suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse
 

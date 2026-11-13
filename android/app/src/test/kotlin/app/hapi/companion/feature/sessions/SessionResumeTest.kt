@@ -32,6 +32,7 @@ class SessionResumeTest {
         dshSessionId: String? = null,
         hermesSessionId: String? = null,
         berrySessionId: String? = null,
+        zcodeSessionId: String? = null,
         piSessionId: String? = null,
     ): SessionMetadata = SessionMetadata(
         path = path,
@@ -49,6 +50,7 @@ class SessionResumeTest {
         dshSessionId = dshSessionId,
         hermesSessionId = hermesSessionId,
         berrySessionId = berrySessionId,
+        zcodeSessionId = zcodeSessionId,
         piSessionId = piSessionId,
     )
 
@@ -153,6 +155,25 @@ class SessionResumeTest {
     }
 
     @Test
+    fun `resolveAgentSessionIdFromMetadata returns zcodeSessionId for zcode flavor`() {
+        assertEquals(
+            "zcode-lazy-session-1",
+            resolveAgentSessionIdFromMetadata(
+                metadata(flavor = "zcode", zcodeSessionId = "zcode-lazy-session-1"),
+            ),
+        )
+    }
+
+    @Test
+    fun `resolveAgentSessionIdFromMetadata does not infer a ZCode resume id from stale cross-flavor metadata`() {
+        assertNull(
+            resolveAgentSessionIdFromMetadata(
+                metadata(flavor = "zcode", claudeSessionId = "stale-claude-id"),
+            ),
+        )
+    }
+
+    @Test
     fun `resolveAgentSessionIdFromMetadata returns piSessionId when flavor is pi and prefers it over other ids`() {
         assertEquals(
             "pi-1",
@@ -179,6 +200,7 @@ class SessionResumeTest {
             Triple("dsh", "dsh-1", metadata(flavor = "dsh", dshSessionId = "dsh-1")),
             Triple("hermes", "hm-1", metadata(flavor = "hermes", hermesSessionId = "hm-1")),
             Triple("berry", "be-1", metadata(flavor = "berry", berrySessionId = "be-1")),
+            Triple("zcode", "zc-1", metadata(flavor = "zcode", zcodeSessionId = "zc-1")),
             Triple("claude", "cl-1", metadata(flavor = "claude", claudeSessionId = "cl-1")),
         )
         for ((label, expected, meta) in cases) {
@@ -261,6 +283,21 @@ class SessionResumeTest {
     @Test
     fun `canResume rejects berry with messages but no berrySessionId`() {
         assertFalse(canResume(metadata = metadata(flavor = "berry"), userMessageCount = 3))
+    }
+
+    @Test
+    fun `canResume allows zcode resume when zcodeSessionId exists`() {
+        assertTrue(
+            canResume(
+                metadata = metadata(flavor = "zcode", zcodeSessionId = "zcode-lazy-session-1"),
+                userMessageCount = 5,
+            ),
+        )
+    }
+
+    @Test
+    fun `canResume rejects zcode with messages but no zcodeSessionId`() {
+        assertFalse(canResume(metadata = metadata(flavor = "zcode"), userMessageCount = 3))
     }
 
     @Test

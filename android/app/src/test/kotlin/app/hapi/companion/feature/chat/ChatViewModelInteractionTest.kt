@@ -48,6 +48,7 @@ import app.hapi.protocol.wire.FileSearchItem
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HermesModelsResponse
+import app.hapi.protocol.wire.ZcodeModelsResponse
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
@@ -341,6 +342,9 @@ private class RecordingChatApi : ChatSessionApi {
 
     var hermesModelsResult: HermesModelsResponse = HermesModelsResponse(success = false, error = "not scripted")
     override suspend fun getSessionHermesModels(sessionId: String): HermesModelsResponse = hermesModelsResult
+
+    var zcodeModelsResult: ZcodeModelsResponse = ZcodeModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionZcodeModels(sessionId: String): ZcodeModelsResponse = zcodeModelsResult
 
     var sessionCursorModelsResult: CursorModelsResponse =
         CursorModelsResponse(success = false, error = "not scripted")
@@ -1782,6 +1786,51 @@ class ChatViewModelInteractionTest {
         // An empty catalog keeps the section hidden (no rows to pick).
         val emptyCatalog = InteractionHarness(this, detail(flavor = "hermes"))
         emptyCatalog.api.hermesModelsResult = HermesModelsResponse(success = true, availableModels = emptyList())
+        emptyCatalog.viewModel.start()
+        emptyCatalog.viewModel.loadModelOptions()
+        testScheduler.runCurrent()
+        assertNull(emptyCatalog.viewModel.config.value.modelOptions)
+    }
+
+    @Test
+    fun `zcode model rows are opaque catalog values with no effort section`() = runTest {
+        // zcode mirrors hermes (session-scoped ListZcodeModels): opaque
+        // `providerId\modelId` config-option values, a null Default row, and
+        // switching over the generic `POST /model` rail verbatim. The
+        // thought/effort axis is skipped entirely for zcode.
+        val harness = InteractionHarness(this, detail(flavor = "zcode"))
+        harness.api.zcodeModelsResult = ZcodeModelsResponse(
+            success = true,
+            availableModels = listOf(
+                AcpCatalogModelSummary(modelId = "zhipu\\glm-5.3", name = "GLM-5.3"),
+                // No display name — the raw picker value is the label.
+                AcpCatalogModelSummary(modelId = "zhipu\\glm-5.4"),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        // Hidden until the catalog lands; no effort rows ever appear.
+        assertNull(harness.viewModel.config.value.modelOptions)
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.modelOptions != null }
+        assertEquals(
+            listOf(null, "zhipu\\glm-5.3", "zhipu\\glm-5.4"),
+            config.modelOptions?.map { it.value },
+        )
+        assertEquals(
+            listOf("Default", "GLM-5.3", "zhipu\\glm-5.4"),
+            config.modelOptions?.map { it.label },
+        )
+        assertNull(config.effortOptions)
+
+        // The value is sent back verbatim over the generic model rail.
+        harness.viewModel.setModel("zhipu\\glm-5.4")
+        harness.api.configCalls.first { "model:zhipu\\glm-5.4" in it }
+
+        // An empty catalog keeps the section hidden (no rows to pick).
+        val emptyCatalog = InteractionHarness(this, detail(flavor = "zcode"))
+        emptyCatalog.api.zcodeModelsResult = ZcodeModelsResponse(success = true, availableModels = emptyList())
         emptyCatalog.viewModel.start()
         emptyCatalog.viewModel.loadModelOptions()
         testScheduler.runCurrent()

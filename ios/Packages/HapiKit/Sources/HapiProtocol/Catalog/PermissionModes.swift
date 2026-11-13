@@ -116,6 +116,12 @@ extension AgentFlavor {
             // edit-approval only — so three modes are offered; dangerous-command
             // approvals arrive as request_permission and the HAPI bridge decides.
             return [.default, .safeYolo, .yolo]
+        case .zcode:
+            // ZCode maps HAPI modes onto the bridge's ZCODE_ACP_MODE axis
+            // (set at spawn, re-asserted via backend.setMode at runtime/
+            // respawn/foreign-change): default→build, read-only→plan,
+            // safe-yolo→guarded, yolo→yolo.
+            return [.default, .readOnly, .safeYolo, .yolo]
         case .claude, .other:
             return [.default, .acceptEdits, .auto, .bypassPermissions, .plan]
         }

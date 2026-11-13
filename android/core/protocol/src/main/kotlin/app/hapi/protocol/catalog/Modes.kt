@@ -102,6 +102,17 @@ object PermissionModes {
     /** `OPENCODE_PERMISSION_MODES`. */
     val OPENCODE = listOf(PermissionMode.Default, PermissionMode.Plan, PermissionMode.Yolo)
 
+    /**
+     * `ZCODE_PERMISSION_MODES` — ZCode maps HAPI modes onto the bridge's
+     * ZCODE_ACP_MODE axis (set at spawn, re-asserted via backend.setMode at
+     * runtime/respawn/foreign-change): default→build, read-only→plan,
+     * safe-yolo→guarded, yolo→yolo.
+     */
+    val ZCODE = listOf(
+        PermissionMode.Default, PermissionMode.ReadOnly,
+        PermissionMode.SafeYolo, PermissionMode.Yolo,
+    )
+
     /** `CURSOR_PERMISSION_MODES`. */
     val CURSOR = listOf(
         PermissionMode.Default, PermissionMode.Plan, PermissionMode.Ask,
@@ -126,6 +137,7 @@ object PermissionModes {
         "agy" -> AGY
         "cursor" -> CURSOR
         "pi" -> emptyList()
+        "zcode" -> ZCODE
         else -> CLAUDE
     }
 
