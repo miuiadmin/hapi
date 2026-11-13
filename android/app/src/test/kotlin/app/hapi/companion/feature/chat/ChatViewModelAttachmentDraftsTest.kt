@@ -38,6 +38,7 @@ import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.SyncEvent
 import app.hapi.protocol.wire.UploadFileResponse
+import app.hapi.protocol.wire.ZcodeModelsResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull

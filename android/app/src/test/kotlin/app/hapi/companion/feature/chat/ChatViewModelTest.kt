@@ -37,6 +37,7 @@ import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SyncEvent
 import app.hapi.protocol.wire.WorktreeMetadata
+import app.hapi.protocol.wire.ZcodeModelsResponse
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
