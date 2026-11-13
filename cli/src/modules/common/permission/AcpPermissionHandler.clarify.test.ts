@@ -29,7 +29,7 @@ async function permissionRpcRespond(harness: ReturnType<typeof createHarness>, p
     await handler(payload)
 }
 
-import { AcpPermissionHandler, isClarifyPermissionRequest, isSensitiveEditPermissionRequest } from './AcpPermissionHandler'
+import { AcpPermissionHandler, isAskUserPermissionRequest, isClarifyPermissionRequest, isSensitiveEditPermissionRequest } from './AcpPermissionHandler'
 import type { PermissionRequest } from '@/agent/types'
 
 /** hermes acp_adapter/elicitation.py `build_clarify_permission`: one
@@ -507,5 +507,267 @@ describe('sensitive-path valve (hermes force-asks these under auto-approve)', ()
                 { optionId: 'reject-once', kind: 'reject_once', name: 'Reject once' }
             ]
         }, 'edit')).toBe(false)
+    })
+})
+
+/** zcode-acp-server `handleAskUserQuestion` fallback (no elicitation form):
+ * ONE request_permission per question whose `toolCall.rawInput` is the
+ * ORIGINAL AskUserQuestion input (its `questions` array), whose title is the
+ * question text, and whose options are the answer labels — single-select
+ * emits one allow_once per label (optionId = label) plus a `__skip__`
+ * reject_once; multi-select emits `<label>:yes` allow_once / `<label>:no`
+ * reject_once pairs. */
+function zcodeAskSingleRequest(labels: string[], question = 'Which deploy strategy should we use?'): PermissionRequest {
+    return {
+        id: 'ask-abc_0',
+        sessionId: 'session-zcode',
+        toolCallId: 'ask-abc_0',
+        title: question,
+        rawInput: {
+            questions: [{ question, options: labels.map((label) => ({ label })), multiSelect: false }]
+        },
+        options: [
+            ...labels.map((label) => ({ optionId: label, kind: 'allow_once' as const, name: label })),
+            { optionId: '__skip__', kind: 'reject_once' as const, name: 'Skip this question' }
+        ]
+    }
+}
+
+/** Multi-select degradation: one Include/Skip popup PER OPTION (the bridge
+ * walks pairs), so a single-label pair is the whole card. */
+const ZCODE_ASK_MULTI_PAIR_REQUEST: PermissionRequest = {
+    id: 'ask-def_1_0',
+    sessionId: 'session-zcode',
+    toolCallId: 'ask-def_1_0',
+    title: 'Which components?\n— include "Tests"?',
+    rawInput: {
+        questions: [{
+            question: 'Which components?',
+            multiSelect: true,
+            options: [{ label: 'Tests' }, { label: 'Docs' }]
+        }]
+    },
+    options: [
+        { optionId: 'Tests:yes', kind: 'allow_once', name: 'Include Tests' },
+        { optionId: 'Tests:no', kind: 'reject_once', name: 'Skip Tests' }
+    ]
+}
+
+describe('zcode ask-user shape detection', () => {
+    it('detects a single-select ask popup through its rawInput.questions', () => {
+        expect(isAskUserPermissionRequest(zcodeAskSingleRequest(['Rolling', 'Blue-green']))).toBe(true)
+    })
+
+    it('detects the one-label single-select shape the clarify heuristic misses', () => {
+        // One allow_once + one reject_once with NO clarify skip marker: the
+        // hermes clarify shape does NOT match (its marker is `skip`, zcode
+        // uses `__skip__`) — only the questions-array detector catches it.
+        expect(isClarifyPermissionRequest(zcodeAskSingleRequest(['Rolling']))).toBe(false)
+        expect(isAskUserPermissionRequest(zcodeAskSingleRequest(['Rolling']))).toBe(true)
+    })
+
+    it('detects the multi-select include/skip pair popup', () => {
+        expect(isClarifyPermissionRequest(ZCODE_ASK_MULTI_PAIR_REQUEST)).toBe(false)
+        expect(isAskUserPermissionRequest(ZCODE_ASK_MULTI_PAIR_REQUEST)).toBe(true)
+    })
+
+    it('does not match ordinary tool approvals (no questions array)', () => {
+        expect(isAskUserPermissionRequest(HERMES_TOOL_APPROVAL_REQUEST)).toBe(false)
+        expect(isAskUserPermissionRequest(editApprovalRequest('/repo/src/config.ts'))).toBe(false)
+        // A clarify card's rawInput has question (string), not questions.
+        expect(isAskUserPermissionRequest(clarifyRequest(['Use staging', 'Use production']))).toBe(false)
+    })
+
+    it('does not match an empty or malformed questions array', () => {
+        const base = zcodeAskSingleRequest(['Rolling'])
+        expect(isAskUserPermissionRequest({ ...base, rawInput: { questions: [] } })).toBe(false)
+        expect(isAskUserPermissionRequest({ ...base, rawInput: { questions: [{ noQuestionField: true }] } })).toBe(false)
+        expect(isAskUserPermissionRequest({ ...base, rawInput: null })).toBe(false)
+    })
+})
+
+describe('zcode ask popups ride the ask-user pipeline', () => {
+    let harness: ReturnType<typeof createHarness>
+
+    beforeEach(() => {
+        harness = createHarness()
+    })
+
+    it('yolo never auto-answers an ask popup — it surfaces as a question', () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => 'yolo'
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling', 'Blue-green']))
+
+        // No auto-answer went back to the agent…
+        expect(harness.backend.respondToPermission).not.toHaveBeenCalled()
+        // …and the popup is queued as an ask_user_question whose question is
+        // the popup title and whose options are the answer labels.
+        const pending = pendingEntryAfter(handler)
+        expect(pending).not.toBeNull()
+        expect(pending!.id).toBe('ask-abc_0')
+        expect(pending!.entry.tool).toBe('ask_user_question')
+        expect(pending!.entry.arguments).toEqual({
+            questions: [{
+                question: 'Which deploy strategy should we use?',
+                header: null,
+                multiSelect: false,
+                options: [{ label: 'Rolling' }, { label: 'Blue-green' }]
+            }]
+        })
+    })
+
+    it('safe-yolo also surfaces ask popups instead of auto-answering', () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => 'safe-yolo'
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling']))
+
+        expect(harness.backend.respondToPermission).not.toHaveBeenCalled()
+        expect(pendingEntryAfter(handler)?.entry.tool).toBe('ask_user_question')
+    })
+
+    it('answering a label selects that exact optionId', async () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling', 'Blue-green']))
+        const pending = pendingEntryAfter(handler)!
+
+        await permissionRpcRespond(harness, {
+            id: pending.id,
+            approved: true,
+            answers: { '0': ['Blue-green'] }
+        })
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'session-zcode',
+            expect.objectContaining({ id: 'ask-abc_0' }),
+            { outcome: 'selected', optionId: 'Blue-green' }
+        )
+    })
+
+    it('answering the multi-select include pair selects its yes optionId', async () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        deliverBackendRequest(harness, ZCODE_ASK_MULTI_PAIR_REQUEST)
+        const pending = pendingEntryAfter(handler)!
+
+        await permissionRpcRespond(harness, {
+            id: pending.id,
+            approved: true,
+            answers: { '0': ['Include Tests'] }
+        })
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'session-zcode',
+            expect.objectContaining({ id: 'ask-def_1_0' }),
+            { outcome: 'selected', optionId: 'Tests:yes' }
+        )
+    })
+
+    it('maps deny to the __skip__ option (zcode skip semantics)', async () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling', 'Blue-green']))
+        const pending = pendingEntryAfter(handler)!
+
+        await permissionRpcRespond(harness, { id: pending.id, approved: false, reason: 'not now' })
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'session-zcode',
+            expect.anything(),
+            { outcome: 'selected', optionId: '__skip__' }
+        )
+    })
+
+    it('falls back to __skip__ when a free-text answer matches no offered choice', async () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling', 'Blue-green']))
+        const pending = pendingEntryAfter(handler)!
+
+        await permissionRpcRespond(harness, {
+            id: pending.id,
+            approved: true,
+            answers: { '0': ['canary, slowly'] }
+        })
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'session-zcode',
+            expect.anything(),
+            { outcome: 'selected', optionId: '__skip__' }
+        )
+    })
+
+    it('a plain approve (no answers) selects the first label', async () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling', 'Blue-green']))
+        const pending = pendingEntryAfter(handler)!
+
+        await permissionRpcRespond(harness, { id: pending.id, approved: true })
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'session-zcode',
+            expect.anything(),
+            { outcome: 'selected', optionId: 'Rolling' }
+        )
+    })
+
+    it('cancelAll settles the pending ask popup as cancelled', async () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling']))
+
+        await handler.cancelAll('Session ended')
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'session-zcode',
+            expect.objectContaining({ id: 'ask-abc_0' }),
+            { outcome: 'cancelled' }
+        )
+    })
+
+    it('a synthetic ask-user escalation supersedes a pending ask popup and settles its backend request', async () => {
+        const handler = new AcpPermissionHandler(
+            harness.client as never,
+            harness.backend as never,
+            () => undefined
+        )
+        deliverBackendRequest(harness, zcodeAskSingleRequest(['Rolling']))
+        expect(harness.backend.respondToPermission).not.toHaveBeenCalled()
+
+        void handler.askUser({ questions: [{ question: 'Retry the deploy?', options: [{ label: 'Yes' }, { label: 'No' }] }] })
+
+        // The popup was swept: its agent-side request resolved cancelled (the
+        // bridge reads that as skip) so the agent is not left waiting on a
+        // card no client can answer anymore.
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'session-zcode',
+            expect.objectContaining({ id: 'ask-abc_0' }),
+            { outcome: 'cancelled' }
+        )
     })
 })

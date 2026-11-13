@@ -69,6 +69,9 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
     dsh: fields(PERMISSION),
     hermes: fields(PERMISSION),
     berry: fields(PERMISSION),
+    // ZCode's model rail is the dsh pattern (config-options surfaced through
+    // the ListZcodeModels RPC), so only the permission picker is static.
+    zcode: fields(PERMISSION),
     copilot: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
     cursor: fields({ id: 'model', section: 'model', kind: 'dependent-select', optionSource: 'machine', availability: 'both' }, PERMISSION),
     gemini: fields(MODEL, PERMISSION),
@@ -114,6 +117,7 @@ export function resolveHapiYoloPermissionMode(flavor: AgentFlavor): PermissionMo
         case 'kimi':
         case 'opencode':
         case 'dsh':
+        case 'zcode':
             return 'yolo'
         case 'pi':
             return null

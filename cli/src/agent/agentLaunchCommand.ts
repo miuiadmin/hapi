@@ -19,6 +19,7 @@ const DEFAULT_COMMANDS: Record<AgentFlavor, string> = {
     kimi: 'kimi',
     opencode: 'opencode',
     pi: 'pi',
+    zcode: 'zcode-acp-server',
 }
 
 /** Command source shared by availability preflight and agent launchers. */

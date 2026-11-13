@@ -27,6 +27,10 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     cursor: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
     pi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    // ZCode models surface as per-model variants (thought levels ride the
+    // model ids), so the flavor claims no Effort capability; models switch
+    // at runtime through the ACP `model` config option.
+    zcode: new Set([Capabilities.ModelChange]),
 }
 
 // --- Flavor display names ---
@@ -44,6 +48,7 @@ const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     cursor: 'Cursor',
     opencode: 'OpenCode',
     pi: 'Pi',
+    zcode: 'ZCode',
 }
 
 // --- Query functions ---
