@@ -580,7 +580,8 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         ['piSessionId', 'pi-thread-x'],
         ['dshSessionId', 'dsh-thread-x'],
         ['hermesSessionId', 'hermes-session-x'],
-        ['berrySessionId', 'berry-session-x']
+        ['berrySessionId', 'berry-session-x'],
+        ['zcodeSessionId', 'zcode-session-x']
     ])('preserves %s across an archive metadata replacement', (field, value) => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(

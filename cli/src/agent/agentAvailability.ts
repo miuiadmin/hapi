@@ -47,6 +47,15 @@ function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment, context: 
         // generic single-command resolution would probe the wrong argv.
         return resolveBerryAcpCommand(env)
     }
+    if (agent === 'zcode') {
+        // ZCode spawns the community ACP bridge directly (`zcode-acp-server`,
+        // no subcommand — unlike `hermes acp` / `berry acp`), with the real
+        // agent reached through the ZCODE_BIN env overlay applied by the zcode
+        // backend at spawn time. The bare-command probe below therefore checks
+        // exactly the argv the session will launch with; the ZCODE_BIN env
+        // itself is bridge-internal, not a HAPI launch argument.
+        return { command: getAgentLaunchCommand('zcode', env), args: [] }
+    }
     return { command: getAgentLaunchCommand(agent, env), args: [] }
 }
 

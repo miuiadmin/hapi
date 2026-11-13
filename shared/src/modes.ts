@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'berry', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'berry', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kimi', 'opencode', 'pi', 'zcode'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -67,6 +67,14 @@ export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'] as const
 export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
+
+// ZCode (Zhipu GLM Coding Plan via the community zcode-acp-server bridge) maps
+// HAPI modes onto the bridge's ZCODE_ACP_MODE axis (plan/build/edit/guarded/
+// yolo): default→build, read-only→plan, safe-yolo→guarded, yolo→yolo. The
+// mapping is applied at spawn (ZCODE_ACP_MODE env) and re-asserted at runtime
+// via backend.setMode(sessionId, mapped, { syncThoughtLevel: false }).
+export const ZCODE_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
+export type ZcodePermissionMode = typeof ZCODE_PERMISSION_MODES[number]
 
 export const PERMISSION_MODES = [
     'default',
@@ -195,6 +203,12 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         // Pi RPC mode has no runtime permission switching (always auto-approve);
         // no permission modes are offered.
         return []
+    }
+    if (flavor === 'zcode') {
+        // HAPI modes map onto the bridge's ZCODE_ACP_MODE axis:
+        // default→build, read-only→plan, safe-yolo→guarded, yolo→yolo — set at
+        // spawn via env and re-asserted at runtime via setMode.
+        return ZCODE_PERMISSION_MODES
     }
     return CLAUDE_PERMISSION_MODES
 }

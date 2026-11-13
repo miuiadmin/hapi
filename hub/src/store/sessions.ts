@@ -69,7 +69,8 @@ const SIMPLE_RESUME_TOKENS = [
     'piSessionId',
     'dshSessionId',
     'hermesSessionId',
-    'berrySessionId'
+    'berrySessionId',
+    'zcodeSessionId'
 ] as const
 
 // Hub-owned metadata that must survive sparse CLI metadata replacements.

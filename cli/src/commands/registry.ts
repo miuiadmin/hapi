@@ -6,6 +6,7 @@ import { codexCommand } from './codex'
 import { dshCommand } from './dsh'
 import { hermesCommand } from './hermes'
 import { berryCommand } from './berry'
+import { zcodeCommand } from './zcode'
 import { cursorCommand } from './cursor'
 import { connectCommand } from './connect'
 import { runnerCommand } from './runner'
@@ -50,6 +51,7 @@ const COMMANDS: CommandDefinition[] = [
     dshCommand,
     hermesCommand,
     berryCommand,
+    zcodeCommand,
     cursorCommand,
     removedGeminiCommand,
     grokCommand,

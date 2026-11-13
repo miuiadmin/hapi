@@ -43,6 +43,7 @@ export type {
     GrokPermissionMode,
     HermesPermissionMode,
     BerryPermissionMode,
+    ZcodePermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode,

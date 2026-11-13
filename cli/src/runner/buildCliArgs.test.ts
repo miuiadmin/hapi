@@ -417,6 +417,25 @@ describe('buildCliArgs', () => {
         ])
     })
 
+    it('builds a remote ZCode runner command with resume passthrough, model, and permission mode', () => {
+        const args = buildCliArgs('zcode', {
+            directory: '/tmp',
+            resumeSessionId: 'zcode-session-1',
+            model: 'zhipu\\glm-5.3',
+            startingMode: 'remote',
+            permissionMode: 'safe-yolo',
+            effort: 'high'
+        }, true)
+        expect(args).toEqual([
+            'zcode',
+            '--resume', 'zcode-session-1',
+            '--hapi-starting-mode', 'remote',
+            '--started-by', 'runner',
+            '--model', 'zhipu\\glm-5.3',
+            '--permission-mode', 'safe-yolo'
+        ])
+    })
+
     it('stamps --hapi-session-id for local HTTP sessionId hints (reap / adopt-stub)', () => {
         // sessionId alone is not reopen — that was the round-4 Major when we
         // collapsed everything onto --existing-session-id.

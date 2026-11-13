@@ -90,7 +90,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Invalid body' }, 400)
         }
         if (
-            (parsed.data.agent === 'agy' || parsed.data.agent === 'dsh' || parsed.data.agent === 'hermes' || parsed.data.agent === 'berry')
+            (parsed.data.agent === 'agy' || parsed.data.agent === 'dsh' || parsed.data.agent === 'hermes' || parsed.data.agent === 'berry' || parsed.data.agent === 'zcode')
             && parsed.data.startingMode
             && parsed.data.startingMode !== 'remote'
         ) {

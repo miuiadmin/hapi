@@ -2190,11 +2190,13 @@ export function buildCliArgs(
                 ? 'hermes'
                 : agent === 'berry'
                   ? 'berry'
-                  : agent === 'pi'
-                  ? 'pi'
-                  : agent === 'agy'
-                    ? 'agy'
-                    : 'claude';
+                  : agent === 'zcode'
+                    ? 'zcode'
+                    : agent === 'pi'
+                      ? 'pi'
+                      : agent === 'agy'
+                        ? 'agy'
+                        : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {

@@ -97,6 +97,9 @@ export const MetadataSchema = z.object({
     // Native Berry Agent session id (persisted in Berry's SQLite sessions.db).
     // Resumed through ACP `session/resume`.
     berrySessionId: z.string().optional(),
+    // Native ZCode (zcode-acp-server bridge) session id. Lazy ids are stable
+    // across bridge restarts; resumed through ACP `session/resume`.
+    zcodeSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
     piResumeAttempt: z.object({
         state: z.enum(['resuming', 'terminating', 'quarantined']),

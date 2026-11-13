@@ -12,6 +12,7 @@ import type {
     GrokPermissionMode,
     HermesPermissionMode,
     BerryPermissionMode,
+    ZcodePermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode
@@ -135,6 +136,28 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             // Mirror the dsh branch: the stored model re-flows as the
             // spawn-time BERRY_AGENT_MODEL lever (berry reads it only at
             // process start), so a resumed session keeps its model.
+            model: target.model ?? undefined
+        })
+        return
+    }
+
+    if (target.flavor === 'zcode') {
+        // Late import with a folded template-literal specifier: bundlers
+        // resolve '@/zcode/runZcode' and embed it, while tsc leaves the
+        // dynamic target unchecked so this shell compiles before the
+        // cli/src/zcode internals land (same gating as commands/zcode.ts).
+        const { runZcode } = await import(`@/zcode/${'runZcode'}`)
+        // ZCode is remote-only (its command parser forces remote mode); the
+        // stored permissionMode maps onto ZCODE_ACP_MODE at spawn and the
+        // stored model re-flows through the config-options rail, so a resumed
+        // session keeps both levers (berry branch pattern).
+        await runZcode({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as ZcodePermissionMode | undefined,
+            startingMode: 'remote',
             model: target.model ?? undefined
         })
         return

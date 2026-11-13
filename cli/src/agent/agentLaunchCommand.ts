@@ -16,6 +16,7 @@ const DEFAULT_COMMANDS: Record<AgentFlavor, string> = {
     grok: 'grok',
     hermes: 'hermes',
     berry: 'berry',
+    zcode: 'zcode-acp-server',
     kimi: 'kimi',
     opencode: 'opencode',
     pi: 'pi',
@@ -31,6 +32,7 @@ export function getAgentLaunchCommand(
     if (flavor === 'dsh') return env.HAPI_DSH_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.dsh
     if (flavor === 'hermes') return env.HAPI_HERMES_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.hermes
     if (flavor === 'berry') return env.HAPI_BERRY_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.berry
+    if (flavor === 'zcode') return env.HAPI_ZCODE_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.zcode
     return DEFAULT_COMMANDS[flavor]
 }
 

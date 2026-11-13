@@ -12,6 +12,7 @@ import type {
     AgyModelsResponse,
     ClaudeModelsResponse,
     AgentAvailabilityResponse,
+    AcpCatalogModelSummary,
     CodexModelSummary,
     CodexModelsResponse,
     CommandResponse,
@@ -156,6 +157,19 @@ export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEff
 export type RpcListAgyModelsResponse = AgyModelsResponse
 export type RpcListDshModelsResponse = DshModelsResponse
 export type RpcListHermesModelsResponse = HermesModelsResponse
+/**
+ * ZCode model discovery (ListZcodeModels). Model ids are opaque
+ * `providerId\modelId` config-option values and must be sent back verbatim
+ * when switching — same rail as dsh/hermes. Response shape mirrors
+ * HermesModelsResponse; kept hub-local so the shared enum block stays the
+ * only shared delta for this flavor.
+ */
+export type RpcListZcodeModelsResponse = {
+    success: boolean
+    availableModels?: AcpCatalogModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
 export type RpcListPiModelsResponse = PiModelsResponse
 export type RpcListClaudeModelsResponse = ClaudeModelsResponse
 
@@ -602,6 +616,10 @@ export class RpcGateway {
 
     async listHermesModelsForSession(sessionId: string): Promise<RpcListHermesModelsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListHermesModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListHermesModelsResponse
+    }
+
+    async listZcodeModelsForSession(sessionId: string): Promise<RpcListZcodeModelsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListZcodeModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListZcodeModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

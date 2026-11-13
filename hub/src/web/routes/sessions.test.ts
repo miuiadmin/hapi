@@ -72,6 +72,7 @@ function createApp(session: Session, opts?: {
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     listDshModelsForSession?: SyncEngine['listDshModelsForSession']
     listHermesModelsForSession?: SyncEngine['listHermesModelsForSession']
+    listZcodeModelsForSession?: SyncEngine['listZcodeModelsForSession']
     listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
@@ -162,6 +163,11 @@ function createApp(session: Session, opts?: {
             models: []
         })),
         listHermesModelsForSession: opts?.listHermesModelsForSession ?? (async () => ({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        })),
+        listZcodeModelsForSession: opts?.listZcodeModelsForSession ?? (async () => ({
             success: true,
             availableModels: [],
             currentModelId: null
@@ -523,6 +529,55 @@ describe('sessions routes', () => {
 
         const response = await app.request('/api/sessions/session-1/berry-models')
         expect(response.status).toBe(404)
+    })
+
+    it('serves ZCode session model lists and rejects other flavors', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'zcode' }
+        })
+        const { app } = createApp(session, {
+            listZcodeModelsForSession: async () => ({
+                success: true,
+                availableModels: [{ modelId: 'zhipu\\glm-5.3', name: 'GLM 5.3' }],
+                currentModelId: 'zhipu\\glm-5.3'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/zcode-models')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'zhipu\\glm-5.3', name: 'GLM 5.3' }],
+            currentModelId: 'zhipu\\glm-5.3'
+        })
+
+        const other = createSession({
+            id: 'session-2',
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app: otherApp } = createApp(other, {})
+        const rejected = await otherApp.request('/api/sessions/session-2/zcode-models')
+        expect(rejected.status).toBe(400)
+    })
+
+    it('returns a stable code when the ZCode session model RPC target is absent', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'zcode' }
+        })
+        const { app } = createApp(session, {
+            listZcodeModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listZcodeModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/zcode-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listZcodeModels',
+            code: 'rpc_target_missing'
+        })
     })
 
     it('serves Pi session model lists through the engine cache wrapper', async () => {

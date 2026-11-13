@@ -58,6 +58,7 @@ import {
     type RpcListGrokModelsResponse,
     type RpcListDshModelsResponse,
     type RpcListHermesModelsResponse,
+    type RpcListZcodeModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -99,6 +100,7 @@ export type {
     RpcListGrokModelsResponse,
     RpcListDshModelsResponse,
     RpcListHermesModelsResponse,
+    RpcListZcodeModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListKimiModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -2961,6 +2963,11 @@ export class SyncEngine {
         // Berry persists sessions in its own SQLite store; same resume shape.
         if (flavor === 'berry') return metadata.berrySessionId ?? null
 
+        // ZCode (zcode-acp-server bridge) lazy session ids are stable across
+        // bridge restarts; resume goes through ACP `session/resume` (never
+        // session/load). Never fall through to a stale cross-flavor id.
+        if (flavor === 'zcode') return metadata.zcodeSessionId ?? null
+
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }
 
@@ -3422,7 +3429,7 @@ export class SyncEngine {
             namespace,
             {
                 strictMachineId: flavor === 'cursor'
-                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'hermes' || flavor === 'berry') && resumeToken !== undefined)
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'hermes' || flavor === 'berry' || flavor === 'zcode') && resumeToken !== undefined)
             }
         )
         if (!targetMachine) {
@@ -4694,6 +4701,14 @@ export class SyncEngine {
             () => this.rpcGateway.listHermesModelsForSession(sessionId),
             SyncEngine.modelListCacheable
         ) as RpcListHermesModelsResponse
+    }
+
+    async listZcodeModelsForSession(sessionId: string): Promise<RpcListZcodeModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|zcode-models`,
+            () => this.rpcGateway.listZcodeModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListZcodeModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
