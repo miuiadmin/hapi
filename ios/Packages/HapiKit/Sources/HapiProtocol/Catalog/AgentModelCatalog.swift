@@ -27,7 +27,7 @@ public enum AgentModelCatalog {
         switch flavor {
         case .agy, .cursor, .dsh, .pi: return .machine
         case .copilot, .grok, .kimi, .opencode: return .directory
-        case .hermes: return .session
+        case .hermes, .zcode: return .session
         default: return nil
         }
     }
@@ -175,6 +175,12 @@ public enum AgentModelCatalog {
             return ["", "auto", "default", "default[]"].contains(normalized) ? "auto" : sessionModel
         case .opencode, .agy:
             return sessionModel ?? response.currentModelId
+        case .zcode:
+            // zcode's reset value is 'default' (the bridge's config-option
+            // default); normalize it onto the nil Default row so the picker
+            // highlights the reset row (web SessionChat does the same).
+            let trimmed = sessionModel?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return trimmed == "default" ? nil : sessionModel
         default:
             return sessionModel
         }
@@ -195,11 +201,11 @@ public enum AgentModelCatalog {
         switch flavor {
         case .opencode, .agy, .pi:
             options = rows
-        case .dsh, .hermes:
-            // dsh/hermes ride the same rail: opaque config-option values
+        case .dsh, .hermes, .zcode:
+            // dsh/hermes/zcode ride the same rail: opaque config-option values
             // with a null Default row, only once the session catalog lands
-            // (web `dshModelOptions`/`hermesModelOptions` build rows for a
-            // non-empty list only).
+            // (web `dshModelOptions`/`hermesModelOptions`/`zcodeModelOptions`
+            // build rows for a non-empty list only).
             options = rows.isEmpty ? [] : [CatalogOption(value: nil, label: "Default")] + rows
         case .copilot:
             options = [CatalogOption(value: nil, label: "Auto")] + rows

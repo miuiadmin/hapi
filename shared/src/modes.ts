@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'berry', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'berry', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kimi', 'opencode', 'pi', 'zcode'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -58,6 +58,13 @@ export type BerryPermissionMode = typeof BERRY_PERMISSION_MODES[number]
 
 export const COPILOT_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
+
+// ZCode (Zhipu GLM Coding Plan agent via the community ACP bridge). HAPI modes
+// map onto the bridge's ZCODE_ACP_MODE axis (set at spawn, re-asserted through
+// backend.setMode at runtime/respawn/foreign-change): default→build,
+// read-only→plan, safe-yolo→guarded, yolo→yolo.
+export const ZCODE_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
+export type ZcodePermissionMode = typeof ZCODE_PERMISSION_MODES[number]
 
 export const GROK_PERMISSION_MODES = ['default', 'auto', 'plan', 'bypassPermissions'] as const
 export type GrokPermissionMode = typeof GROK_PERMISSION_MODES[number]
@@ -175,6 +182,13 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         // enforcement — read-only turns are still sent and writes are denied
         // by the classifier, yolo auto-approves.
         return BERRY_PERMISSION_MODES
+    }
+    if (flavor === 'zcode') {
+        // ZCode maps HAPI modes onto the bridge's ZCODE_ACP_MODE axis (set at
+        // spawn, re-asserted via backend.setMode at runtime/respawn/
+        // foreign-change): default→build, read-only→plan, safe-yolo→guarded,
+        // yolo→yolo.
+        return ZCODE_PERMISSION_MODES
     }
     if (flavor === 'copilot') {
         return COPILOT_PERMISSION_MODES

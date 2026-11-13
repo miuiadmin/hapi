@@ -27,6 +27,7 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     cursor: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
     pi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    zcode: new Set([Capabilities.ModelChange]),
 }
 
 // --- Flavor display names ---
@@ -44,6 +45,7 @@ const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     cursor: 'Cursor',
     opencode: 'OpenCode',
     pi: 'Pi',
+    zcode: 'ZCode',
 }
 
 // --- Query functions ---

@@ -126,6 +126,7 @@ object SummaryPatching {
                 "dsh" -> metadata.dshSessionId
                 "hermes" -> metadata.hermesSessionId
                 "berry" -> metadata.berrySessionId
+                "zcode" -> metadata.zcodeSessionId
                 else -> null
             }
             return flavorSessionId?.trim()?.takeIf { it.isNotEmpty() }

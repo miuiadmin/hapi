@@ -34,6 +34,7 @@ struct AgentModelCatalogTests {
         #expect(AgentModelCatalog.scope(for: .grok) == .directory)
         #expect(AgentModelCatalog.scope(for: .opencode) == .directory)
         #expect(AgentModelCatalog.scope(for: .hermes) == .session)
+        #expect(AgentModelCatalog.scope(for: .zcode) == .session)
         #expect(AgentModelCatalog.scope(for: .claude) == nil)
         #expect(AgentModelCatalog.scope(for: .codex) == nil)
         #expect(AgentModelCatalog.scope(for: .gemini) == nil)
@@ -228,6 +229,50 @@ struct AgentSessionConfigTests {
                 CatalogOption(value: "newapi:glm-5.3", label: "GLM-5.3"),
                 CatalogOption(value: "newapi:deepseek-v3.2", label: "newapi:deepseek-v3.2")])
         #expect(AgentModelCatalog.sessionModelOptions(flavor: .hermes, response: AgentModelsResponse(success: true), currentModel: nil)
+            .isEmpty)
+    }
+
+    @Test func zcodeRowsMirrorTheHermesShape() {
+        // zcode rides the same rail as hermes (web `zcodeModelOptions`): a
+        // null Default row plus opaque `providerId\modelId` config-option
+        // values once the session catalog lands; hidden while the list is
+        // empty. The thought/effort axis is skipped for zcode entirely.
+        let response = AgentModelsResponse(success: true, availableModels: [
+            AgentModelSummary(modelId: "zhipu\\glm-5.3", name: "GLM-5.3"),
+            AgentModelSummary(modelId: "zhipu\\glm-5.4"),
+        ])
+        let loaded = buildSessionConfigState(
+            detail: detail(flavor: "zcode", model: "zhipu\\glm-5.3"), summary: nil,
+            codexModels: .idle, agentModels: .loaded(response)
+        )
+        #expect(loaded.modelOptions == [
+            CatalogOption(value: nil, label: "Default"),
+            CatalogOption(value: "zhipu\\glm-5.3", label: "GLM-5.3"),
+            CatalogOption(value: "zhipu\\glm-5.4", label: "zhipu\\glm-5.4"),
+        ])
+        // No effort axis: the effort section stays hidden.
+        #expect(loaded.effort == nil)
+        #expect(loaded.effortOptions == nil)
+
+        // The literal 'default' reset value highlights the Default row.
+        let reset = buildSessionConfigState(
+            detail: detail(flavor: "zcode", model: "default"), summary: nil,
+            codexModels: .idle, agentModels: .loaded(response)
+        )
+        #expect(reset.model == nil)
+        #expect(reset.modelOptions?.first == CatalogOption(value: nil, label: "Default"))
+
+        let empty = buildSessionConfigState(
+            detail: detail(flavor: "zcode"), summary: nil,
+            codexModels: .idle, agentModels: .loaded(AgentModelsResponse(success: true))
+        )
+        #expect(empty.modelOptions == [])
+
+        #expect(AgentModelCatalog.sessionModelOptions(flavor: .zcode, response: response, currentModel: nil)
+            == [CatalogOption(value: nil, label: "Default"),
+                CatalogOption(value: "zhipu\\glm-5.3", label: "GLM-5.3"),
+                CatalogOption(value: "zhipu\\glm-5.4", label: "zhipu\\glm-5.4")])
+        #expect(AgentModelCatalog.sessionModelOptions(flavor: .zcode, response: AgentModelsResponse(success: true), currentModel: nil)
             .isEmpty)
     }
 

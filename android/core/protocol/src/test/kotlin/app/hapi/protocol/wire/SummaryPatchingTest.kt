@@ -235,12 +235,23 @@ class SummaryPatchingTest {
         )
         assertEquals("berry-1", berry?.agentSessionId)
 
+        // zcode: the bridge's lazy session id is the resume handle; stale
+        // cross-flavor ids are ignored for the known flavor.
+        val zcode = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path = "/p", host = "h", flavor = "zcode",
+                zcodeSessionId = "zcode-1", codexSessionId = "cx-stale",
+            )
+        )
+        assertEquals("zcode-1", zcode?.agentSessionId)
+
         // The legacy fallback chain (missing/unknown flavor) never reads the
-        // dsh/hermes/berry fields — replicated from the shared source.
+        // dsh/hermes/berry/zcode fields — replicated from the shared source.
         val unknown = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(
                 path = "/p", host = "h", flavor = "newagent",
                 dshSessionId = "dsh-1", hermesSessionId = "hermes-1", berrySessionId = "berry-1",
+                zcodeSessionId = "zcode-1",
             )
         )
         assertNull(unknown?.agentSessionId)

@@ -139,6 +139,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     public var dshSessionId: String?
     public var hermesSessionId: String?
     public var berrySessionId: String?
+    public var zcodeSessionId: String?
     /// Pi model with its provider (`session.model` holds only the id).
     public var piSelectedModel: PiModelReference?
     /// User-message `localId`s with a native fork/rewind point.
@@ -173,6 +174,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         dshSessionId: String? = nil,
         hermesSessionId: String? = nil,
         berrySessionId: String? = nil,
+        zcodeSessionId: String? = nil,
         piSelectedModel: PiModelReference? = nil,
         conversationHistoryPoints: [String: Bool]? = nil
     ) {
@@ -204,6 +206,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         self.dshSessionId = dshSessionId
         self.hermesSessionId = hermesSessionId
         self.berrySessionId = berrySessionId
+        self.zcodeSessionId = zcodeSessionId
         self.piSelectedModel = piSelectedModel
         self.conversationHistoryPoints = conversationHistoryPoints
     }

@@ -47,6 +47,8 @@ data class SessionMetadata(
     val dshSessionId: String? = null,
     val hermesSessionId: String? = null,
     val berrySessionId: String? = null,
+    /** ZCode bridge session id (lazy ids stable across bridge restarts). */
+    val zcodeSessionId: String? = null,
     val piSessionId: String? = null,
     /**
      * `cursorMigrationState` (`MetadataSchema`, tiann/hapi#873) — drives the

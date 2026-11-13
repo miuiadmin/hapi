@@ -118,6 +118,7 @@ public enum SummaryPatching {
             case .dsh: flavorSessionId = metadata.dshSessionId
             case .hermes: flavorSessionId = metadata.hermesSessionId
             case .berry: flavorSessionId = metadata.berrySessionId
+            case .zcode: flavorSessionId = metadata.zcodeSessionId
             case .gemini: flavorSessionId = metadata.geminiSessionId
             case .opencode: flavorSessionId = metadata.opencodeSessionId
             case .grok: flavorSessionId = metadata.grokSessionId

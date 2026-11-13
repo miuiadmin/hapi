@@ -594,6 +594,21 @@ class SpawnBodyTest {
     }
 
     @Test
+    fun `zcode forwards chosen permission mode and omits yolo`() {
+        // ZCode joined the codex-family native select like hermes (web
+        // `codexFamilyPermissionAgents.ts`); its mode list maps onto the
+        // bridge's ZCODE_ACP_MODE axis (default/read-only/safe-yolo/yolo).
+        val body = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "zcode", yolo = true, permissionMode = "read-only"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "permissionMode", "sessionType"), body.keys)
+        assertEquals("read-only", body["permissionMode"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `berry stays on the legacy yolo toggle and sends no model`() {
         // Berry is not a codex-family permission agent (web parity): the
         // YOLO toggle maps to the `yolo` wire field, and its runtime-discovered
@@ -1525,6 +1540,17 @@ class NewSessionViewModelTest {
         assertEquals(
             listOf("default", "safe-yolo", "yolo"),
             (hermesSelect as PermissionUi.NativeSelect).options.map { it.value },
+        )
+
+        // ZCode shares the codex-family native select with the full four-mode
+        // list (mapped onto the bridge's ZCODE_ACP_MODE axis).
+        vm.setAgent("zcode")
+        advanceUntilIdle()
+        val zcodeSelect = vm.uiState.value.permission
+        assertTrue(zcodeSelect is PermissionUi.NativeSelect)
+        assertEquals(
+            listOf("default", "read-only", "safe-yolo", "yolo"),
+            (zcodeSelect as PermissionUi.NativeSelect).options.map { it.value },
         )
 
         // Berry is not a codex-family permission agent; it keeps the legacy

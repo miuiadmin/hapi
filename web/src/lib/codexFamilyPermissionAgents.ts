@@ -12,7 +12,13 @@ export const CODEX_FAMILY_PERMISSION_AGENTS = [
     // comes from shared's getPermissionModesForFlavor (default / safe-yolo /
     // yolo). Without this entry the create form falls back to the legacy YOLO
     // toggle and safe-yolo is unreachable at create time.
-    'hermes'
+    'hermes',
+    // ZCode renders through the same native-mode select; its option list
+    // comes from shared's getPermissionModesForFlavor (default / read-only /
+    // safe-yolo / yolo, mapped onto the bridge's ZCODE_ACP_MODE axis).
+    // Without this entry the create form falls back to the legacy YOLO
+    // toggle and read-only/safe-yolo are unreachable at create time.
+    'zcode'
 ] as const satisfies readonly AgentFlavor[]
 
 export type CodexFamilyPermissionAgent = typeof CODEX_FAMILY_PERMISSION_AGENTS[number]

@@ -98,6 +98,9 @@ struct CatalogTests {
         #expect(permissionModes(forFlavor: "cursor") == [.default, .plan, .ask, .debug, .autoReview, .yolo])
         // Pi has no runtime permission switching (always auto-approve).
         #expect(permissionModes(forFlavor: "pi") == [])
+        // ZCode maps onto the bridge's ZCODE_ACP_MODE axis (default→build,
+        // read-only→plan, safe-yolo→guarded, yolo→yolo).
+        #expect(permissionModes(forFlavor: "zcode") == [.default, .readOnly, .safeYolo, .yolo])
     }
 
     @Test func modeAllowanceFollowsTheFlavorSets() {
@@ -155,14 +158,15 @@ struct CatalogTests {
     @Test func knownFlavorsMatchAgentFlavorsOrder() {
         #expect(AgentFlavor.knownFlavors.map(\.rawValue) == [
             "agy", "berry", "claude", "codex", "dsh", "copilot", "cursor",
-            "gemini", "grok", "hermes", "kimi", "opencode", "pi",
+            "gemini", "grok", "hermes", "kimi", "opencode", "pi", "zcode",
         ])
     }
 
     @Test func creatableFlavorsExcludeOnlyGemini() {
-        #expect(AgentFlavor.creatableFlavors.count == 12)
+        #expect(AgentFlavor.creatableFlavors.count == 13)
         #expect(!AgentFlavor.creatableFlavors.contains(.gemini))
         #expect(AgentFlavor.creatableFlavors.contains(.claude))
+        #expect(AgentFlavor.creatableFlavors.contains(.zcode))
     }
 
     @Test func unknownFlavorsAreCapturedNotCrashed() throws {
@@ -181,6 +185,7 @@ struct CatalogTests {
         #expect(AgentFlavor.grok.displayLabel == "Grok Build")
         #expect(AgentFlavor.opencode.displayLabel == "OpenCode")
         #expect(AgentFlavor.dsh.displayLabel == "DeepSeek Harness")
+        #expect(AgentFlavor.zcode.displayLabel == "ZCode")
         #expect(AgentFlavor.other("x").displayLabel == "Unknown")
         #expect(flavorLabel(forFlavor: "pi") == "Pi")
         #expect(flavorLabel(forFlavor: nil) == "Unknown")

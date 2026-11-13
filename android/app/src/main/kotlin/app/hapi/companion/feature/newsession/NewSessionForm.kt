@@ -54,9 +54,10 @@ object NewSessionLogic {
      * completeness though it is not creatable. Hermes renders through the
      * same select with its own option list (`HERMES_PERMISSION_MODES`);
      * without this entry it would fall back to the legacy YOLO toggle and
-     * safe-yolo would be unreachable at create time.
+     * safe-yolo would be unreachable at create time. ZCode is the same
+     * shape (`ZCODE_PERMISSION_MODES`; default/read-only/safe-yolo/yolo).
      */
-    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "kimi", "copilot", "opencode", "dsh", "hermes")
+    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "kimi", "copilot", "opencode", "dsh", "hermes", "zcode")
 
     fun usesCodexFamilyPermissionModes(flavor: String?): Boolean =
         flavor in CODEX_FAMILY_PERMISSION_AGENTS

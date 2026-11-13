@@ -21,11 +21,12 @@ public enum AgentFlavor: Equatable, Hashable, Sendable {
     case kimi
     case opencode
     case pi
+    case zcode
     case other(String)
 
     /// Order matches `AGENT_FLAVORS`.
     public static let knownFlavors: [AgentFlavor] = [
-        .agy, .berry, .claude, .codex, .dsh, .copilot, .cursor, .gemini, .grok, .hermes, .kimi, .opencode, .pi,
+        .agy, .berry, .claude, .codex, .dsh, .copilot, .cursor, .gemini, .grok, .hermes, .kimi, .opencode, .pi, .zcode,
     ]
 
     /// Flavors offered when creating a new session (`CREATABLE_AGENT_FLAVORS`).
@@ -55,6 +56,7 @@ extension AgentFlavor: RawRepresentable {
         case "kimi": self = .kimi
         case "opencode": self = .opencode
         case "pi": self = .pi
+        case "zcode": self = .zcode
         default: self = .other(rawValue)
         }
     }
@@ -74,6 +76,7 @@ extension AgentFlavor: RawRepresentable {
         case .kimi: return "kimi"
         case .opencode: return "opencode"
         case .pi: return "pi"
+        case .zcode: return "zcode"
         case .other(let raw): return raw
         }
     }
@@ -110,6 +113,7 @@ extension AgentFlavor {
         case .kimi: return "Kimi"
         case .opencode: return "OpenCode"
         case .pi: return "Pi"
+        case .zcode: return "ZCode"
         case .other: return "Unknown"
         }
     }

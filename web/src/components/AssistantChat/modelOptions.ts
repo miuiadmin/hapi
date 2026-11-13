@@ -186,8 +186,10 @@ export function getModelOptionsForFlavor(
     // config options (SessionChat's hermesModelOptions). An empty list must
     // win over the Claude fallback for the same reason. Berry has no runtime
     // model face at all (spawn-time BERRY_AGENT_MODEL env only), so it also
-    // stays empty and never falls through to Claude presets.
-    if (flavor === 'hermes' || flavor === 'berry') {
+    // stays empty and never falls through to Claude presets. ZCode is the
+    // same shape as hermes (session-scoped ListZcodeModels catalog, opaque
+    // `providerId\modelId` values) — pending means empty, not Claude error.
+    if (flavor === 'hermes' || flavor === 'berry' || flavor === 'zcode') {
         return []
     }
     if (flavor === 'cursor') {
@@ -272,8 +274,9 @@ export function getNextModelForFlavor(
     // Hermes: same guard — its catalog arrives via the session's ACP config
     // options; until then the shortcut keeps the current model. Berry has no
     // runtime catalog to wait for (spawn-time env lever only), so its cycler
-    // keeps the current model permanently.
-    if (flavor === 'hermes' || flavor === 'berry') {
+    // keeps the current model permanently. ZCode matches hermes (session-
+    // scoped catalog via ListZcodeModels).
+    if (flavor === 'hermes' || flavor === 'berry' || flavor === 'zcode') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'cursor') {

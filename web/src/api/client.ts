@@ -1023,6 +1023,14 @@ export class ApiClient {
         )
     }
 
+    // ZCode rides the same opaque ACP config-option catalog shape as hermes
+    // (`providerId\modelId` values); the hub route mirrors hermes-models.
+    async getSessionZcodeModels(sessionId: string): Promise<HermesModelsResponse> {
+        return await this.request<HermesModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/zcode-models`
+        )
+    }
+
     async getSessionGrokModels(sessionId: string): Promise<GrokModelsResponse> {
         return await this.request<GrokModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/grok-models`

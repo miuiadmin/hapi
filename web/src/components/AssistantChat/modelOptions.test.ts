@@ -416,6 +416,27 @@ describe('getNextModelForFlavor', () => {
         expect(getNextModelForFlavor('hermes', 'newapi:glm-5.3', catalog)).toBe('newapi:glm-5.4')
     })
 
+    it('keeps the current zcode model when the ACP catalog has not loaded (no Claude fallback)', () => {
+        expect(getNextModelForFlavor('zcode', 'zhipu\\glm-5.3')).toBe('zhipu\\glm-5.3')
+        expect(getNextModelForFlavor('zcode', 'zhipu\\glm-5.3', [])).toBe('zhipu\\glm-5.3')
+        expect(getModelOptionsForFlavor('zcode', null)).toEqual([])
+    })
+
+    it('offers zcode runtime model options from its session-scoped ACP catalog', () => {
+        const catalog = [
+            { value: 'zhipu\\glm-5.3', label: 'GLM 5.3' },
+            { value: 'zhipu\\glm-5.4', label: 'GLM 5.4' }
+        ]
+        expect(getModelOptionsForFlavor('zcode', 'zhipu\\glm-5.3', catalog)).toEqual([
+            { value: 'zhipu\\glm-5.3', label: 'GLM 5.3' },
+            { value: 'zhipu\\glm-5.4', label: 'GLM 5.4' }
+        ])
+        expect(getNextModelForFlavor('zcode', 'zhipu\\glm-5.3', catalog)).toBe('zhipu\\glm-5.4')
+        // The literal 'default' reset value normalizes onto the null Default
+        // entry rather than surviving as a picker row.
+        expect(getNextModelForFlavor('zcode', 'default', catalog)).toBe('zhipu\\glm-5.3')
+    })
+
     it('keeps the current cursor model when the dynamic list has not loaded', () => {
         const next = getNextModelForFlavor('cursor', 'composer-2.5')
         expect(next).toBe('composer-2.5')

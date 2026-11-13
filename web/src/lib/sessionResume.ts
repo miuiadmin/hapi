@@ -31,6 +31,10 @@ export function resolveAgentSessionIdFromMetadata(
         case 'hermes': return metadata.hermesSessionId ?? undefined
         // Berry persists sessions in its own SQLite store; same resume shape.
         case 'berry': return metadata.berrySessionId ?? undefined
+        // ZCode persists sessions in the bridge's lazy id store; same resume
+        // shape (ACP `session/resume` keyed by zcodeSessionId — lazy ids are
+        // stable across bridge restarts).
+        case 'zcode': return metadata.zcodeSessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }

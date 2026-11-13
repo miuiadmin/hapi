@@ -574,6 +574,20 @@ data class HermesModelsResponse(
 )
 
 /**
+ * `GET /api/sessions/:id/zcode-models` (RPC-wrapped: check [success]).
+ * Same shape as [HermesModelsResponse]: model ids are opaque
+ * `providerId\modelId` config-option values (ListZcodeModels over the
+ * session's ACP connection) and must be sent back verbatim when switching.
+ */
+@Serializable
+data class ZcodeModelsResponse(
+    val success: Boolean,
+    val availableModels: List<AcpCatalogModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
+/**
  * `GET /api/sessions/:id/grok-reasoning-effort-options` — RPC-wrapped.
  * Ported from `GrokReasoningEffortResponse` (`shared/src/apiTypes.ts`).
  */

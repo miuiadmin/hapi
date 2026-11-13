@@ -758,6 +758,8 @@ class ChatViewModel(
         val dshModels: List<DshModelSummary>? = null,
         /** Hermes session catalog (`GET /api/sessions/:id/hermes-models`); ids are opaque `provider:model` picker values. */
         val hermesModels: List<AcpCatalogModelSummary>? = null,
+        /** ZCode session catalog (`GET /api/sessions/:id/zcode-models`); ids are opaque `providerId\modelId` config-option values. */
+        val zcodeModels: List<AcpCatalogModelSummary>? = null,
         /** Cursor session catalog (`GET /api/sessions/:id/cursor-models`). */
         val cursorSessionModels: List<OpencodeModelSummary>? = null,
         /** Machine catalog merge-in; fetch failure tolerated (stays null). */
@@ -2597,7 +2599,7 @@ class ChatViewModel(
     }
 
     /** Flavors whose config sheet needs a dynamic catalog fetch. */
-    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor", "dsh", "hermes")
+    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor", "dsh", "hermes", "zcode")
 
     /**
      * Fetch the session flavor's dynamic config catalogs (codex models +
@@ -2621,6 +2623,7 @@ class ChatViewModel(
                 "cursor" -> loadCursorCatalogs()
                 "dsh" -> loadDshCatalogs()
                 "hermes" -> loadHermesCatalogs()
+                "zcode" -> loadZcodeCatalogs()
                 else -> ConfigCatalogs()
             }
         }
@@ -2740,6 +2743,29 @@ class ChatViewModel(
     }
 
     /**
+     * Silent-hide on failure — zcode exposes its catalog through the
+     * session's ACP config options (ListZcodeModels; opaque
+     * `providerId\modelId` values, session-scoped like hermes); switching
+     * rides the generic `POST /model` rail with the value verbatim (web
+     * `useZcodeModelsForSession`).
+     */
+    private suspend fun loadZcodeCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionZcodeModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val models = response.availableModels
+        return if (response.success && models != null) {
+            ConfigCatalogs(loadedFlavor = "zcode", zcodeModels = models)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /**
      * Session catalog first (authoritative); the machine catalog merges in to
      * fill display names and extra CLI skus — its failure is tolerated (web
      * parity: `useCursorModelsForMachine` error only downgrades readiness).
@@ -2801,7 +2827,7 @@ class ChatViewModel(
         catalogs: ConfigCatalogs,
     ): SessionConfigUi {
         val flavor = detail?.metadata?.flavor ?: summary?.metadata?.flavor
-        val model = detail?.model
+        var model = detail?.model
         val modelOptions: List<CatalogOption>?
         var modelOptionsLoading = false
         var effort: String? = null
@@ -2895,6 +2921,23 @@ class ChatViewModel(
                 val rawEffort = detail?.modelReasoningEffort?.trim()?.lowercase()
                 effort = rawEffort?.takeIf { it.isNotEmpty() && it != "default" }
                 effortOptions = SessionConfigSections.hermesReasoningEffortOptions(effort)
+            }
+            "zcode" -> {
+                // Session-scoped catalog like hermes (ListZcodeModels):
+                // opaque `providerId\modelId` config-option values; labels
+                // come from the catalog's `name` (else the raw id). Hidden
+                // while loading/empty/failed. The thought/effort axis is
+                // skipped entirely for zcode (no effort section).
+                val zcodeModels = catalogs.zcodeModels
+                modelOptions = if (zcodeModels.isNullOrEmpty()) {
+                    null
+                } else {
+                    listOf(CatalogOption(null, "Default")) +
+                        zcodeModels.map { CatalogOption(it.modelId, it.name ?: it.modelId) }
+                }
+                // The literal 'default' reset value highlights the Default
+                // row (web SessionChat maps it onto the null entry).
+                if (model?.trim()?.lowercase() == "default") model = null
             }
             "cursor" -> {
                 modelOptions = null
