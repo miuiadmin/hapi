@@ -104,6 +104,52 @@ function buildClarifyQuestionInput(request: PermissionRequest): unknown {
 }
 
 /**
+ * Whether a request_permission carries the raw AskUserQuestion payload —
+ * the zcode-acp-server bridge degrades AskUserQuestion (when the client
+ * lacks elicitation forms) into per-question request_permission popups
+ * whose `toolCall.rawInput` is the ORIGINAL tool input (its `questions`
+ * array) and whose popup title is the question text. The option labels are
+ * the answer choices (`__skip__` reject = skip), not tool approvals.
+ */
+export function isAskUserPermissionRequest(request: PermissionRequest): boolean {
+    if (!isObject(request.rawInput)) return false
+    if (!Array.isArray(request.rawInput.questions) || request.rawInput.questions.length === 0) {
+        return false
+    }
+    return request.rawInput.questions.some((question) =>
+        isObject(question) && typeof question.question === 'string')
+}
+
+/**
+ * The AskUserQuestion payload a zcode ask popup renders as: one question
+ * (the popup title — the bridge puts the question text there) whose
+ * selectable options are the request's allow_once option names (the answer
+ * labels the bridge generated).
+ */
+function buildAskUserQuestionInput(request: PermissionRequest): unknown {
+    const fallback = isObject(request.rawInput) && Array.isArray(request.rawInput.questions)
+        && isObject(request.rawInput.questions[0])
+        && typeof (request.rawInput.questions[0] as { question?: unknown }).question === 'string'
+        ? (request.rawInput.questions[0] as { question: string }).question
+        : ''
+    const rawQuestion = typeof request.title === 'string' && request.title.length > 0
+        ? request.title
+        : fallback
+    const labels = request.options
+        .filter((option) => option.kind === 'allow_once')
+        .map((option) => option.name.trim())
+        .filter((name) => name.length > 0)
+    return {
+        questions: [{
+            question: rawQuestion,
+            header: null,
+            multiSelect: false,
+            options: labels.map((label) => ({ label }))
+        }]
+    }
+}
+
+/**
  * Map an AskUserQuestion-style answer payload (selected option LABELS) back
  * to the clarify optionId hermes expects (`answers.get(option_id)` in
  * `_answer_clarify`). Null when the payload carries no answer text.
@@ -275,13 +321,15 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         // must not drive read-only auto-approval. Flavors that fill the
         // request fields are classified exactly as before.
         const unclassifiable = isUnclassifiablePermissionRequest(request)
-        // Clarify cards are questions, not approvals — NEVER auto-answer one
-        // (yolo/safe-yolo picking choice-1 behind the user's back is the
-        // exact bug this mirrors the ask-user escalation exemption for). The
-        // sensitive-path valve likewise surfaces edit-shaped cards that
-        // hermes itself force-asks under auto-approve policies.
+        // Clarify cards and zcode ask-user popups are QUESTIONS, not
+        // approvals — NEVER auto-answer one (yolo/safe-yolo picking
+        // choice-1 behind the user's back is the exact bug this mirrors the
+        // ask-user escalation exemption for). The sensitive-path valve
+        // likewise surfaces edit-shaped cards that hermes itself force-asks
+        // under auto-approve policies.
         const clarify = isClarifyPermissionRequest(request)
-        const autoDecision = clarify || isSensitiveEditPermissionRequest(request, toolName)
+        const askUser = isAskUserPermissionRequest(request)
+        const autoDecision = clarify || askUser || isSensitiveEditPermissionRequest(request, toolName)
             ? null
             : this.resolveAutoApprovalDecision(
                 this.getPermissionMode(),
@@ -296,16 +344,18 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         }
 
         this.pendingBackendRequests.set(request.id, request)
-        // A clarify card rides the existing ask_user_question pipeline: the
-        // pending entry is registered under that exact tool name with the
-        // choices as the question's options, so every HAPI client renders
-        // the interactive AskUserQuestion card and answers through
-        // approvePermission({answers}) — the same path the MCP ask-user
-        // escalation takes.
+        // A clarify card or a zcode ask popup rides the existing
+        // ask_user_question pipeline: the pending entry is registered under
+        // that exact tool name with the choices as the question's options,
+        // so every HAPI client renders the interactive AskUserQuestion card
+        // and answers through approvePermission({answers}) — the same path
+        // the MCP ask-user escalation takes.
         this.addPendingRequest(
             request.id,
-            clarify ? 'ask_user_question' : toolName,
-            clarify ? buildClarifyQuestionInput(request) : toolInput,
+            clarify || askUser ? 'ask_user_question' : toolName,
+            clarify
+                ? buildClarifyQuestionInput(request)
+                : (askUser ? buildAskUserQuestionInput(request) : toolInput),
             {
                 resolve: () => {},
                 reject: () => {}
@@ -450,7 +500,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         }
         if (request) {
             let outcome = mapDecisionToOutcome(request, decision, this.handlerOptions)
-            if (response.approved && isClarifyPermissionRequest(request)) {
+            if (response.approved && (isClarifyPermissionRequest(request) || isAskUserPermissionRequest(request))) {
                 const answeredOptionId = mapClarifyAnswerToOptionId(request, response.answers)
                 if (answeredOptionId !== null) {
                     outcome = { outcome: 'selected', optionId: answeredOptionId }

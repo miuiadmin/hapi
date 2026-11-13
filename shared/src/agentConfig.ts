@@ -69,6 +69,11 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
     dsh: fields(PERMISSION),
     hermes: fields(PERMISSION),
     berry: fields(PERMISSION),
+<<<<<<< HEAD
+=======
+    // ZCode's model rail is the dsh pattern (config-options surfaced through
+    // the ListZcodeModels RPC), so only the permission picker is static.
+>>>>>>> 72767f8e1a69500bee7a920226f121f114bec03b
     zcode: fields(PERMISSION),
     copilot: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
     cursor: fields({ id: 'model', section: 'model', kind: 'dependent-select', optionSource: 'machine', availability: 'both' }, PERMISSION),

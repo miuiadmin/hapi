@@ -199,6 +199,13 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     if (flavor === 'cursor') {
         return CURSOR_PERMISSION_MODES
     }
+    if (flavor === 'zcode') {
+        // ZCode's own mode axis (plan/build/edit/guarded/yolo) is driven from
+        // the HAPI mode at spawn (ZCODE_ACP_MODE) and per turn
+        // (session/set_mode): default→build, read-only→plan,
+        // safe-yolo→guarded, yolo→yolo.
+        return ZCODE_PERMISSION_MODES
+    }
     if (flavor === 'pi') {
         // Pi RPC mode has no runtime permission switching (always auto-approve);
         // no permission modes are offered.
