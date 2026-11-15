@@ -108,6 +108,13 @@ export class Store {
         this.db.exec('PRAGMA synchronous = NORMAL')
         this.db.exec('PRAGMA foreign_keys = ON')
         this.db.exec('PRAGMA busy_timeout = 5000')
+        // Bound the -wal sidecar: with the default limit (-1) a fully
+        // backfilled WAL keeps its historical high-water size on disk
+        // forever, so between hub restarts the file visibly only ever grows.
+        // A limit of 0 truncates it back to zero whenever SQLite resets the
+        // log (first write after a completed checkpoint, or a wrap at EOF);
+        // live growth is still bounded by autocheckpoint (1000 pages).
+        this.db.exec('PRAGMA journal_size_limit = 0')
         this.initSchema()
 
         if (dbPath !== ':memory:' && !dbPath.startsWith('file::memory:')) {
