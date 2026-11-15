@@ -7,10 +7,10 @@ import { join } from 'node:path'
 import { Store } from './index'
 
 /**
- * The Store connection sets `PRAGMA journal_size_limit = 0` so the -wal
- * sidecar is truncated back to zero bytes after each checkpoint. With the
- * SQLite default (-1) the file only ever keeps its historical high-water
- * size on disk, which reads as "the WAL keeps growing" between restarts.
+ * The Store connection pins `PRAGMA journal_size_limit = 0` so the -wal
+ * sidecar is truncated back to zero bytes on every WAL reset. Bun's bundled
+ * SQLite defaults the limit to 32768 (not SQLite's native -1) — this test
+ * also guards against any future drift of that implicit default.
  */
 describe('WAL journal size limit', () => {
     it('truncates the -wal sidecar to zero after a passive checkpoint', () => {

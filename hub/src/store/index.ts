@@ -108,12 +108,16 @@ export class Store {
         this.db.exec('PRAGMA synchronous = NORMAL')
         this.db.exec('PRAGMA foreign_keys = ON')
         this.db.exec('PRAGMA busy_timeout = 5000')
-        // Bound the -wal sidecar: with the default limit (-1) a fully
-        // backfilled WAL keeps its historical high-water size on disk
-        // forever, so between hub restarts the file visibly only ever grows.
-        // A limit of 0 truncates it back to zero whenever SQLite resets the
-        // log (first write after a completed checkpoint, or a wrap at EOF);
-        // live growth is still bounded by autocheckpoint (1000 pages).
+        // Pin the -wal sidecar truncation floor at 0. Bun's bundled SQLite
+        // (1.3.x) defaults journal_size_limit to 32768 rather than SQLite's
+        // native -1, but do not rely on that implicit default: pin it
+        // explicitly and tightly so any WAL reset (first write after a fully
+        // backfilled checkpoint, or a wrap at EOF) truncates the file back to
+        // zero instead of retaining a floor/high-water size. Production once
+        // showed a WAL stuck at its high-water mark for a whole process
+        // lifetime (resets never fired, likely a pinned reader mark) — when
+        // resets do fire, this guarantees they actually reclaim the space;
+        // live growth stays bounded by autocheckpoint (1000 pages).
         this.db.exec('PRAGMA journal_size_limit = 0')
         this.initSchema()
 
