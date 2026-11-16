@@ -12,6 +12,7 @@ import { useSSE } from '@/hooks/useSSE'
 import { useDelayedFlag } from '@/hooks/useDelayedFlag'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
+import { reportSseConnected, reportSseDisconnected } from '@/lib/sseHealth'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { pushNotificationsDisabled, usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
@@ -269,6 +270,7 @@ function AppInner() {
     const handleSseConnect = useCallback((info: { resumed: boolean }) => {
         // Clear disconnected state on successful connection
         reportSseConnect()
+        reportSseConnected()
 
         // The hub replayed every event missed during the gap, so the caches
         // are already consistent - the full refetch below would only re-download
@@ -316,6 +318,7 @@ function AppInner() {
     }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect])
 
     const handleSseDisconnect = useCallback((reason: string) => {
+        reportSseDisconnected()
         // Only show reconnecting banner if we've already connected once
         if (!isFirstConnectRef.current) {
             reportSseDisconnect(reason)

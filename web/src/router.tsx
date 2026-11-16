@@ -22,6 +22,7 @@ import {
 } from '@/lib/sessionNavigation'
 import { App } from '@/App'
 import { useSessionListView } from '@/hooks/useSessionListView'
+import { isSseDownFor, useSseConnected } from '@/lib/sseHealth'
 import { useEagerSessionPrefetch } from '@/hooks/queries/useEagerSessionPrefetch'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
@@ -154,7 +155,12 @@ function SessionsPage() {
     const { t } = useTranslation()
     const { addToast } = useToast()
     const { view: sessionListView } = useSessionListView()
-    const eagerLoading = sessionListView.eagerLoading || sessionListView.baselineMode
+    const sseConnected = useSseConnected()
+    // Eager polling kicks in when: user opted in (eagerLoading/baselineMode)
+    // OR the SSE has been dark for 30s (auto-fallback: the spinner must be
+    // trustworthy even when the user never touched the settings toggle).
+    const sseFallbackPolling = !sseConnected && isSseDownFor(30_000)
+    const eagerLoading = sessionListView.eagerLoading || sessionListView.baselineMode || sseFallbackPolling
     const { sessions, isLoading, error, refetch } = useSessions(api, { eagerInterval: eagerLoading })
     useEagerSessionPrefetch(api, sessions, eagerLoading, sessionListView.baselineMode)
     const [initializedHub, setInitializedHub] = useState<string | null>(null)
