@@ -14,11 +14,27 @@ export type UseSessionsOptions = {
     eagerInterval?: boolean
 }
 
-/** Poll cadence for eager mode. 15s is aggressive enough to mask SSE
- *  disconnection gaps (hub restarts, phone backgrounding) without turning
- *  the list into a live ticker; SSE still delivers sub-second updates when
- *  connected, so this is purely a freshness floor. */
+/** Idle poll cadence for eager mode (no active/thinking sessions on screen).
+ *  SSE still delivers sub-second updates when connected, so this is purely a
+ *  freshness floor for SSE disconnection gaps. */
 export const EAGER_REFETCH_INTERVAL_MS = 15_000
+
+/** Fast poll cadence when at least one session is active or thinking. The
+ *  list's "loading" spinner (`active && thinking`) is the primary status
+ *  surface users watch — when work is in flight, staleness beyond a few
+ *  seconds reads as a wrong answer, not merely a late one. */
+export const EAGER_ACTIVE_REFETCH_INTERVAL_MS = 5_000
+
+/** Adaptive interval: 5s while any listed session is active/thinking (the
+ *  spinner must be trustworthy), 15s when the list is all-idle. */
+export function eagerRefetchInterval(data: { sessions: { active: boolean; thinking: boolean }[] } | undefined): number {
+    const sessions = data?.sessions
+    if (!sessions || sessions.length === 0) return EAGER_REFETCH_INTERVAL_MS
+    for (const session of sessions) {
+        if (session.active || session.thinking) return EAGER_ACTIVE_REFETCH_INTERVAL_MS
+    }
+    return EAGER_REFETCH_INTERVAL_MS
+}
 
 export function useSessions(api: ApiClient | null, options: UseSessionsOptions = {}): {
     sessions: SessionSummary[]
@@ -52,7 +68,7 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
             return reconcileAttachedJobsFromCache(withClocks, current)
         },
         enabled: Boolean(api) && (options.enabled ?? true),
-        refetchInterval: options.eagerInterval ? EAGER_REFETCH_INTERVAL_MS : undefined,
+        refetchInterval: options.eagerInterval ? (query) => eagerRefetchInterval(query.state.data as { sessions: { active: boolean; thinking: boolean }[] } | undefined) : undefined,
     })
 
     return {

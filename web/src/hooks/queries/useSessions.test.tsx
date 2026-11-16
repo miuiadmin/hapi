@@ -1,8 +1,9 @@
 import { createElement, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, renderHook } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
+import { eagerRefetchInterval, EAGER_REFETCH_INTERVAL_MS, EAGER_ACTIVE_REFETCH_INTERVAL_MS } from './useSessions'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { useSessions } from './useSessions'
@@ -39,4 +40,21 @@ it('does not let a delayed REST snapshot undo newer user input from SSE', async 
     const data = client.getQueryData<SessionsResponse>(queryKeys.sessions)!
     expect(data.sessions.map(s => s.id)).toEqual(['a', 'b'])
     expect(data.sessions[0]!.lastUserMessageAt).toBe(300)
+})
+
+// Adaptive eager interval: fast when any session is active/thinking, slow when idle.
+describe('eagerRefetchInterval', () => {
+    it('returns idle cadence for empty/undefined data', () => {
+        expect(eagerRefetchInterval(undefined)).toBe(EAGER_REFETCH_INTERVAL_MS)
+        expect(eagerRefetchInterval({ sessions: [] })).toBe(EAGER_REFETCH_INTERVAL_MS)
+    })
+    it('returns fast cadence when any session is active', () => {
+        expect(eagerRefetchInterval({ sessions: [{ active: false, thinking: false }, { active: true, thinking: false }] })).toBe(EAGER_ACTIVE_REFETCH_INTERVAL_MS)
+    })
+    it('returns fast cadence when any session is thinking', () => {
+        expect(eagerRefetchInterval({ sessions: [{ active: true, thinking: true }] })).toBe(EAGER_ACTIVE_REFETCH_INTERVAL_MS)
+    })
+    it('returns idle cadence when all sessions are idle', () => {
+        expect(eagerRefetchInterval({ sessions: [{ active: false, thinking: false }, { active: false, thinking: false }] })).toBe(EAGER_REFETCH_INTERVAL_MS)
+    })
 })
