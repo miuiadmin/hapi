@@ -44,7 +44,6 @@ import app.hapi.companion.ui.theme.ReadingColumn
 import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.NeutralChatSurfaces
-import app.hapi.companion.ui.theme.ReadingColumn
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.*
 import kotlinx.coroutines.launch

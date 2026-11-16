@@ -40,12 +40,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -62,9 +62,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import android.webkit.MimeTypeMap
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatMedia
 import app.hapi.companion.ui.components.HapiImageGlyph
@@ -355,383 +352,6 @@ private fun GeneratedVideoPlayer(file: File, block: GeneratedImageBlock, label: 
 
 /**
  * Audio player — web G12 (`<audio controls preload="metadata">`) degraded to
- * a compact row: play/pause + scrub + m:ss readout. The browser element's
- * volume/speed chrome has no framework-free equivalent here (device volume
- * keys cover volume); no waveform — the web card has none either.
- */
-@Composable
-private fun GeneratedAudioPlayer(file: File, label: String) {
-    var prepared by remember(file) { mutableStateOf(false) }
-    var playing by remember(file) { mutableStateOf(false) }
-    var durationMs by remember(file) { mutableIntStateOf(0) }
-    var positionMs by remember(file) { mutableIntStateOf(0) }
-    var dragging by remember(file) { mutableStateOf(false) }
-    var dragFraction by remember(file) { mutableFloatStateOf(0f) }
-    var playbackFailed by remember(file) { mutableStateOf(false) }
-
-    if (playbackFailed) {
-        GeneratedMediaErrorLine(label, stringResource(R.string.media_playback_failed))
-        return
-    }
-
-    val player = remember(file) { MediaPlayer() }
-    DisposableEffect(player) {
-        onDispose { player.release() }
-    }
-    LaunchedEffect(player) {
-        player.setOnPreparedListener { p ->
-            durationMs = p.duration
-            prepared = true
-        }
-        player.setOnCompletionListener { playing = false }
-        player.setOnErrorListener { _, _, _ ->
-            playing = false
-            playbackFailed = true
-            true
-        }
-        runCatching {
-            player.setDataSource(file.absolutePath)
-            player.prepareAsync()
-        }.onFailure { playbackFailed = true }
-    }
-    LaunchedEffect(playing) {
-        while (playing) {
-            positionMs = player.currentPosition
-            delay(250)
-        }
-    }
-
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        IconButton(
-            enabled = prepared,
-            onClick = {
-                if (playing) {
-                    player.pause()
-                    playing = false
-                } else {
-                    player.start()
-                    playing = true
-                }
-            },
-        ) {
-            if (playing) {
-                Icon(painterResource(R.drawable.ic_pause), stringResource(R.string.media_pause))
-            } else {
-                Icon(Icons.Filled.PlayArrow, stringResource(R.string.media_play))
-            }
-        }
-        val fraction = if (dragging) {
-            dragFraction
-        } else if (durationMs > 0) {
-            positionMs.coerceIn(0, durationMs).toFloat() / durationMs
-        } else {
-            0f
-        }
-        Slider(
-            enabled = prepared,
-            value = fraction.coerceIn(0f, 1f),
-            onValueChange = {
-                dragging = true
-                dragFraction = it
-            },
-            onValueChangeFinished = {
-                if (durationMs > 0) {
-                    player.seekTo((dragFraction * durationMs).toInt().coerceIn(0, durationMs))
-                    positionMs = player.currentPosition
-                }
-                dragging = false
-            },
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = "${formatPlaybackTime(positionMs)} / ${formatPlaybackTime(durationMs)}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.hapi.hint,
-        )
-    }
-}
-
-/**
- * File intent — web G13's bordered icon + filename row; the browser's single
- * download link becomes the two Android outlets the platform offers: Open
- * (ACTION_VIEW over the FileProvider cache uri) and Save (system
- * ACTION_CREATE_DOCUMENT picker, no storage permission needed).
- */
-@Composable
-private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var openFailed by remember(block.id) { mutableStateOf(false) }
-    var saveFailed by remember(block.id) { mutableStateOf(false) }
-    val mimeType = block.mimeType ?: "application/octet-stream"
-    val saveLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument(mimeType),
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val saved = withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        file.inputStream().use { it.copyTo(out) }
-                    } ?: error("stream closed")
-                }.isSuccess
-            }
-            saveFailed = !saved
-        }
-    }
-
-    if (openFailed) {
-        Text(
-            text = stringResource(R.string.media_open_failed),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-    }
-    if (saveFailed) {
-        Text(
-            text = stringResource(R.string.media_save_failed),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(bottom = 4.dp),
-        )
-    }
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .border(
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                RoundedCornerShape(12.dp),
-            )
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    ) {
-        Icon(
-            painterResource(R.drawable.ic_file),
-            contentDescription = null,
-            tint = MaterialTheme.hapi.hint,
-            modifier = Modifier.size(24.dp),
-        )
-        Text(
-            text = block.fileName,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        TextButton(onClick = {
-            openFailed = false
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.attachments", file)
-            val open = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mimeType)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            try {
-                context.startActivity(open)
-            } catch (_: ActivityNotFoundException) {
-                openFailed = true
-            }
-        }) { Text(stringResource(R.string.media_open)) }
-        TextButton(onClick = {
-            saveFailed = false
-            saveLauncher.launch(block.fileName)
-        }) { Text(stringResource(R.string.media_save)) }
-    }
-}
-
-@androidx.compose.ui.tooling.preview.Preview(showBackground = true)
-@Composable
-private fun GeneratedMediaBlocksPreview() {
-    // Gate states only — the loaded players (VideoView/MediaPlayer) are not
-    // instantiated in previews; with the default ChatMedia (null fetcher)
-    // a tapped gate would surface the unavailable line.
-    app.hapi.companion.ui.theme.HapiTheme {
-        androidx.compose.material3.Surface {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                GeneratedImageBlockView(
-                    GeneratedImageBlock(
-                        id = "g1", localId = null, createdAt = 0, invokedAt = null,
-                        imageId = "img-1", fileName = "screenshot.png",
-                        mimeType = null, source = null, meta = null,
-                    ),
-                )
-                GeneratedImageBlockView(
-                    GeneratedImageBlock(
-                        id = "g2", localId = null, createdAt = 0, invokedAt = null,
-                        imageId = "img-2", fileName = "clip.mp4",
-                        mimeType = "video/mp4", source = null, meta = null,
-                    ),
-                )
-                GeneratedImageBlockView(
-                    GeneratedImageBlock(
-                        id = "g3", localId = null, createdAt = 0, invokedAt = null,
-                        imageId = "img-3", fileName = "voice-memo.m4a",
-                        mimeType = "audio/mp4", source = null, meta = null,
-                    ),
-                )
-                GeneratedImageBlockView(
-                    GeneratedImageBlock(
-                        id = "g4", localId = null, createdAt = 0, invokedAt = null,
-                        imageId = "img-4", fileName = "report.pdf",
-                        mimeType = "application/pdf", source = null, meta = null,
-                    ),
-                )
-            }
-        }
-    }
-}
-
-/**
- * Video / audio / file intents — the web's gated card (G4): a Load /
- * Prepare-download button until the user asks, a pulsing skeleton while
- * fetching (G7), then the type's renderer, or the unavailable error line
- * (G8, no separate "unsupported" class: unknown mimes are FILE cards).
- */
-@Composable
-private fun GeneratedGatedMediaCardContent(block: GeneratedImageBlock, modifier: Modifier = Modifier) {
-    val kind = generatedMediaKind(block.mimeType)
-    val media = LocalChatMedia.current
-    val url = remember(block.imageId) { media.generatedImageUrl(block.imageId) }
-    var loadRequested by remember(block.id) { mutableStateOf(false) }
-    var file by remember(block.id) { mutableStateOf<File?>(null) }
-    var error by remember(block.id) { mutableStateOf<Throwable?>(null) }
-    val label = mediaLabel(block)
-
-    LaunchedEffect(block.imageId, loadRequested) {
-        if (!loadRequested || file != null) return@LaunchedEffect
-        val fetcher = media.fetchGeneratedMedia
-        if (fetcher == null || url == null) {
-            error = GeneratedMediaUnavailableException()
-            return@LaunchedEffect
-        }
-        try {
-            file = fetcher(url, block.imageId, block.fileName)
-            error = null
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
-        } catch (t: Throwable) {
-            error = t
-        }
-    }
-
-    GeneratedMediaCard(block, modifier) {
-        val current = file
-        when {
-            current != null -> when (kind) {
-                GeneratedMediaKind.VIDEO -> GeneratedVideoPlayer(current, block, label)
-                GeneratedMediaKind.AUDIO -> GeneratedAudioPlayer(current, label)
-                GeneratedMediaKind.FILE -> GeneratedFileActions(current, block)
-                GeneratedMediaKind.IMAGE -> Unit // unreachable: images never gate
-            }
-            error != null -> GeneratedMediaErrorLine(label, error!!.message)
-            !loadRequested -> GeneratedMediaGateButton(kind) { loadRequested = true }
-            else -> GeneratedMediaSkeleton()
-        }
-    }
-}
-
-/** Web G4 gate: h-48 w-72 subtle box whose label is the Load / Prepare button. */
-@Composable
-private fun GeneratedMediaGateButton(kind: GeneratedMediaKind, onLoad: () -> Unit) {
-    Surface(
-        onClick = onLoad,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.4f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.widthIn(max = 288.dp).fillMaxWidth().height(192.dp),
-    ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            Text(
-                text = stringResource(kind.loadActionRes ?: R.string.media_prepare_download),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-    }
-}
-
-/** Web G7 loading skeleton: gray pulsing h-48 w-72 block. */
-@Composable
-private fun GeneratedMediaSkeleton() {
-    val transition = rememberInfiniteTransition(label = "generated-media-pulse")
-    val alpha by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.4f,
-        animationSpec = infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse),
-        label = "generated-media-pulse-alpha",
-    )
-    Box(
-        modifier = Modifier
-            .widthIn(max = 288.dp)
-            .fillMaxWidth()
-            .height(192.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .alpha(alpha)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)),
-    )
-}
-
-/**
- * Video player — web G11 (`<video controls playsInline>`): framework
- * [VideoView] + [MediaController] in an [AndroidView], zero new media
- * dependencies (no Media3 on the classpath; adding it just for this card
- * is not worth the ~MB). Plays the downloaded cache file (no streaming:
- * the hub URL needs the JWT header the platform player cannot send).
- * Codec failures surface the web's unavailable line with a playback reason.
- */
-@Composable
-private fun GeneratedVideoPlayer(file: File, block: GeneratedImageBlock, label: String) {
-    var playbackFailed by remember(block.id) { mutableStateOf(false) }
-    val videoView = remember { mutableStateOf<VideoView?>(null) }
-    DisposableEffect(file) {
-        onDispose { videoView.value?.stopPlayback() }
-    }
-    if (playbackFailed) {
-        GeneratedMediaErrorLine(label, stringResource(R.string.media_playback_failed))
-        return
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 128.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        AndroidView(
-            factory = { context ->
-                VideoView(context).apply {
-                    setBackgroundColor(android.graphics.Color.BLACK)
-                    setVideoURI(Uri.fromFile(file))
-                    val controller = MediaController(context)
-                    controller.setMediaPlayer(this)
-                    setMediaController(controller)
-                    setOnErrorListener { _, _, _ ->
-                        playbackFailed = true
-                        true
-                    }
-                    videoView.value = this
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 448.dp)
-                .clip(RoundedCornerShape(12.dp)),
-        )
-    }
-}
-
-/**
- * Audio player — web G12 (`<audio controls preload="metadata">`) degraded to
  * a compact row: play/pause + scrub + m:ss readout. Decisions live in the
  * JVM-tested [GeneratedAudioSession] over the [MediaPlayer] adapter; the
  * browser element's volume/speed chrome has no framework-free equivalent
@@ -842,9 +462,7 @@ private class MediaPlayerAudioPlayer : GeneratedAudioPlayer {
  * File intent — web G13's bordered icon + filename row; the browser's single
  * download link becomes the two Android outlets the platform offers: Open
  * (ACTION_VIEW over the FileProvider cache uri) and Save (system
- * ACTION_CREATE_DOCUMENT picker, no storage permission needed). Both carry
- * the *resolved* MIME type — a missing or octet-stream wire type is re-derived
- * from the filename extension so a PDF actually matches a PDF viewer.
+ * ACTION_CREATE_DOCUMENT picker, no storage permission needed).
  */
 @Composable
 private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
@@ -852,13 +470,9 @@ private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
     val scope = rememberCoroutineScope()
     var openFailed by remember(block.id) { mutableStateOf(false) }
     var saveFailed by remember(block.id) { mutableStateOf(false) }
-    val outlets = remember(block.id, block.mimeType, block.fileName) {
-        generatedFileOutlets(block.mimeType, block.fileName) { extension ->
-            MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
-        }
-    }
+    val mimeType = block.mimeType ?: "application/octet-stream"
     val saveLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument(outlets.saveMimeType),
+        ActivityResultContracts.CreateDocument(mimeType),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
@@ -919,7 +533,7 @@ private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
             openFailed = false
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.attachments", file)
             val open = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, outlets.openMimeType)
+                setDataAndType(uri, mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             try {
@@ -930,7 +544,7 @@ private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
         }) { Text(stringResource(R.string.media_open)) }
         TextButton(onClick = {
             saveFailed = false
-            saveLauncher.launch(outlets.suggestedName)
+            saveLauncher.launch(block.fileName)
         }) { Text(stringResource(R.string.media_save)) }
     }
 }

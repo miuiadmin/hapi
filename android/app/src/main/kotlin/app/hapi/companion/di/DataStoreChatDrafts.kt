@@ -110,4 +110,47 @@ class DataStoreChatDrafts(
         }
         return result
     }
+
+    /**
+     * Read the ring index, adopting value rows the index does not know (a
+     * lost/corrupt index must not leave orphan rows outside the ring —
+     * otherwise the cap cannot bound the store).
+     */
+    private fun readIndex(prefs: Preferences): LinkedHashMap<String, Long> {
+        val index = decodeIndex(prefs[indexKey])
+        val known = index.keys
+        val adopted = prefs.asMap().keys
+            .filterIsInstance<Preferences.Key<String>>()
+            .filter { it.name.startsWith(keyPrefix) }
+            .map { it.name.removePrefix(keyPrefix) }
+            .filter { it.isNotEmpty() && it !in known }
+        adopted.forEach { index[it] = now() }
+        return index
+    }
+
+    private fun removeFromIndex(prefs: MutablePreferences, sessionId: String) {
+        val index = readIndex(prefs)
+        if (index.remove(sessionId) != null) prefs[indexKey] = encodeIndex(index)
+    }
+
+    private fun touchAndPrune(prefs: MutablePreferences, sessionId: String) {
+        val index = readIndex(prefs)
+        val evicted = DraftRing.touch(index, sessionId, now())
+        prefs[indexKey] = encodeIndex(index)
+        evicted.forEach { evictedId ->
+            if (evictedId != sessionId) prefs.remove(key(evictedId))
+        }
+    }
+
+    companion object {
+        internal fun encodeIndex(index: Map<String, Long>): String =
+            HapiJson.encodeToString(MapSerializer(String.serializer(), Long.serializer()), index)
+
+        internal fun decodeIndex(raw: String?): LinkedHashMap<String, Long> {
+            if (raw.isNullOrEmpty()) return LinkedHashMap()
+            return runCatching {
+                HapiJson.decodeFromString(MapSerializer(String.serializer(), Long.serializer()), raw)
+            }.getOrNull()?.let { LinkedHashMap(it) } ?: LinkedHashMap()
+        }
+    }
 }

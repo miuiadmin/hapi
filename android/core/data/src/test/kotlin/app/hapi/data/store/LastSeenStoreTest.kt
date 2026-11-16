@@ -115,7 +115,7 @@ class LastSeenStoreTest {
     }
 
     @Test
-    fun `unread count collapses repeated ids`() {
+    fun `unread count collapses repeated ids`() = runTest {
         val store = LastSeenStore(backgroundScope)
         val sessions = listOf(
             summary("a", updatedAt = 100),

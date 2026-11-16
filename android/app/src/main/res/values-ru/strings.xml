@@ -1190,4 +1190,19 @@
     <string name="agent_terminal_gate_inactive">Сессия завершена, поэтому терминал агента больше не активен.</string>
     <string name="agent_terminal_quick_keys">Быстрые клавиши терминала агента</string>
     <string name="agent_terminal_long_press_format">%1$s (долгое нажатие: %2$s)</string>
+    <!-- restored fork strings lost in the upstream merge (round-3 CI fix) -->
+    <string name="channel_task_notifications">Уведомления о задачах</string>
+    <string name="channel_task_notifications_desc">Задача выполнена или завершилась с ошибкой, а также другие обновления</string>
+    <string name="chat_inactive_bar">Сессия неактивна — отправьте сообщение, чтобы возобновить, или</string>
+    <string name="chat_perm_answer_all">Сначала ответьте на все вопросы</string>
+    <string name="chat_perm_answer_required">Сначала ответьте на все обязательные вопросы</string>
+    <string name="chat_perm_optional_format">%1$s (необязательно)</string>
+    <string name="chat_perm_other">Другое…</string>
+    <string name="chat_perm_submit">Отправить</string>
+    <string name="chat_perm_type_answer_first">Сначала введите ответ</string>
+    <string name="chat_reasoning">Рассуждения</string>
+    <string name="sessions_clear_filter">Сбросить фильтр</string>
+    <string name="sessions_filter_summary">Фильтр: %1$s</string>
+    <string name="sessions_search_clear">Очистить поиск</string>
+    <string name="sessions_time_filter_label">Фильтр сессий по последней активности</string>
 </resources>

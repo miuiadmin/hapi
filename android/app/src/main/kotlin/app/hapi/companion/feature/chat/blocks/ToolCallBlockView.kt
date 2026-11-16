@@ -49,7 +49,6 @@ import app.hapi.companion.feature.chat.LocalChatSettings
 import app.hapi.companion.feature.chat.PermissionRowOverride
 import app.hapi.companion.feature.chat.permissions.PermissionVerdictLabel
 import app.hapi.companion.feature.chat.permissions.PermissionVerdicts
-import app.hapi.companion.feature.chat.vector
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.HapiTypography

@@ -1173,4 +1173,19 @@
     <string name="agent_terminal_gate_inactive">This session has ended, so its agent terminal is no longer live.</string>
     <string name="agent_terminal_quick_keys">Agent terminal quick keys</string>
     <string name="agent_terminal_long_press_format">%1$s (long press: %2$s)</string>
+    <!-- restored fork strings lost in the upstream merge (round-3 CI fix) -->
+    <string name="channel_task_notifications">Task notifications</string>
+    <string name="channel_task_notifications_desc">Task completed or failed, and other updates</string>
+    <string name="chat_inactive_bar">Session inactive — send to resume, or</string>
+    <string name="chat_perm_answer_all">Answer every question first</string>
+    <string name="chat_perm_answer_required">Answer every required question first</string>
+    <string name="chat_perm_optional_format">%1$s (optional)</string>
+    <string name="chat_perm_other">Other…</string>
+    <string name="chat_perm_submit">Submit</string>
+    <string name="chat_perm_type_answer_first">Type an answer first</string>
+    <string name="chat_reasoning">Reasoning</string>
+    <string name="sessions_clear_filter">Clear filter</string>
+    <string name="sessions_filter_summary">Filtered by: %1$s</string>
+    <string name="sessions_search_clear">Clear search</string>
+    <string name="sessions_time_filter_label">Filter sessions by last activity</string>
 </resources>
