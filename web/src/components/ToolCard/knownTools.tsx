@@ -7,6 +7,7 @@ import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/T
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
+import { parseWorkflowInput } from '@/components/ToolCard/workflowParse'
 import { parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import {
@@ -633,6 +634,15 @@ export const knownTools: Record<string, {
         title: () => 'Todo list',
         subtitle: (opts) => formatChecklistCount(extractTodoChecklist(opts.input, opts.result), 'item'),
         minimal: (opts) => extractTodoChecklist(opts.input, opts.result).length === 0
+    },
+    // DSH workflow orchestration: keep the body open (minimal:false) so the
+    // live phase checklist with agent chips renders while the run is silent
+    // for minutes; the subtitle names the workflow from input.meta.
+    workflow: {
+        icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Workflow',
+        subtitle: (opts) => parseWorkflowInput(opts.input)?.name ?? null,
+        minimal: false
     },
     todo_write: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,

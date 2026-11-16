@@ -102,6 +102,7 @@ import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, shouldKeepPend
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
+import { GoalModeBanner, useGoalModeTransitionBanner } from '@/components/AssistantChat/GoalModeBanner'
 import { usePlatform } from '@/hooks/usePlatform'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useConciseChatMode } from '@/hooks/useConciseChatMode'
@@ -1895,6 +1896,10 @@ function SessionChatInner(props: SessionChatProps) {
             reconciled.blocks
         ]
     )
+    // Transient floating banner for goal-mode transitions (entered / exited /
+    // cleared). Complements — never replaces — the persistent goal section in
+    // the SessionStatusPanel above.
+    const goalModeBanner = useGoalModeTransitionBanner(reduced.latestGoal)
     const hasRunningChildAgent = useMemo(
         () => hasAbortableAgentRun(reduced.blocks),
         [reduced.blocks]
@@ -2569,6 +2574,8 @@ function SessionChatInner(props: SessionChatProps) {
                                     && !controlledByUser}
                             />
                         </div>
+
+                        <GoalModeBanner banner={goalModeBanner.banner} onDismiss={goalModeBanner.dismiss} />
 
                         <HappyComposer
                         focusInputRef={focusComposerRef}
