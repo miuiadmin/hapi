@@ -40,14 +40,17 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 409 | — | `sessions.ts` delete-while-active, archive of plain inactive row, fork/rewind refusals, remote-only config on terminal-controlled sessions (`controlledByUser`) | Surface message; refresh session state |
 | 413 | — | `sessions.ts` upload (> 50 MB decoded), export too large (`{error, count, limit}`); `voice.ts` transcription (`Audio file too large`, 25 MB audio / ~26 MB body) | Reduce payload |
 | 413 | `scratchlist_attachment_too_large` | `sessions.ts` scratchlist upload | Reduce attachment |
-| 422 | — | `sessions.ts` reopen with incomplete metadata (`{error, missing[]}`); title-suggestion pass-through (`TitleSuggestionError`, statuses 422/429/502/503) | Not reopenable / feature unavailable |
+| 422 | — | `sessions.ts` reopen with incomplete metadata (`{error, missing[]}`); title-suggestion pass-through (`TitleSuggestionError`, statuses 422/429/503) | Not reopenable / feature unavailable |
 | 429 | — | Title suggestion (provider rate limit) | Back off |
 | 500 | — | Catch-all in most routes (`{error: message}`) | Log; generic failure UI |
-| 502 | — | Title suggestion upstream failure; restart-runner unknown error | Retry later |
 | 503 | — | `guards.ts` `requireSyncEngine` → `{error: 'Not connected'}` — hub subsystems not up (startup/shutdown window); also Telegram-disabled on `/api/auth` initData path | Retry with backoff |
 | 503 | `no_machine_online` | resume/reopen/spawn-flow result mapping (`sessions.ts`) | The machine that owns the session is offline — tell the user to start the runner |
 | 503 | `machine_offline` | `machines.ts` restart-runner | Same |
 | 503 | `rpc_target_missing` | `machines.ts` pi/codex model catalogs (`RPC_TARGET_MISSING_ERROR_CODE` in `shared/src/rpcMethods.ts` — RPC handler unregistered or socket disconnected) | CLI-side target gone — treat as offline |
+| 503 | `engine_unresponsive` | `RpcTimeoutError` mapping across `sessions.ts` / `machines.ts` / `permissions.ts` (abort, switch, uploads, archive, resume/reopen/clear, model catalogs, permission answers) — the engine socket is registered but never acked within the deadline | Engine wedged — retry later or restart the runner |
+| 503 | — | Title suggestion upstream failure; restart-runner unknown error; codex plan `failed` | Retry later |
+
+The hub never emits HTTP 502 or 504: behind Cloudflare orange-cloud proxies (upstream #2423) both are intercepted and replaced with HTML error pages, which would strip the JSON error body clients parse. Upstream/gateway failures that would classically be 502/504 are mapped to 503 (with the codes above when one applies) so the JSON contract survives the proxy.
 
 ## RPC-wrapped endpoints
 
@@ -72,5 +75,5 @@ When that background re-check lands a different listing, the machine says so ove
 |-------|--------|
 | 400 / 403 / 404 / 409 / 413 / 422 | No (fix input, refresh state, or hide surface) |
 | 401 (middleware) | Once, after silent re-auth ([Auth](./auth.md#silent-re-auth-401-handling)) |
-| 429 / 502 / 503 | Reads: retry with backoff. Mutations: follow the endpoint's recovery contract; do not replay a write whose outcome is unknown |
+| 429 / 503 | Reads: retry with backoff. Mutations: follow the endpoint's recovery contract; do not replay a write whose outcome is unknown |
 | 200 `{success: false}` | Inspect the error and endpoint contract; manual retry only when safe. This envelope can also represent a missing RPC target or timeout |

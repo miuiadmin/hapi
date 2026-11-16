@@ -158,9 +158,9 @@ describe('permissions routes (tiann/hapi#1735)', () => {
 
     // A socket that stays registered while the engine wedges never acks, so
     // socket.io rejects after the full RPC deadline — that used to escape as a
-    // generic 500 ("operation has timed out"). It must surface as 504 +
+    // generic 500 ("operation has timed out"). It must surface as 503 +
     // engine_unresponsive so the client knows the deadline was missed.
-    it('returns 504 engine_unresponsive when the engine never acks the approve', async () => {
+    it('returns 503 engine_unresponsive when the engine never acks the approve', async () => {
         const app = createApp({
             approvePermission: async () => { throw new RpcTimeoutError('session-1:Permission', 30_000) }
         })
@@ -169,14 +169,14 @@ describe('permissions routes (tiann/hapi#1735)', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({})
         })
-        expect(res.status).toBe(504)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('did not acknowledge'),
             code: 'engine_unresponsive'
         })
     })
 
-    it('returns 504 engine_unresponsive when the engine never acks the deny', async () => {
+    it('returns 503 engine_unresponsive when the engine never acks the deny', async () => {
         const app = createApp({
             denyPermission: async () => { throw new RpcTimeoutError('session-1:Permission', 30_000) }
         })
@@ -185,7 +185,7 @@ describe('permissions routes (tiann/hapi#1735)', () => {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({})
         })
-        expect(res.status).toBe(504)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('did not acknowledge'),
             code: 'engine_unresponsive'

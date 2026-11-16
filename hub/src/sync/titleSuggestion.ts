@@ -33,7 +33,7 @@ export class TitleSuggestionError extends Error {
     constructor(
         readonly code: TitleSuggestionErrorCode,
         message: string,
-        readonly status: 422 | 429 | 502 | 503
+        readonly status: 422 | 429 | 503
     ) {
         super(message)
         this.name = 'TitleSuggestionError'
@@ -412,7 +412,16 @@ export class TitleSuggestionService {
         return conversation.length > 0 ? conversation : null
     }
 
-    async suggestTitle(sessionId: string): Promise<string> {
+    async suggestTitle(sessionId: string): Promise<string>
+    async suggestTitle(sessionId: string, options: { exemptFromRateLimit: true }): Promise<string | null>
+    /**
+     * `exemptFromRateLimit` serves the automatic per-turn path, which shares
+     * this rate limiter with the manual Generate action: when the manual
+     * budget is spent, an exempted call resolves to null (no provider call)
+     * instead of throwing, so the automatic fallback stays silent and the
+     * manual endpoint keeps its 429 contract.
+     */
+    async suggestTitle(sessionId: string, options: { exemptFromRateLimit?: boolean } = {}): Promise<string | null> {
         if (!this.provider) {
             throw new TitleSuggestionError(
                 'unavailable',
@@ -436,6 +445,7 @@ export class TitleSuggestionService {
         this.requestTimesBySession.set(sessionId, recentRequests)
 
         if (this.inFlightSessionIds.has(sessionId) || recentRequests.length >= this.rateLimit) {
+            if (options.exemptFromRateLimit === true) return null
             throw new TitleSuggestionError(
                 'rate-limited',
                 'Too many title suggestions for this session; try again later',
@@ -455,7 +465,7 @@ export class TitleSuggestionService {
             throw new TitleSuggestionError(
                 'provider',
                 'The title suggestion provider failed',
-                502
+                503
             )
         } finally {
             this.inFlightSessionIds.delete(sessionId)

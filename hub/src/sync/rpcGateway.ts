@@ -100,7 +100,7 @@ export class PermissionRequestNotFoundError extends Error {
  * Distinct from {@link RpcTargetMissingError}: there the hub knows up front
  * that nobody can answer, here the hub can only learn it by waiting out the
  * deadline. Callers can narrow on this to respond with honest semantics
- * (e.g. HTTP 504) instead of a generic 500.
+ * (e.g. HTTP 503) instead of a generic 500.
  */
 export class RpcTimeoutError extends Error {
     readonly method: string

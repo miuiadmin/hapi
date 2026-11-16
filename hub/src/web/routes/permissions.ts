@@ -87,7 +87,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
                 return c.json({
                     error: `Session did not acknowledge the answer within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             throw error
         }
@@ -135,7 +135,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
                 return c.json({
                     error: `Session did not acknowledge the answer within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             throw error
         }

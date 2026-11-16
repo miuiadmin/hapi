@@ -702,13 +702,44 @@ export class SyncEngine {
         if (!wasThinking && payload.thinking === true) {
             this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
         }
+        // Capture the queued-prompt grace deadline before the cache consumes
+        // it below; the idle reconciliation must not settle a turn while a
+        // queued prompt may still be picked up into a fresh one.
+        const queuedThinkingGraceDeadline = payload.thinking === false
+            ? this.sessionCache.getQueuedThinkingGraceDeadline(payload.sid)
+            : null
         this.sessionCache.handleSessionAlive(payload)
         if (wasThinking && !this.sessionCache.getSession(payload.sid)?.thinking) {
+            this.titleTurnCompletedIds.add(payload.sid)
+            void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
+        } else if (this.shouldReconcileIdleTitleTurn(payload, queuedThinkingGraceDeadline)) {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
         }
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+    }
+
+    /**
+     * Idle reconciliation for wedged title turns (hermes-style): in busy
+     * long-lived sessions every turn-completion signal — the ready event, the
+     * thinking=true→false transition (invisible after a hub restart or a
+     * missed thinking=true), and session-ended — can be suppressed, leaving
+     * the persisted titleSuggestionTurn.completed=false forever with no
+     * repair path. A keepalive that reports thinking=false once the
+     * queued-prompt grace has expired is itself reliable idle evidence, so
+     * settle the observed turn from there. Generation stays gated on the
+     * store rows inside onTurnCompleted, same as the other boundaries.
+     */
+    private shouldReconcileIdleTitleTurn(
+        payload: { sid: string; thinking?: boolean },
+        queuedThinkingGraceDeadline: number | null
+    ): boolean {
+        if (payload.thinking !== false) return false
+        const session = this.sessionCache.getSession(payload.sid)
+        if (!session || session.thinking) return false
+        if (session.metadata?.titleSuggestionTurn?.completed !== false) return false
+        return queuedThinkingGraceDeadline === null || queuedThinkingGraceDeadline <= Date.now()
     }
 
     handleSessionReady(payload: { sid: string; time: number }): void {

@@ -2090,12 +2090,12 @@ describe('session abort delivery errors', () => {
         })
     })
 
-    it('returns 504 engine_unresponsive when the engine never acks the abort', async () => {
+    it('returns 503 engine_unresponsive when the engine never acks the abort', async () => {
         const { app } = createApp(createSession(), {
             abortSession: async () => { throw new RpcTimeoutError('session-1:abort', 30_000) }
         })
         const res = await app.request('/api/sessions/session-1/abort', { method: 'POST' })
-        expect(res.status).toBe(504)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('did not acknowledge'),
             code: 'engine_unresponsive'
@@ -2115,7 +2115,7 @@ describe('session abort delivery errors', () => {
 })
 
 // The same delivery semantics as abort apply to switch and file uploads: a
-// dead or wedged engine socket must surface as 503/504, not a bare 500.
+// dead or wedged engine socket must surface as 503, not a bare 500.
 describe('session switch/upload delivery errors', () => {
     it('returns 503 rpc_target_missing when the engine socket is gone for switch', async () => {
         const { app } = createApp(createSession(), {
@@ -2129,12 +2129,12 @@ describe('session switch/upload delivery errors', () => {
         })
     })
 
-    it('returns 504 engine_unresponsive when the engine never acks the switch', async () => {
+    it('returns 503 engine_unresponsive when the engine never acks the switch', async () => {
         const { app } = createApp(createSession(), {
             switchSession: async () => { throw new RpcTimeoutError('session-1:switch', 30_000) }
         })
         const res = await app.request('/api/sessions/session-1/switch', { method: 'POST' })
-        expect(res.status).toBe(504)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             error: expect.stringContaining('did not acknowledge'),
             code: 'engine_unresponsive'
@@ -2168,7 +2168,7 @@ describe('session switch/upload delivery errors', () => {
         })
     })
 
-    it('returns 504 engine_unresponsive when the engine never acks an upload delete', async () => {
+    it('returns 503 engine_unresponsive when the engine never acks an upload delete', async () => {
         const { app } = createApp(createSession(), {
             deleteUploadFile: async () => { throw new RpcTimeoutError('session-1:upload', 30_000) }
         })
@@ -2176,7 +2176,7 @@ describe('session switch/upload delivery errors', () => {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: '/tmp/a.txt' })
         })
-        expect(res.status).toBe(504)
+        expect(res.status).toBe(503)
         expect(await res.json()).toEqual({
             success: false,
             error: expect.stringContaining('did not acknowledge'),
@@ -2203,7 +2203,7 @@ describe('session switch/upload delivery errors', () => {
 describe('session RPC delivery error typing', () => {
     it.each([
         ['rpc_target_missing', 503, 'RPC handler not registered: machine-1:spawn-happy-session'],
-        ['engine_unresponsive', 504, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
+        ['engine_unresponsive', 503, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
     ] as const)('maps %s resume results to %s', async (code, status, message) => {
         const { app } = createApp(createSession(), {
             resumeSession: async () => ({ type: 'error', message, code })
@@ -2215,7 +2215,7 @@ describe('session RPC delivery error typing', () => {
 
     it.each([
         ['rpc_target_missing', 503, 'RPC handler not registered: machine-1:spawn-happy-session'],
-        ['engine_unresponsive', 504, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
+        ['engine_unresponsive', 503, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
     ] as const)('maps %s reopen results to %s', async (code, status, message) => {
         const { app } = createApp(createSession(), {
             reopenSession: async () => ({ type: 'error', message, code })
@@ -2225,7 +2225,7 @@ describe('session RPC delivery error typing', () => {
         expect(await response.json()).toEqual({ error: message, code })
     })
 
-    it('maps engine_unresponsive resume failures during clear to 504', async () => {
+    it('maps engine_unresponsive resume failures during clear to 503', async () => {
         const message = 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session'
         const { app } = createApp(createSession({ active: false, metadata: {
             path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { concurrentClients: true }
@@ -2233,16 +2233,16 @@ describe('session RPC delivery error typing', () => {
             resumeSession: async () => ({ type: 'error', message, code: 'engine_unresponsive' })
         })
         const response = await app.request('/api/sessions/session-1/clear', { method: 'POST' })
-        expect(response.status).toBe(504)
+        expect(response.status).toBe(503)
         expect(await response.json()).toEqual({ error: message, code: 'engine_unresponsive' })
     })
 
-    it('returns 504 engine_unresponsive when the archive ack deadline blows', async () => {
+    it('returns 503 engine_unresponsive when the archive ack deadline blows', async () => {
         const { app } = createApp(createSession(), {
             archiveSession: async () => { throw new RpcTimeoutError('session-1:kill', 30_000) }
         })
         const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
-        expect(response.status).toBe(504)
+        expect(response.status).toBe(503)
         expect(await response.json()).toEqual({
             error: 'Session did not acknowledge the archive within 30s; it may be unresponsive.',
             code: 'engine_unresponsive'
@@ -2251,7 +2251,7 @@ describe('session RPC delivery error typing', () => {
 
     it.each([
         [503, 'rpc_target_missing', new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')],
-        [504, 'engine_unresponsive', new RpcTimeoutError('session-1:listCodexModels', 120_000)]
+        [503, 'engine_unresponsive', new RpcTimeoutError('session-1:listCodexModels', 120_000)]
     ] as const)('maps typed delivery failures from the session codex-models RPC to %s (%s)', async (status, code, error) => {
         const { app } = createApp(createSession(), {
             listCodexModelsForSession: async () => { throw error }
@@ -2263,7 +2263,7 @@ describe('session RPC delivery error typing', () => {
 
     it.each([
         [503, 'rpc_target_missing', new RpcTargetMissingError('session-1:listPiModels', 'handler-not-registered')],
-        [504, 'engine_unresponsive', new RpcTimeoutError('session-1:listPiModels', 120_000)]
+        [503, 'engine_unresponsive', new RpcTimeoutError('session-1:listPiModels', 120_000)]
     ] as const)('maps typed delivery failures from the session pi-models RPC to %s (%s)', async (status, code, error) => {
         const { app } = createApp(createSession({ metadata: {
             path: '/tmp/project', host: 'localhost', flavor: 'pi'
