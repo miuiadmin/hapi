@@ -268,6 +268,16 @@ export function SessionListViewMenu(props: {
                                 onSelect={() => props.onChange({ showPresenceBadge: !props.view.showPresenceBadge })}
                             />
                         </div>
+                        <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
+                        <div role="group" aria-label={t('sessions.view.eagerLoadingGroup')}>
+                            <SectionLabel>{t('sessions.view.eagerLoadingGroup')}</SectionLabel>
+                            <MenuRow
+                                role="menuitemcheckbox"
+                                label={t('sessions.view.eagerLoading')}
+                                checked={props.view.eagerLoading}
+                                onSelect={() => props.onChange({ eagerLoading: !props.view.eagerLoading })}
+                            />
+                        </div>
                         {customized ? (
                             <>
                                 <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />

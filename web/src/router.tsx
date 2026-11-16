@@ -21,6 +21,8 @@ import {
     shouldShowSessionSidebar,
 } from '@/lib/sessionNavigation'
 import { App } from '@/App'
+import { useSessionListView } from '@/hooks/useSessionListView'
+import { useEagerSessionPrefetch } from '@/hooks/queries/useEagerSessionPrefetch'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
 import { SidebarShowButton } from '@/components/SidebarToggle'
@@ -151,7 +153,10 @@ function SessionsPage() {
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
     const { addToast } = useToast()
-    const { sessions, isLoading, error, refetch } = useSessions(api)
+    const { view: sessionListView } = useSessionListView()
+    const eagerLoading = sessionListView.eagerLoading
+    const { sessions, isLoading, error, refetch } = useSessions(api, { eagerInterval: eagerLoading })
+    useEagerSessionPrefetch(api, sessions, eagerLoading)
     const [initializedHub, setInitializedHub] = useState<string | null>(null)
     const { machines } = useMachines(api, true)
     const handleRefresh = useCallback(() => {

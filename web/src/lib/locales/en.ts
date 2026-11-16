@@ -108,6 +108,8 @@ export default {
   'sessions.view.unreadOnly': 'Unread only',
   'sessions.view.density': 'List appearance',
   'sessions.view.compactRows': 'Compact rows (small icons, no project line)',
+  'sessions.view.eagerLoadingGroup': 'Data freshness',
+  'sessions.view.eagerLoading': 'Eager loading (auto-refresh list + prefetch sessions)',
   'sessions.view.showPresenceBadge': 'Presence badge on avatar',
   'sessions.view.reset': 'Reset to default',
   'sessions.view.fueTitle': 'New: sort & filter',

@@ -108,6 +108,8 @@ export default {
   'sessions.view.unreadOnly': '仅未读',
   'sessions.view.density': '列表外观',
   'sessions.view.compactRows': '紧凑行(小图标,隐藏项目行)',
+  'sessions.view.eagerLoadingGroup': '数据刷新',
+  'sessions.view.eagerLoading': '积极加载(列表页自动刷新+预取会话)',
   'sessions.view.showPresenceBadge': '头像角标在线状态',
   'sessions.view.reset': '恢复默认',
   'sessions.view.fueTitle': '新功能：排序与筛选',
