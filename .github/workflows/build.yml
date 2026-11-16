@@ -28,7 +28,11 @@
 #  - hapi-web-*.apk — the android-web/ WebView shell (fork-only, never PR'd
 #    upstream); its job builds web/dist itself for the bundled static layer.
 #
-# versionCode is yyyymmddNN (date * 100 + run_number%100): monotonic across days
+# versionCode is the Unix epoch second of the build (date +%s): strictly
+# monotonic and Int32-safe past 2038. Previously yyyymmddNN
+# (date*100 + run_number%100), which regresses whenever run_number crosses a
+# 100 boundary inside one UTC day (seen 2026-11-10: 2026111098 → 2026111000,
+# Android then rejects the "downgrade"); no code parses the old format.
 # and across same-day reruns (run_attempt is 1 on every fresh run, so two tagged
 # builds on one UTC day collided — v18/v19 both got 2026102401). run_number is
 # repo-monotonic; %100 wraps only beyond 100 runs/day.
@@ -149,7 +153,7 @@ jobs:
         id: aver
         run: |
           v="$(jq -r .version ../cli/package.json)"
-          vc="$(date +%Y%m%d)$(printf '%02d' $(( ${{ github.run_number }} % 100 )))"
+          vc="$(date +%s)"
           echo "v=$v" >> "$GITHUB_OUTPUT"
           echo "vc=$vc" >> "$GITHUB_OUTPUT"
           echo "versionCode=$vc versionName=$v"
@@ -238,7 +242,7 @@ jobs:
         working-directory: android-web
         run: |
           v="$(jq -r .version ../cli/package.json)"
-          vc="$(date +%Y%m%d)$(printf '%02d' $(( ${{ github.run_number }} % 100 )))"
+          vc="$(date +%s)"
           echo "v=$v" >> "$GITHUB_OUTPUT"
           echo "vc=$vc" >> "$GITHUB_OUTPUT"
           echo "versionCode=$vc versionName=$v"
