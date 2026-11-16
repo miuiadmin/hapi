@@ -206,6 +206,43 @@ describe('AutomaticTitleSuggestionService', () => {
         expect(cache.getSession(session.id)?.metadata?.name).toBe('Manual title')
         expect(cache.getSession(session.id)?.metadata?.summary).toBeUndefined()
     })
+
+    it('retries the completion write when memory completed=true shadows a persisted uncompleted turn', async () => {
+        const store = makeStore()
+        const cache = new SessionCache(store, createPublisher())
+        const session = cache.getOrCreateSession(
+            'automatic-title-memory-shadow',
+            { path: '/workspace/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        // Same persisted turn onTurnStarted would write for an observed turn.
+        expect(cache.updateAutomaticTitleTurn(session.id, { first: true, completed: false })).toBe(true)
+        // Provider left unconfigured so the test isolates the turn write.
+        const automatic = new AutomaticTitleSuggestionService(
+            cache,
+            new TitleSuggestionService(store),
+            () => 1234
+        )
+
+        // Simulate a failed completion write: the in-memory copy flips to
+        // completed=true while the persisted row stays completed=false.
+        const originalWrite = cache.updateAutomaticTitleTurn.bind(cache)
+        let failTurnWrites = true
+        cache.updateAutomaticTitleTurn = (sessionId: string, turn: { first: boolean; completed: boolean }) =>
+            failTurnWrites ? false : originalWrite(sessionId, turn)
+
+        await automatic.onTurnCompleted(session.id)
+        expect(cache.getSession(session.id)?.metadata?.titleSuggestionTurn)
+            .toEqual({ first: true, completed: false })
+
+        // The persisted uncompleted turn must win over the stale memory
+        // entry, so the next call retries and lands the write.
+        failTurnWrites = false
+        await automatic.onTurnCompleted(session.id)
+        expect(cache.getSession(session.id)?.metadata?.titleSuggestionTurn)
+            .toEqual({ first: true, completed: true })
+    })
 })
 
 describe('per-turn title fallback for flavors without native rename tools', () => {
@@ -297,5 +334,44 @@ describe('per-turn title fallback for flavors without native rename tools', () =
         await pending
 
         expect(cache.getSession(session.id)?.metadata?.name).toBe('Manual title')
+    })
+
+    it('skips the per-turn rewrite without throwing when the manual rate budget is spent', async () => {
+        const store = makeStore()
+        const cache = new SessionCache(store, createPublisher())
+        const session = cache.getOrCreateSession(
+            'automatic-title-rate-exempt',
+            { path: '/workspace/project', host: 'localhost', flavor: 'dsh' },
+            null,
+            'default'
+        )
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'Explain the deployment process' }
+        })
+        store.messages.addMessage(session.id, {
+            role: 'assistant',
+            content: { type: 'text', text: 'The deployment process has three steps.' }
+        })
+        let calls = 0
+        const titleService = new TitleSuggestionService(store, {
+            provider: { suggest: async () => { calls += 1; return 'Manual title' } },
+            now: () => 1234,
+            rateLimit: 1,
+            rateWindowMs: 10 * 60 * 1000
+        })
+        const automatic = new AutomaticTitleSuggestionService(cache, titleService, () => 1234, {
+            isPerTurnTitleEnabled: async () => true
+        })
+
+        // A manual Generate action spends the whole per-session budget.
+        await expect(titleService.suggestTitle(session.id)).resolves.toBe('Manual title')
+
+        // The automatic per-turn path no-ops on the spent budget instead of
+        // throwing, and leaves the session name untouched.
+        await automatic.onTurnCompleted(session.id)
+
+        expect(calls).toBe(1)
+        expect(cache.getSession(session.id)?.metadata?.name).toBeUndefined()
     })
 })

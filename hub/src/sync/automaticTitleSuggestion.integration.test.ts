@@ -372,3 +372,145 @@ describe('automatic first-turn title generation', () => {
         }
     })
 })
+
+// Hermes-style wedge: in a busy long-lived session every turn-completion
+// signal (ready event, thinking=false transition, session-ended) can be
+// suppressed, leaving the persisted titleSuggestionTurn.completed=false with
+// no repair path. An idle keepalive must reconcile the wedged turn.
+describe('idle reconciliation of wedged title turns', () => {
+    const createEngine = (store: Store) => new SyncEngine(
+        store,
+        {
+            of: () => ({
+                to: () => ({ emit() {} }),
+                adapter: { rooms: new Map<string, Set<string>>() }
+            })
+        } as never,
+        new RpcRegistry(),
+        { broadcast() {} } as never
+    )
+
+    it('settles a wedged turn from an idle keepalive after every completion signal was lost', async () => {
+        let calls = 0
+        globalThis.fetch = (async () => {
+            calls += 1
+            return Response.json({ choices: [{ message: { content: 'Reconciled turn title' } }] })
+        }) as unknown as typeof fetch
+        const store = new Store(':memory:')
+        let engine = createEngine(store)
+        try {
+            const session = engine.getOrCreateSession(
+                'wedged-title-turn',
+                { path: '/project', host: 'test' },
+                null,
+                'tenant'
+            )
+            const now = Date.now()
+            store.messages.addMessage(session.id, {
+                role: 'user',
+                content: { type: 'text', text: 'Explain deployment' }
+            })
+            // The turn opens, but the matching thinking=false transition,
+            // ready event, and session end never arrive.
+            engine.handleSessionAlive({ sid: session.id, time: now, thinking: true })
+            store.messages.addMessage(session.id, {
+                role: 'assistant',
+                content: { type: 'text', text: 'Deployment explained.' }
+            })
+            expect(engine.getSession(session.id)?.metadata?.titleSuggestionTurn)
+                .toEqual({ first: true, completed: false })
+
+            // Hub restart: in-memory turn tracking and the cached thinking
+            // flag are gone, so the wasThinking fast path can never fire
+            // again — before idle reconciliation this session was wedged
+            // forever with completed=false.
+            engine.stop()
+            engine = createEngine(store)
+            engine.handleSessionAlive({ sid: session.id, time: now + 1_000, thinking: false })
+
+            for (let attempt = 0; attempt < 20
+                && engine.getSession(session.id)?.metadata?.summary?.text === undefined; attempt += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 0))
+            }
+
+            expect(calls).toBe(1)
+            expect(engine.getSession(session.id)?.metadata?.titleSuggestionTurn)
+                .toEqual({ first: true, completed: true })
+            expect(engine.getSession(session.id)?.metadata?.summary?.text).toBe('Reconciled turn title')
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('does not reconcile while the queued-prompt thinking grace still holds the spinner', async () => {
+        let calls = 0
+        globalThis.fetch = (async () => {
+            calls += 1
+            return Response.json({ choices: [{ message: { content: 'Late title' } }] })
+        }) as unknown as typeof fetch
+        const store = new Store(':memory:')
+        let engine = createEngine(store)
+        try {
+            const session = engine.getOrCreateSession(
+                'wedged-title-grace',
+                { path: '/project', host: 'test' },
+                null,
+                'tenant'
+            )
+            const now = Date.now()
+            store.messages.addMessage(session.id, {
+                role: 'user',
+                content: { type: 'text', text: 'Explain deployment' }
+            })
+            // The turn opens; its completion signals never arrive.
+            engine.handleSessionAlive({ sid: session.id, time: now, thinking: true })
+            store.messages.addMessage(session.id, {
+                role: 'assistant',
+                content: { type: 'text', text: 'Deployment explained.' }
+            })
+            expect(engine.getSession(session.id)?.metadata?.titleSuggestionTurn?.completed).toBe(false)
+
+            // Hub restart drops the cached thinking flag and the in-memory
+            // turn tracking. A thinking=true keepalive re-marks the session
+            // active, and a queued prompt then arms the 15s queued-thinking
+            // grace.
+            engine.stop()
+            engine = createEngine(store)
+            engine.handleSessionAlive({ sid: session.id, time: now + 1_000, thinking: true })
+            await engine.sendMessage(session.id, { text: 'Follow-up prompt' })
+            expect(engine.getSession(session.id)?.thinking).toBe(true)
+
+            // Keepalives reporting thinking=false must not settle the turn
+            // while the grace window is still open.
+            engine.handleSessionAlive({ sid: session.id, time: now + 2_000, thinking: false })
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 0))
+            }
+            expect(engine.getSession(session.id)?.thinking).toBe(true)
+            expect(engine.getSession(session.id)?.metadata?.titleSuggestionTurn?.completed).toBe(false)
+            expect(calls).toBe(0)
+
+            // Once the grace expires, the idle keepalives settle the turn and
+            // the fallback runs.
+            const originalNow = Date.now
+            Date.now = () => now + 20_000
+            try {
+                engine.handleSessionAlive({ sid: session.id, time: now + 20_000, thinking: false })
+            } finally {
+                Date.now = originalNow
+            }
+            for (let attempt = 0; attempt < 20
+                && engine.getSession(session.id)?.metadata?.summary?.text === undefined; attempt += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 0))
+            }
+
+            expect(calls).toBe(1)
+            expect(engine.getSession(session.id)?.metadata?.titleSuggestionTurn?.completed).toBe(true)
+            expect(engine.getSession(session.id)?.metadata?.summary?.text).toBe('Late title')
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+})

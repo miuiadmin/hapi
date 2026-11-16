@@ -85,8 +85,14 @@ export class AutomaticTitleSuggestionService {
     onTurnCompleted(sessionId: string): Promise<void> {
         if (this.stopped) return Promise.resolve()
         const persistedTurn = this.sessionCache.getSession(sessionId)?.metadata?.titleSuggestionTurn
-        const turn = this.observedTurns.get(sessionId)
-            ?? (persistedTurn?.completed === false ? { ...persistedTurn } : undefined)
+        // A persisted un-completed turn always wins over the in-memory entry:
+        // onTurnCompleted flips the memory copy to completed=true even when
+        // the metadata write fails, so a memory-first resolution would shadow
+        // the persisted completed=false forever and never retry the write.
+        const turn = persistedTurn?.completed === false
+            ? { ...persistedTurn }
+            : this.observedTurns.get(sessionId)
+                ?? (persistedTurn ? { ...persistedTurn } : undefined)
         if (turn) this.observedTurns.set(sessionId, turn)
         if (turn && !turn.completed) {
             turn.completed = true
@@ -109,8 +115,14 @@ export class AutomaticTitleSuggestionService {
                     // microtask tick and break in-flight ordering guarantees.
                     if (this.options.isPerTurnTitleEnabled !== undefined) {
                         if (await this.shouldRewriteTitlePerTurn(sessionId)) {
-                            const title = await this.titleSuggestionService.suggestTitle(sessionId)
-                            if (!this.stopped) {
+                            // Exempt from the manual rate limiter: a spent
+                            // manual budget resolves to null here (skip the
+                            // rewrite) instead of throwing.
+                            const title = await this.titleSuggestionService.suggestTitle(
+                                sessionId,
+                                { exemptFromRateLimit: true }
+                            )
+                            if (title !== null && !this.stopped) {
                                 await this.sessionCache.updatePerTurnSessionTitle(sessionId, title)
                             }
                             return

@@ -68,7 +68,7 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |
 | `POST /api/sessions/:id/switch` | `{}` | `{ok: true}` — hands terminal-controlled session over to remote control |
 | `POST /api/sessions/:id/clear` | `{}` | `{sessionId}` — shared sessions only; resume inactive sessions through the Runner first, then create a new root; navigate only the initiating view |
-| `POST /api/sessions/:id/title-suggestion` | — | `{title}`; errors pass through 422/429/500/503 |
+| `POST /api/sessions/:id/title-suggestion` | — | `{title}`; errors pass through 422/429/503 |
 | `GET /api/sessions/:id/slash-commands` | — | `SlashCommandsResponse` `{success, commands?, error?}` |
 | `GET /api/sessions/:id/skills` | — | `SkillsResponse`-shaped `{success, ...}` |
 
@@ -143,8 +143,8 @@ tool-call id; `null` withdraws actions without removing content. The CLI
 validates the latest completed Plan-mode turn, switches to Default, and queues
 `Implement the plan.` with a stable submission id. Repeating an accepted
 action does not enqueue it again. This is separate from tool permissions.
-Errors include HTTP 409 (`stale_plan` / `unavailable`), 500 (`failed`) and 503
-(`indeterminate`); error bodies have `{ok: false, code, error}`. Do not
+Errors include HTTP 409 (`stale_plan` / `unavailable`), 503
+(`indeterminate` / `failed`); error bodies have `{ok: false, code, error}`. Do not
 automatically resend after an unconfirmed result. "Continue planning" is a
 local composer-focus action and does not submit a native approval or message.
 

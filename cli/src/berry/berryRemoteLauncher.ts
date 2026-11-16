@@ -11,7 +11,9 @@ import {
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay'
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler'
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
+import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { createBerryBackend, resolveBerryDataDir } from './utils/berryBackend'
+import { seedBerryHapiMcpBridge } from './utils/berryMcpSeed'
 import { buildBerryPromptContent } from './utils/berryPromptContent'
 import type { BerrySession } from './session'
 
@@ -28,6 +30,9 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
     /** Isolated berry dataDir (sessions.db + sticky tool-policy.json) keyed
      * by the HAPI row id — stable across respawns and runner restarts. */
     private readonly dataDir: string
+    /** HAPI MCP bridge HTTP server; seeded into the berry plugin face once
+     * per launch (the URL is stable across backend respawns). */
+    private happyServer: { stop: () => void } | null = null
 
     constructor(
         private readonly session: BerrySession,
@@ -97,6 +102,30 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async runMainLoop(): Promise<void> {
+        // Berry's ACP face rejects non-empty session/new|load mcpServers
+        // (-32602, deliberate v1 boundary): MCP clients load through the
+        // berry plugin face (enabled.yaml core:mcp row, in the isolated
+        // per-row dataDir). Berry ships no native ask-user tool at all —
+        // the bridge is the only way its model can ask the user. The seed
+        // MUST land before spawnBackend(): berry reads enabled.yaml only at
+        // process start. The escalate closure reads the CURRENT handler
+        // (respawn swaps it; mid-respawn it is briefly null → canceled).
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(this.session.client, {
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: this.session.path, flavor: 'berry' },
+            askUserTool: {
+                escalate: async (input) => {
+                    const handler = this.permissionHandler
+                    if (!handler) {
+                        return { status: 'canceled' as const, reason: 'Berry session is not established' }
+                    }
+                    return await handler.askUser(input)
+                }
+            }
+        })
+        this.happyServer = happyServer
+        seedBerryHapiMcpBridge(this.dataDir, mcpServers.hapi)
+
         // `let`: a mid-loop respawn replaces both the backend instance and the
         // ACP session id it talks to.
         let backend = this.spawnBackend()
@@ -234,6 +263,10 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = null
         await this.backend?.disconnect()
         this.backend = null
+        if (this.happyServer) {
+            this.happyServer.stop()
+            this.happyServer = null
+        }
     }
 
     /**
@@ -278,8 +311,9 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         }
         return backend.newSession({
             cwd: this.session.path,
-            // The Berry ACP server configures its own tools; HAPI
-            // does not bridge MCP servers for it in v1.
+            // Protocol boundary (regression pin): berry's ACP face rejects
+            // non-empty mcpServers with -32602 — the hapi bridge rides the
+            // plugin face (enabled.yaml) instead, see runMainLoop.
             mcpServers: []
         })
     }

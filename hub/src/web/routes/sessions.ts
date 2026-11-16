@@ -513,7 +513,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 : result.code === 'access_denied' ? 403
                     : result.code === 'resume_unavailable' ? 409
                         : result.code === 'no_machine_online' ? 503
-                            : 500
+                            : 503
             return c.json({ error: result.message, code: result.code }, status)
         }
 
@@ -557,7 +557,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     : result.code === 'session_not_found' ? 404
                         : result.code === 'resume_unavailable' ? 409
                             : result.code === 'rpc_target_missing' ? 503
-                                : result.code === 'engine_unresponsive' ? 504
+                                : result.code === 'engine_unresponsive' ? 503
                                     : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
@@ -590,7 +590,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                         : result.code === 'resume_unavailable' ? 409
                             : result.code === 'metadata_conflict' ? 409
                                 : result.code === 'rpc_target_missing' ? 503
-                                    : result.code === 'engine_unresponsive' ? 504
+                                    : result.code === 'engine_unresponsive' ? 503
                                         : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
@@ -647,7 +647,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     success: false,
                     error: `Session did not acknowledge the upload within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({
                 success: false,
@@ -868,7 +868,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     success: false,
                     error: `Session did not acknowledge the delete within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({
                 success: false,
@@ -903,7 +903,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 return c.json({
                     error: `Session did not acknowledge the abort within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             throw error
         }
@@ -1019,12 +1019,12 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
             // archiveSession already handles a vanished engine socket benignly
             // (markSessionArchivedFromHub); the only delivery failure that
-            // escapes it is an ack-deadline blowout, which is a 504, not a 500.
+            // escapes it is an ack-deadline blowout, which is a 503, not a 500.
             if (error instanceof RpcTimeoutError) {
                 return c.json({
                     error: `Session did not acknowledge the archive within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             throw error
         }
@@ -1212,7 +1212,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             ok: false as const, code: 'indeterminate' as const,
             error: 'Plan implementation could not be confirmed. Reconnect and check the mode, queue and conversation before retrying.'
         }))
-        const status = result.ok ? 200 : result.code === 'indeterminate' ? 503 : result.code === 'failed' ? 500 : 409
+        const status = result.ok ? 200 : result.code === 'indeterminate' ? 503 : result.code === 'failed' ? 503 : 409
         return c.json(result, status)
     })
 
@@ -1234,7 +1234,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                         : result.code === 'session_not_found' ? 404
                             : result.code === 'resume_unavailable' ? 409
                                 : result.code === 'rpc_target_missing' ? 503
-                                    : result.code === 'engine_unresponsive' ? 504
+                                    : result.code === 'engine_unresponsive' ? 503
                                         : 500
                 return c.json({ error: result.message, code: result.code }, status)
             }
@@ -1269,7 +1269,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 return c.json({
                     error: `Session did not acknowledge the mode switch within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             throw error
         }
@@ -1588,7 +1588,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (error instanceof TitleSuggestionError) {
                 return c.json({ error: error.message }, error.status)
             }
-            return c.json({ error: 'Failed to generate a session title' }, 500)
+            return c.json({ error: 'Failed to generate a session title' }, 503)
         }
     })
 
@@ -2300,7 +2300,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     success: false,
                     error: error.message,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({
                 success: false,
@@ -2613,7 +2613,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     success: false,
                     error: error.message,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({
                 success: false,

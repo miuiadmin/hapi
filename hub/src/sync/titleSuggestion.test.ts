@@ -237,6 +237,40 @@ describe('TitleSuggestionService', () => {
         })
     })
 
+    it('no-ops on rate limit instead of throwing for the exempt automatic path', async () => {
+        const { store, sessionId } = makeStore()
+        store.messages.addMessage(sessionId, {
+            role: 'user',
+            content: { type: 'text', text: 'Title this' }
+        })
+        let calls = 0
+        const service = new TitleSuggestionService(store, {
+            provider: { suggest: async () => { calls += 1; return 'Title' } },
+            now: () => 100,
+            rateLimit: 1,
+            rateWindowMs: 10_000
+        })
+
+        // The manual budget is spent by a manual request…
+        await expect(service.suggestTitle(sessionId)).resolves.toBe('Title')
+        // …the manual endpoint keeps its throw…
+        await expect(service.suggestTitle(sessionId)).rejects.toMatchObject({
+            code: 'rate-limited',
+            status: 429
+        })
+        // …while the exempt automatic call no-ops without touching the provider.
+        await expect(service.suggestTitle(sessionId, { exemptFromRateLimit: true })).resolves.toBeNull()
+        expect(calls).toBe(1)
+
+        // The no-op consumed no budget, so a later manual call still throws
+        // until the window drains.
+        await expect(service.suggestTitle(sessionId)).rejects.toMatchObject({
+            code: 'rate-limited',
+            status: 429
+        })
+        expect(calls).toBe(1)
+    })
+
     it('pages past a newest window full of tool output to reach the conversation', async () => {
         const { store, sessionId } = makeStore()
         store.messages.addMessage(sessionId, {

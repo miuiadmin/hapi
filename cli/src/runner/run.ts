@@ -14,7 +14,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { isBunCompiled } from '@/projectPath';
 import { describeChildFatalContext } from './childFatalDiagnostics';
-import { ensureWatchdogInstalled, touchRunnerHeartbeat } from './watchdog';
+import { clearRunnerHeartbeat, ensureWatchdogInstalled, touchRunnerHeartbeat } from './watchdog';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
@@ -1964,6 +1964,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         maxDelay: 30000,
         shouldRetry: isRetryableConnectionError,
         onRetry: (error, attempt, nextDelayMs) => {
+          // The in-process heartbeat interval is only armed after
+          // registration succeeds, so this retry loop is the last place
+          // liveness is asserted for a long stretch (up to ~30min of
+          // backoff). Refresh the watchdog heartbeat on every retry or a
+          // healthy-but-retrying supervised runner looks frozen and gets
+          // kill -9'd by the out-of-process watchdog.
+          touchRunnerHeartbeat();
           const errorMsg = error instanceof Error ? error.message : String(error)
           logger.debug(`[RUNNER RUN] Failed to register machine (attempt ${attempt}), retrying in ${nextDelayMs}ms: ${errorMsg}`)
         }
@@ -2330,6 +2337,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       apiMachine.shutdown();
       await stopControlServer();
       await cleanupRunnerState();
+      // Remove the watchdog heartbeat so a cleanly stopped runner cannot
+      // leave a stale supervised claim that (after pid reuse) later arms the
+      // out-of-process watchdog against an unrelated process.
+      clearRunnerHeartbeat();
       await releaseRunnerLock(runnerLockHandle);
 
       logger.debug('[RUNNER RUN] Cleanup completed, exiting process');

@@ -639,6 +639,18 @@ export class SessionCache {
         this.pendingThinkingUntilBySessionId.delete(sessionId)
     }
 
+    /**
+     * Read-only deadline (epoch ms) of the queued-message thinking grace, or
+     * null when no queued prompt currently holds the spinner. Lets callers
+     * distinguish "session is idle" from "inside the queued-prompt grace
+     * window" without mutating the grace state; note that
+     * `handleSessionAlive` itself consumes an expired deadline, so read this
+     * before forwarding the keepalive.
+     */
+    getQueuedThinkingGraceDeadline(sessionId: string): number | null {
+        return this.pendingThinkingUntilBySessionId.get(sessionId) ?? null
+    }
+
     markMessageQueued(
         sessionId: string,
         time: number = Date.now(),

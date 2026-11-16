@@ -711,7 +711,7 @@ describe('machines routes', () => {
         })
     })
 
-    it('returns 504 engine_unresponsive when the Codex models machine RPC blows the ack deadline', async () => {
+    it('returns 503 engine_unresponsive when the Codex models machine RPC blows the ack deadline', async () => {
         const machine = createMachine()
         const engine = {
             getMachine: () => machine,
@@ -730,7 +730,7 @@ describe('machines routes', () => {
 
         const response = await app.request('/api/machines/machine-1/codex-models')
 
-        expect(response.status).toBe(504)
+        expect(response.status).toBe(503)
         expect(await response.json()).toEqual({
             success: false,
             error: 'RPC timed out after 120s without an ack: machine-1:listCodexModels',
@@ -768,7 +768,7 @@ describe('machines routes', () => {
         })
     })
 
-    it('returns 504 engine_unresponsive when the paths/exists machine RPC blows the ack deadline', async () => {
+    it('returns 503 engine_unresponsive when the paths/exists machine RPC blows the ack deadline', async () => {
         const machine = createMachine()
         const engine = {
             getMachine: () => machine,
@@ -791,7 +791,7 @@ describe('machines routes', () => {
             body: JSON.stringify({ paths: ['/workspace'] })
         })
 
-        expect(response.status).toBe(504)
+        expect(response.status).toBe(503)
         expect(await response.json()).toEqual({
             error: 'RPC timed out after 30s without an ack: machine-1:path-exists',
             code: 'engine_unresponsive'

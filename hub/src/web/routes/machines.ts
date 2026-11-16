@@ -451,7 +451,7 @@ export function createMachinesRoutes(
                 return c.json({
                     error: error.message,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({ error: error instanceof Error ? error.message : 'Failed to check paths' }, 500)
         }
@@ -546,7 +546,7 @@ export function createMachinesRoutes(
                     success: false,
                     error: error.message,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({
                 success: false,
@@ -613,7 +613,7 @@ export function createMachinesRoutes(
                     success: false,
                     error: error.message,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({
                 success: false,
@@ -678,7 +678,7 @@ export function createMachinesRoutes(
                     success: false,
                     error: error.message,
                     code: 'engine_unresponsive'
-                }, 504)
+                }, 503)
             }
             return c.json({
                 success: false,
@@ -801,7 +801,7 @@ export function createMachinesRoutes(
         if (result.type === 'error') {
             const status = result.code === 'machine_not_found' ? 404
                 : result.code === 'machine_offline' ? 503
-                    : 500
+                    : 503
             return c.json({ error: result.message, code: result.code }, status)
         }
         return c.json({ message: result.message })
