@@ -920,5 +920,123 @@ describe('filterSessionsForListStatus', () => {
         const archived = base('archived')
         const ids = filterSessionsForListStatus([job, archived], 'archived', null).map(s => s.id)
         expect(ids).toEqual(['archived'])
+    it('sinks archived sessions to the bottom in activity sort', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('idle-b', { updatedAt: 1_000 }),
+            dirSession('archived', { updatedAt: 9_999, metadata: { path: '/proj', lifecycleState: 'archived' } }),
+            dirSession('idle-a', { updatedAt: 5_000 }),
+            dirSession('active', { updatedAt: 2_000, active: true })
+        ])
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+            'active', 'idle-a', 'idle-b', 'archived'
+        ])
+    })
+
+    it('sinks archived sessions to the bottom even in fixed order', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('old-created-archived', {
+                createdAt: 1_000,
+                metadata: { path: '/proj', lifecycleState: 'archived' }
+            }),
+            dirSession('new-created', { createdAt: 3_000 }),
+            dirSession('mid-created', { createdAt: 2_000 })
+        ], true)
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+            'new-created', 'mid-created', 'old-created-archived'
+        ])
+    })
+
+    it('keeps a pinned archived session floating (pin wins over archive)', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('normal', { updatedAt: 5_000 }),
+            dirSession('pinned-archived', {
+                pinned: true,
+                metadata: { path: '/proj', lifecycleState: 'archived' }
+            })
+        ])
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+            'pinned-archived', 'normal'
+        ])
+    })
+
+    it('orders groups by newest creation, not activity, when fixed', () => {
+        const groups = groupSessionsByDirectory([
+            makeSession({ id: 'a-old-dir', createdAt: 1_000, updatedAt: 9_999, active: true, metadata: { path: '/dir-a' } }),
+            makeSession({ id: 'b-new-dir', createdAt: 2_000, updatedAt: 1, metadata: { path: '/dir-b' } })
+        ], true)
+
+        // dir-a is far more recently active, but dir-b holds the newest
+        // created session: dir-b must come first.
+        expect(groups.map((group) => group.directory)).toEqual(['/dir-b', '/dir-a'])
+    })
+
+    it('does not move a group when only its updatedAt advances (fixed)', () => {
+        const before = groupSessionsByDirectory([
+            makeSession({ id: 'a', createdAt: 1_000, updatedAt: 1_000, metadata: { path: '/dir-a' } }),
+            makeSession({ id: 'b', createdAt: 2_000, updatedAt: 2_000, metadata: { path: '/dir-b' } })
+        ], true)
+        const after = groupSessionsByDirectory([
+            makeSession({ id: 'a', createdAt: 1_000, updatedAt: 50_000, active: true, metadata: { path: '/dir-a' } }),
+            makeSession({ id: 'b', createdAt: 2_000, updatedAt: 2_000, metadata: { path: '/dir-b' } })
+        ], true)
+
+        expect(before.map((group) => group.directory)).toEqual(['/dir-b', '/dir-a'])
+        expect(after.map((group) => group.directory)).toEqual(['/dir-b', '/dir-a'])
+    })
+
+    it('moves a group up only when a newer session is created inside it (fixed)', () => {
+        const groups = groupSessionsByDirectory([
+            makeSession({ id: 'a', createdAt: 1_000, metadata: { path: '/dir-a' } }),
+            makeSession({ id: 'b', createdAt: 2_000, metadata: { path: '/dir-b' } }),
+            makeSession({ id: 'a-new', createdAt: 3_000, metadata: { path: '/dir-a' } })
+        ], true)
+
+        expect(groups.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
+    })
+
+    it('orders groups with equal latest-creation instants deterministically (fixed)', () => {
+        // Both directories' newest sessions were created in the same instant;
+        // without a key tie-break their order follows the incoming array
+        // order (which the hub may derive from activity) and shuffles on
+        // every refetch.
+        const dirA = makeSession({ id: 'a', createdAt: 2_000, updatedAt: 50_000, active: true, metadata: { path: '/dir-a' } })
+        const dirB = makeSession({ id: 'b', createdAt: 2_000, updatedAt: 1, metadata: { path: '/dir-b' } })
+
+        const oneWay = groupSessionsByDirectory([dirA, dirB], true)
+        const otherWay = groupSessionsByDirectory([dirB, dirA], true)
+
+        expect(oneWay.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
+        expect(otherWay.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
+    })
+
+    it('keeps pinned-session groups first when fixed', () => {
+        const groups = groupSessionsByDirectory([
+            makeSession({ id: 'plain', createdAt: 9_000, metadata: { path: '/dir-plain' } }),
+            makeSession({ id: 'pinned', createdAt: 1_000, pinned: true, metadata: { path: '/dir-pinned' } })
+        ], true)
+
+        expect(groups.map((group) => group.directory)).toEqual(['/dir-pinned', '/dir-plain'])
+    })
+
+    it('falls back to updatedAt when createdAt is missing (older hub)', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('no-created-stale', { createdAt: undefined, updatedAt: 1_000 }),
+            dirSession('no-created-busy', { createdAt: undefined, updatedAt: 8_000 })
+        ], true)
+
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+            'no-created-busy',
+            'no-created-stale'
+        ])
+    })
+
+    it('preserves the legacy activity ordering when fixed is off (regression anchor)', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('stale', { createdAt: 3_000, updatedAt: 1_000 }),
+            dirSession('busy', { createdAt: 1_000, updatedAt: 9_000, active: true })
+        ])
+
+        // Active + most recently updated wins regardless of creation order.
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual(['busy', 'stale'])
     })
 })
