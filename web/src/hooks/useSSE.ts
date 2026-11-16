@@ -109,6 +109,13 @@ function sortSessionSummaries(left: SessionSummary, right: SessionSummary, fixed
     if (Boolean(left.pinned) !== Boolean(right.pinned)) {
         return left.pinned ? -1 : 1
     }
+    // Archived sessions sink in both sort modes — archiving is an explicit
+    // "done with this" signal, not an activity change the sort can infer.
+    const archivedLeft = left.metadata?.lifecycleState === 'archived'
+    const archivedRight = right.metadata?.lifecycleState === 'archived'
+    if (archivedLeft !== archivedRight) {
+        return archivedLeft ? 1 : -1
+    }
     if (fixedOrder) {
         // "固定会话顺序": updates and status changes must never move a
         // session — order by creation time only (newest first). Manual pins

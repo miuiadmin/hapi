@@ -461,6 +461,13 @@ export function groupSessionsByDirectory(sessions: SessionSummary[], fixedOrder 
         .map(([key, group]) => {
             const sortedSessions = [...group.sessions].sort((a, b) => {
                 if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
+                // Archived sessions sink to the bottom of the group in BOTH
+                // sort modes — archiving is an explicit "I'm done with this"
+                // signal, not an activity change (the session may already be
+                // idle, so the active/inactive rank never moves it).
+                const archivedA = a.metadata?.lifecycleState === 'archived'
+                const archivedB = b.metadata?.lifecycleState === 'archived'
+                if (archivedA !== archivedB) return archivedA ? 1 : -1
                 if (fixedOrder) {
                     return compareSessionsByOrderKeyDesc(a, b)
                 }

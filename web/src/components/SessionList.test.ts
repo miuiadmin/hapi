@@ -767,6 +767,45 @@ describe('groupSessionsByDirectory (固定会话顺序 fixed session order)', ()
         ])
     })
 
+    it('sinks archived sessions to the bottom in activity sort', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('idle-b', { updatedAt: 1_000 }),
+            dirSession('archived', { updatedAt: 9_999, metadata: { path: '/proj', lifecycleState: 'archived' } }),
+            dirSession('idle-a', { updatedAt: 5_000 }),
+            dirSession('active', { updatedAt: 2_000, active: true })
+        ])
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+            'active', 'idle-a', 'idle-b', 'archived'
+        ])
+    })
+
+    it('sinks archived sessions to the bottom even in fixed order', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('old-created-archived', {
+                createdAt: 1_000,
+                metadata: { path: '/proj', lifecycleState: 'archived' }
+            }),
+            dirSession('new-created', { createdAt: 3_000 }),
+            dirSession('mid-created', { createdAt: 2_000 })
+        ], true)
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+            'new-created', 'mid-created', 'old-created-archived'
+        ])
+    })
+
+    it('keeps a pinned archived session floating (pin wins over archive)', () => {
+        const groups = groupSessionsByDirectory([
+            dirSession('normal', { updatedAt: 5_000 }),
+            dirSession('pinned-archived', {
+                pinned: true,
+                metadata: { path: '/proj', lifecycleState: 'archived' }
+            })
+        ])
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+            'pinned-archived', 'normal'
+        ])
+    })
+
     it('orders groups by newest creation, not activity, when fixed', () => {
         const groups = groupSessionsByDirectory([
             makeSession({ id: 'a-old-dir', createdAt: 1_000, updatedAt: 9_999, active: true, metadata: { path: '/dir-a' } }),
