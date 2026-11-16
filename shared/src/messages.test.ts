@@ -877,6 +877,56 @@ describe('text stream identity', () => {
     })
 })
 
+describe('claude settled-line stream markers (output flavor)', () => {
+    // A settled Claude assistant transcript line: content.type 'output' with
+    // the SDK assistant message as data. The remote launcher stamps
+    // streamId/reasoningStreamId on it so the line supersedes its own live
+    // snapshots — the hub sweep key and the web collapse key both read them
+    // through these readers.
+    function claudeAssistant(overrides: Record<string, unknown> = {}) {
+        return {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'final' }] },
+                    ...overrides
+                }
+            }
+        }
+    }
+
+    test('reads both markers off a settled assistant line', () => {
+        const settled = claudeAssistant({ streamId: 'claude-msg_1-text', reasoningStreamId: 'claude-msg_1-reasoning' })
+        expect(getTextStreamId(settled)).toBe('claude-msg_1-text')
+        expect(getReasoningStreamId(settled)).toBe('claude-msg_1-reasoning')
+    })
+
+    test('a settled line is never a live snapshot, whatever it carries', () => {
+        const settled = claudeAssistant({ streamId: 'claude-msg_1-text', live: true })
+        expect(getTextLiveStreamId(settled)).toBeNull()
+        expect(getLiveReasoningStreamId(settled)).toBeNull()
+    })
+
+    test('marker-less settled lines read as null (pre-streaming rows keep working)', () => {
+        const plain = claudeAssistant()
+        expect(getTextStreamId(plain)).toBeNull()
+        expect(getReasoningStreamId(plain)).toBeNull()
+    })
+
+    test.each([
+        ['a non-assistant data type', claudeAssistant({ type: 'user' })],
+        ['a user-role envelope', { role: 'user', content: { type: 'output', data: { type: 'assistant', streamId: 's' } } }],
+        ['a non-object data', { role: 'agent', content: { type: 'output', data: 'assistant' } }],
+        ['a blank marker', claudeAssistant({ streamId: '   ' })],
+        ['a non-string marker', claudeAssistant({ streamId: 9 })]
+    ])('returns null for %s', (_label, value) => {
+        expect(getTextStreamId(value)).toBeNull()
+        expect(getReasoningStreamId(value)).toBeNull()
+    })
+})
+
 describe('tool-call identity', () => {
     function toolCallContent(overrides: Record<string, unknown> = {}, type = 'tool-call') {
         return {

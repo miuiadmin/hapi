@@ -396,6 +396,7 @@ export function query(config: {
             settingsPath,
             strictMcpConfig,
             replayUserMessages,
+            includePartialMessages,
             canCallTool,
             promptFailureCleanupTimeoutMs = DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS
         } = {}
@@ -408,6 +409,9 @@ export function query(config: {
 
     // Build command arguments
     const args = ['--output-format', 'stream-json', '--verbose']
+    if (includePartialMessages) {
+        args.push('--include-partial-messages')
+    }
     let cleanupMcpConfig: (() => void) | null = null
 
     if (customSystemPrompt) args.push('--system-prompt', stripNewlinesForWindowsShellArg(customSystemPrompt))

@@ -19,6 +19,11 @@ function makeStore(): Store {
     return new Store(':memory:')
 }
 
+/** Let deferred live-snapshot sweep timers (setTimeout 0) run to completion. */
+function flushDeferredSweeps(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 5))
+}
+
 function makeSession(store: Store, tag: string) {
     return store.sessions.getOrCreateSession(tag, { path: `/tmp/${tag}` }, null, 'default')
 }
@@ -853,17 +858,21 @@ describe('text snapshot sweep', () => {
             .map((content) => content.content.data.message as string)
     }
 
-    it('collapses a live text stream into its newest row via the combined store call', () => {
+    it('collapses a live text stream into its newest row via the combined store call', async () => {
         const store = makeStore()
         const session = makeSession(store, 'text-snapshot-collapse')
 
-        // The handler walks a stream exactly like this: every stream message
-        // is stored and sweeps its own predecessors in one transaction.
+        // The handler walks a stream exactly like this: every live stream
+        // message stores and defers its sweep; the settled line sweeps all of
+        // them synchronously in its own transaction.
         for (const text of ['an', 'answ', 'answer i', 'answer in progress']) {
             store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-1', text, true))
         }
         store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-1', 'answer in progress, done', false))
 
+        expect(textBodies(store, session.id)).toEqual(['answer in progress, done'])
+        // Late deferred timers must not touch the settled survivor.
+        await flushDeferredSweeps()
         expect(textBodies(store, session.id)).toEqual(['answer in progress, done'])
     })
 
@@ -881,35 +890,69 @@ describe('text snapshot sweep', () => {
         expect(textBodies(store, session.id)).toEqual(['final'])
     })
 
-    it('sweeps only rows of the same stream id and session', () => {
+    it('defers a live snapshot\'s own sweep off the hot path but still runs it', async () => {
         const store = makeStore()
         const session = makeSession(store, 'text-snapshot-scope')
         const other = makeSession(store, 'text-snapshot-other')
 
-        store.messages.addMessage(session.id, textMessage('stream-1', 'first', true))
-        store.messages.addMessage(session.id, textMessage('stream-2', 'second', true))
-        store.messages.addMessage(other.id, textMessage('stream-1', 'theirs', true))
+        store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-1', 'first', true))
+        const kept = store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-2', 'second', true))
+        store.messages.addMessageSweepingLiveSnapshots(other.id, textMessage('stream-1', 'theirs', true))
 
-        const kept = store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-2', 'second more', true))
+        // Inserting a live snapshot no longer sweeps inline: readers collapse
+        // rows by stream id anyway, so the burst stays briefly visible.
+        expect(kept.sweptSnapshots).toBe(0)
+        expect(textBodies(store, session.id)).toEqual(['first', 'second'])
+        expect(textBodies(store, other.id)).toEqual(['theirs'])
 
-        expect(kept.sweptSnapshots).toBe(1)
+        // The timer retires only older rows of the same stream and session,
+        // keeping the newest row of each stream.
+        store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-2', 'second more', true))
+        await flushDeferredSweeps()
         expect(textBodies(store, session.id)).toEqual(['first', 'second more'])
         expect(textBodies(store, other.id)).toEqual(['theirs'])
     })
 
-    it('never lets a stream pass through zero rows', () => {
+    it('never lets a stream pass through zero rows', async () => {
         const store = makeStore()
         const session = makeSession(store, 'text-snapshot-never-empty')
 
-        let expectedSwept = 0
+        let latest = ''
         for (const text of ['a', 'ab', 'abc']) {
             const stored = store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('stream-1', text, true))
-            // The first snapshot has no predecessor; every later one retires
-            // exactly its predecessor while keeping the stream non-empty.
-            expect(stored.sweptSnapshots).toBe(expectedSwept)
-            expectedSwept = 1
-            expect(textBodies(store, session.id)).toEqual([text])
+            // Live snapshots defer their sweep; nothing is deleted inline.
+            expect(stored.sweptSnapshots).toBe(0)
+            latest = text
         }
+        // After the deferred sweep the stream still has exactly its newest row.
+        await flushDeferredSweeps()
+        expect(textBodies(store, session.id)).toEqual([latest])
+    })
+
+    it('a settled Claude assistant line (output-flavor markers) sweeps its live snapshots', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'claude-settled-markers')
+
+        // Live snapshot as the Claude remote launcher streams it (agent path).
+        store.messages.addMessageSweepingLiveSnapshots(session.id, textMessage('claude-m1-text', 'ans', true))
+        // Settled transcript line carrying the stream marker the launcher
+        // stamps (output flavor): its synchronous sweep retires the snapshot.
+        const settled = store.messages.addMessageSweepingLiveSnapshots(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+                    streamId: 'claude-m1-text'
+                }
+            }
+        })
+
+        expect(settled.sweptSnapshots).toBe(1)
+        await flushDeferredSweeps()
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(1)
     })
 
     it('leaves plain id-less text messages alone', () => {

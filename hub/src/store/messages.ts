@@ -903,16 +903,80 @@ export type AddMessageSweepResult = {
     sweptSnapshots: number
 }
 
-/** Store a message and retire the live snapshots its streams supersede, in
- *  one transaction (INSERT first, then DELETE).
+/**
+ * Live-snapshot sweeps that are waiting for their timer. Keyed by database
+ * (tests and multi-store setups run several) then by session+kind+stream so a
+ * burst of snapshots of one stream coalesces into a single SELECT+DELETE with
+ * the newest inserted row as the keeper.
+ */
+const pendingLiveSweeps = new Map<Database, Map<string, {
+    kind: 'text' | 'reasoning'
+    streamId: string
+    sessionId: string
+    keepMessageId: string
+}>>()
+
+function scheduleDeferredLiveSweep(
+    db: Database,
+    sessionId: string,
+    kind: 'text' | 'reasoning',
+    streamId: string,
+    keepMessageId: string
+): void {
+    let forDb = pendingLiveSweeps.get(db)
+    if (!forDb) {
+        forDb = new Map()
+        pendingLiveSweeps.set(db, forDb)
+    }
+    const key = `${sessionId}\u0000${kind}\u0000${streamId}`
+    const existing = forDb.get(key)
+    if (existing) {
+        // A newer snapshot of the same stream arrived before the timer fired:
+        // it becomes the keeper; the pending sweep still retires everything
+        // older than it.
+        existing.keepMessageId = keepMessageId
+        return
+    }
+    const timer = setTimeout(() => {
+        const entry = forDb!.get(key)
+        forDb!.delete(key)
+        if (forDb!.size === 0) pendingLiveSweeps.delete(db)
+        if (!entry) return
+        try {
+            if (entry.kind === 'text') {
+                deleteLiveTextSnapshots(db, entry.sessionId, entry.streamId, entry.keepMessageId)
+            } else {
+                deleteLiveReasoningSnapshots(db, entry.sessionId, entry.streamId, entry.keepMessageId)
+            }
+        } catch (error) {
+            // The sweep is GC of rows the readers already collapse client-side;
+            // a failing database must not take the timer thread down with it.
+            console.error('[messages] deferred live-snapshot sweep failed:', error)
+        }
+    }, 0)
+    // Never hold the event loop open for garbage collection.
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+    forDb.set(key, { kind, streamId, sessionId, keepMessageId })
+}
+
+/** Store a message and retire the live snapshots its streams supersede.
  *
  *  The CLI streams reasoning and text as growing `live` snapshots under a
- *  stable id; every stored stream message makes the earlier snapshots of
- *  that same id dead weight, and the settled message that closes the stream
- *  is never live so it always survives. Doing both statements in a single
- *  transaction is strictly crash-safer than the previous two-commit sequence
- *  (insert, then sweep): a crash now rolls back both, so the stream cannot
- *  lose its newest row either. */
+ *  stable id; every stored stream message makes the earlier snapshots of that
+ *  same id dead weight, and the settled message that closes the stream is
+ *  never live so it always survives. Settled lines (and anything that is not
+ *  itself a live snapshot) sweep transactionally: INSERT first, then DELETE,
+ *  one commit, so the stream cannot lose its newest row even on a crash.
+ *
+ *  A message that IS a live snapshot defers its sweep to a timer instead. Its
+ *  sweep only ever deletes older snapshots of the same stream — nothing a
+ *  reader could still need, since clients collapse rows by stream id and the
+ *  newest row is the keeper — so nothing observable depends on it running
+ *  inline. Taking the tail scan + DELETE off the ingestion hot path keeps a
+ *  streaming agent from serializing its snapshots (and everything else in the
+ *  busy window) behind per-message transactions. A crash before the timer
+ *  fires leaves extra snapshot rows behind, which the settled line's own
+ *  synchronous sweep (or nothing, if the turn aborted) cleans up. */
 export function addMessageSweepingLiveSnapshots(
     db: Database,
     sessionId: string,
@@ -921,6 +985,18 @@ export function addMessageSweepingLiveSnapshots(
     scheduledAt?: number | null,
     createdAt?: number
 ): AddMessageSweepResult {
+    const liveReasoningStreamId = getLiveReasoningStreamId(content)
+    const liveTextStreamId = getTextLiveStreamId(content)
+    if (liveReasoningStreamId !== null || liveTextStreamId !== null) {
+        const message = addMessage(db, sessionId, content, localId, scheduledAt, createdAt)
+        if (liveReasoningStreamId !== null) {
+            scheduleDeferredLiveSweep(db, sessionId, 'reasoning', liveReasoningStreamId, message.id)
+        }
+        if (liveTextStreamId !== null) {
+            scheduleDeferredLiveSweep(db, sessionId, 'text', liveTextStreamId, message.id)
+        }
+        return { message, updated: false as const, sweptSnapshots: 0 }
+    }
     return db.transaction(() => {
         const message = addMessage(db, sessionId, content, localId, scheduledAt, createdAt)
         let sweptSnapshots = 0

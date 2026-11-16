@@ -22,6 +22,7 @@ import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
+import { useSessionTailFallback } from '@/hooks/useSessionTailFallback'
 import { useTranslation } from '@/lib/use-translation'
 import { translateInputRequestTitle } from '@/lib/input-request-toast'
 import { VoiceProvider } from '@/lib/voice-context'
@@ -424,6 +425,10 @@ function AppInner() {
         () => getAppSessionSseSubscription(selectedSessionId),
         [selectedSessionId]
     )
+    // Ingest the selected session's messages from the global stream and keep
+    // its tail converging while the session-scoped EventSource is down
+    // (reconnect backoff, hidden tab, mobile backgrounding).
+    const handleGlobalSessionEvent = useSessionTailFallback({ api, sessionId: selectedSessionId, queryClient })
     const sseEnabled = Boolean(api && token)
     const showReconnectingBanner = sseDisconnected && !isSyncing
     // Transient states wait before showing; quick reconnects never flash.
@@ -438,7 +443,7 @@ function AppInner() {
         scope: 'global',
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
-        onEvent: () => {},
+        onEvent: handleGlobalSessionEvent,
         onToast: handleToast
     })
 

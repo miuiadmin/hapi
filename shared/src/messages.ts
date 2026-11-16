@@ -89,12 +89,41 @@ export function isRedundantGoalStatusMessageText(value: unknown): boolean {
  *
  * Anything unrecognised reads as `null`, which means "keep it".
  */
+/**
+ * Stream marker on a settled Claude-flavor assistant line.
+ *
+ * The Claude remote launcher streams assistant text/reasoning as growing
+ * `codex`-shaped live snapshots under a stable stream id (same wire shape the
+ * ACP/DSH path uses), so the hub sweep and the web timeline replacement work
+ * unchanged for the snapshots themselves. The settled Claude transcript line
+ * that closes the stream is a different envelope (`output` flavor), so it
+ * carries the id of the snapshots it supersedes as a top-level marker
+ * (`streamId` for text, `reasoningStreamId` for thinking). Only the sweep and
+ * render-key readers consume the markers; anything unrecognised reads as
+ * `null`, which means "keep it".
+ */
+function readClaudeSettledStreamMarker(
+    record: RoleWrappedRecord,
+    marker: 'streamId' | 'reasoningStreamId'
+): string | null {
+    if (record.role !== 'agent') return null
+    const content = record.content
+    if (!isObject(content) || content.type !== 'output') return null
+    const data = isObject(content.data) ? content.data : null
+    if (!data || data.type !== 'assistant') return null
+    const id = data[marker]
+    if (typeof id !== 'string' || id.trim().length === 0) return null
+    return id
+}
+
 function readReasoningStreamId(value: unknown, liveOnly: boolean): string | null {
     const record = unwrapRoleWrappedRecordEnvelope(value)
     if (record?.role !== 'agent') return null
 
     const content = record.content
-    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) {
+        return liveOnly ? null : (record ? readClaudeSettledStreamMarker(record, 'reasoningStreamId') : null)
+    }
 
     const data = isObject(content.data) ? content.data : null
     if (!data || data.type !== 'reasoning') return null
@@ -139,7 +168,9 @@ function readTextStreamId(value: unknown, liveOnly: boolean): string | null {
     if (record?.role !== 'agent') return null
 
     const content = record.content
-    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) {
+        return liveOnly ? null : (record ? readClaudeSettledStreamMarker(record, 'streamId') : null)
+    }
 
     const data = isObject(content.data) ? content.data : null
     if (!data || data.type !== 'message') return null
