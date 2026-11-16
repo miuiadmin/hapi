@@ -920,6 +920,14 @@ describe('filterSessionsForListStatus', () => {
         const archived = base('archived')
         const ids = filterSessionsForListStatus([job, archived], 'archived', null).map(s => s.id)
         expect(ids).toEqual(['archived'])
+    })
+})
+
+describe('groupSessionsByDirectory archived sink', () => {
+    function dirSession(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
+        return makeSession({ id, metadata: { path: '/proj' }, ...overrides })
+    }
+
     it('sinks archived sessions to the bottom in activity sort', () => {
         const groups = groupSessionsByDirectory([
             dirSession('idle-b', { updatedAt: 1_000 }),
@@ -940,7 +948,7 @@ describe('filterSessionsForListStatus', () => {
             }),
             dirSession('new-created', { createdAt: 3_000 }),
             dirSession('mid-created', { createdAt: 2_000 })
-        ], true)
+        ], { sort: 'created', activeFirst: false })
         expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
             'new-created', 'mid-created', 'old-created-archived'
         ])
@@ -963,7 +971,7 @@ describe('filterSessionsForListStatus', () => {
         const groups = groupSessionsByDirectory([
             makeSession({ id: 'a-old-dir', createdAt: 1_000, updatedAt: 9_999, active: true, metadata: { path: '/dir-a' } }),
             makeSession({ id: 'b-new-dir', createdAt: 2_000, updatedAt: 1, metadata: { path: '/dir-b' } })
-        ], true)
+        ], { sort: 'created', activeFirst: false })
 
         // dir-a is far more recently active, but dir-b holds the newest
         // created session: dir-b must come first.
@@ -974,11 +982,11 @@ describe('filterSessionsForListStatus', () => {
         const before = groupSessionsByDirectory([
             makeSession({ id: 'a', createdAt: 1_000, updatedAt: 1_000, metadata: { path: '/dir-a' } }),
             makeSession({ id: 'b', createdAt: 2_000, updatedAt: 2_000, metadata: { path: '/dir-b' } })
-        ], true)
+        ], { sort: 'created', activeFirst: false })
         const after = groupSessionsByDirectory([
             makeSession({ id: 'a', createdAt: 1_000, updatedAt: 50_000, active: true, metadata: { path: '/dir-a' } }),
             makeSession({ id: 'b', createdAt: 2_000, updatedAt: 2_000, metadata: { path: '/dir-b' } })
-        ], true)
+        ], { sort: 'created', activeFirst: false })
 
         expect(before.map((group) => group.directory)).toEqual(['/dir-b', '/dir-a'])
         expect(after.map((group) => group.directory)).toEqual(['/dir-b', '/dir-a'])
@@ -989,7 +997,7 @@ describe('filterSessionsForListStatus', () => {
             makeSession({ id: 'a', createdAt: 1_000, metadata: { path: '/dir-a' } }),
             makeSession({ id: 'b', createdAt: 2_000, metadata: { path: '/dir-b' } }),
             makeSession({ id: 'a-new', createdAt: 3_000, metadata: { path: '/dir-a' } })
-        ], true)
+        ], { sort: 'created', activeFirst: false })
 
         expect(groups.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
     })
@@ -1002,8 +1010,8 @@ describe('filterSessionsForListStatus', () => {
         const dirA = makeSession({ id: 'a', createdAt: 2_000, updatedAt: 50_000, active: true, metadata: { path: '/dir-a' } })
         const dirB = makeSession({ id: 'b', createdAt: 2_000, updatedAt: 1, metadata: { path: '/dir-b' } })
 
-        const oneWay = groupSessionsByDirectory([dirA, dirB], true)
-        const otherWay = groupSessionsByDirectory([dirB, dirA], true)
+        const oneWay = groupSessionsByDirectory([dirA, dirB], { sort: 'created', activeFirst: false })
+        const otherWay = groupSessionsByDirectory([dirB, dirA], { sort: 'created', activeFirst: false })
 
         expect(oneWay.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
         expect(otherWay.map((group) => group.directory)).toEqual(['/dir-a', '/dir-b'])
@@ -1013,7 +1021,7 @@ describe('filterSessionsForListStatus', () => {
         const groups = groupSessionsByDirectory([
             makeSession({ id: 'plain', createdAt: 9_000, metadata: { path: '/dir-plain' } }),
             makeSession({ id: 'pinned', createdAt: 1_000, pinned: true, metadata: { path: '/dir-pinned' } })
-        ], true)
+        ], { sort: 'created', activeFirst: false })
 
         expect(groups.map((group) => group.directory)).toEqual(['/dir-pinned', '/dir-plain'])
     })
@@ -1022,7 +1030,7 @@ describe('filterSessionsForListStatus', () => {
         const groups = groupSessionsByDirectory([
             dirSession('no-created-stale', { createdAt: undefined, updatedAt: 1_000 }),
             dirSession('no-created-busy', { createdAt: undefined, updatedAt: 8_000 })
-        ], true)
+        ], { sort: 'created', activeFirst: false })
 
         expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
             'no-created-busy',
@@ -1030,13 +1038,14 @@ describe('filterSessionsForListStatus', () => {
         ])
     })
 
-    it('preserves the legacy activity ordering when fixed is off (regression anchor)', () => {
+    it('orders by last-user-message key when the view is default (regression anchor)', () => {
         const groups = groupSessionsByDirectory([
-            dirSession('stale', { createdAt: 3_000, updatedAt: 1_000 }),
-            dirSession('busy', { createdAt: 1_000, updatedAt: 9_000, active: true })
+            dirSession('older-input', { createdAt: 3_000, updatedAt: 1_000 }),
+            dirSession('newest-input', { createdAt: 1_000, updatedAt: 9_000, active: true })
         ])
 
-        // Active + most recently updated wins regardless of creation order.
-        expect(groups[0]!.sessions.map((session) => session.id)).toEqual(['busy', 'stale'])
+        // Default list view: last-message recency (falling back to creation)
+        // drives the order; updatedAt/activity rank no longer does.
+        expect(groups[0]!.sessions.map((session) => session.id)).toEqual(['older-input', 'newest-input'])
     })
 })
