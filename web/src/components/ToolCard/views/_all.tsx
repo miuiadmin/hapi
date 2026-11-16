@@ -13,6 +13,7 @@ import { TodoWriteView } from '@/components/ToolCard/views/TodoWriteView'
 import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
+import { WorkflowView } from '@/components/ToolCard/views/WorkflowView'
 import { canShowGoalPreview, isGoalToolName } from '@/components/ToolCard/goalTools'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import {
@@ -106,7 +107,10 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     // renders the checklist.
     edit: EditView,
     write: WriteView,
-    todo_write: TodoWriteView
+    todo_write: TodoWriteView,
+    // DSH workflow orchestration: dedicated phase-checklist card (the generic
+    // fallback would dump the whole script + return-value JSON).
+    workflow: WorkflowView
 }
 
 export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
@@ -135,7 +139,9 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     request_user_input: RequestUserInputView,
     // DSH lowercase snake aliases (see toolViewRegistry).
     edit: EditView,
-    write: WriteView
+    write: WriteView,
+    // DSH workflow orchestration (see toolViewRegistry).
+    workflow: WorkflowView
 }
 
 export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {

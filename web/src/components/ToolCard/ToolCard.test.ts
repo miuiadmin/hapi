@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { formatSubagentModelLabel, getSubagentModel, getToolTimingDetails, isCommandInputToolName, isTerminalToolBlock, shouldShowInlineToolCardBody, shouldUseCompactTerminalToolCard } from '@/components/ToolCard/ToolCard'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
+import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
+import { WorkflowView } from '@/components/ToolCard/views/WorkflowView'
 import { getToolGroupActionKind } from '@/chat/toolGroups'
 import type { AgentTextBlock, ChatBlock, ToolCallBlock } from '@/chat/types'
 
@@ -280,8 +282,9 @@ describe('getSubagentModel', () => {
 describe('dsh lowercase snake tool names', () => {
     // DSH tool_call updates carry kind:'other' with raw lowercase snake names
     // (bash, read, write, edit, apply_patch, grep, glob, web_fetch,
-    // web_search, todo_write, read_image). The registries must alias them onto
-    // the same views as their capitalized twins.
+    // web_search, todo_write, read_image, workflow). The registries must
+    // alias them onto the same views as their capitalized twins (workflow
+    // gets its own dedicated view).
 
     it('treats dsh bash as a terminal tool with command-style input', () => {
         expect(isCommandInputToolName('bash')).toBe(true)
@@ -312,5 +315,14 @@ describe('dsh lowercase snake tool names', () => {
     it('resolves dsh edit/write through the full (dialog) view registry', () => {
         expect(getToolFullViewComponent('edit')).toBe(getToolFullViewComponent('Edit'))
         expect(getToolFullViewComponent('write')).toBe(getToolFullViewComponent('Write'))
+    })
+
+    it('resolves dsh workflow onto the dedicated Workflow views (not the generic card)', () => {
+        // A workflow run is silent for minutes; the dedicated card shows the
+        // live phase checklist instead of the generic full-JSON dump.
+        expect(getToolViewComponent('workflow')).toBe(WorkflowView)
+        expect(getToolFullViewComponent('workflow')).toBe(WorkflowView)
+        expect(getToolResultViewComponent('workflow')).not.toBe(getToolResultViewComponent('__unregistered_tool__'))
+        expect(getToolViewComponent('workflow')).not.toBe(null)
     })
 })

@@ -77,13 +77,13 @@ export function extractUpdatePlanChecklist(input: unknown, result: unknown): Che
     return []
 }
 
-function checklistTone(item: ChecklistItem): string {
+export function checklistTone(item: ChecklistItem): string {
     if (item.status === 'completed') return 'text-emerald-600 line-through'
     if (item.status === 'in_progress') return 'text-[var(--app-link)]'
     return 'text-[var(--app-hint)]'
 }
 
-function checklistIcon(item: ChecklistItem): ReactNode {
+export function checklistIcon(item: ChecklistItem): ReactNode {
     if (item.status === 'completed') return '☑'
     if (item.status === 'in_progress') return '◉'
     return '☐'

@@ -13,6 +13,8 @@ import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInp
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import { isTerminalToolBlock } from '@/chat/toolGroups'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
+import { WorkflowOutcomeView } from '@/components/ToolCard/views/WorkflowView'
+import { parseWorkflowResult } from '@/components/ToolCard/workflowParse'
 import {
     getCodexAgentActivity,
     getCodexAgentTargets,
@@ -1067,6 +1069,13 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
     return <CodeBlock code={safeStringify(result)} language="json" title="JSON" {...resultCodeBlockProps(props.surface, props.surface === 'inline')} />
 }
 
+const WorkflowResultView: ToolViewComponent = (props: ToolViewProps) => {
+    const outcome = parseWorkflowResult(props.block.tool.result)
+    return outcome
+        ? <WorkflowOutcomeView outcome={outcome} />
+        : <GenericResultView {...props} />
+}
+
 export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     Task: MarkdownResultView,
     Bash: BashResultView,
@@ -1113,7 +1122,10 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     glob: LineListResultView,
     web_fetch: MarkdownResultView,
     web_search: MarkdownResultView,
-    todo_write: TodoWriteResultView
+    todo_write: TodoWriteResultView,
+    // DSH workflow orchestration: completed/background/error summaries; an
+    // unrecognized result falls back to the generic renderer.
+    workflow: WorkflowResultView
 }
 
 const GoalResultView: ToolViewComponent = (props) => {
