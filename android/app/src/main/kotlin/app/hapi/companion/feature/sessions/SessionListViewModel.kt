@@ -1,18 +1,24 @@
 package app.hapi.companion.feature.sessions
 
 import app.hapi.data.api.ApiError
+import app.hapi.data.sse.ConnectionState
 import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
+import app.hapi.protocol.wire.AttachedJob
 import app.hapi.protocol.wire.CursorChatStoreStatus
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.SessionListOrder
+import app.hapi.protocol.wire.SessionListSort
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.sortSessionSummaries
 import java.time.ZoneId
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,8 +28,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -52,6 +62,60 @@ data class SessionRowUi(
     val machine: MachineFilterUi? = null,
 ) {
     val id: String get() = summary.id
+    val presence: SessionPresence get() = SessionPresence.of(summary)
+
+    /** Only a running job is shown; finished ones leave no trace on the row. */
+    val runningJob: AttachedJob? get() = summary.runningAttachedJob
+}
+
+/** Work that outlives the agent (tiann/hapi#1404); web `hasRunningAttachedJob`. */
+val SessionSummary.runningAttachedJob: AttachedJob?
+    get() = attachedJob?.takeIf { it.isRunning }
+
+/**
+ * The agent icon's presence badge (web `SessionRowSummary`, #2296). Every
+ * state has its own mark, so none is shown by the absence of one: solid and
+ * pulsing while working (blue when only background tasks run), a ring when
+ * connected and waiting, a power mark when stopped or archived. A running
+ * attached job counts as working even when the agent is idle or gone.
+ */
+enum class SessionPresence {
+    Working,
+    Background,
+    Waiting,
+    Stopped;
+
+    val pulses: Boolean get() = this == Working || this == Background
+
+    companion object {
+        /** Same precedence as web: background-only before an attached job. */
+        fun of(summary: SessionSummary): SessionPresence = when {
+            summary.active && !summary.thinking && summary.backgroundTaskCount > 0 -> Background
+            (summary.active && summary.thinking) || summary.runningAttachedJob != null -> Working
+            summary.active -> Waiting
+            else -> Stopped
+        }
+    }
+}
+
+/**
+ * Web "Show" filter. Archived means not connected: closed sessions and ones
+ * whose CLI went away. A running attached job keeps an idle session under
+ * Active and out of Archived (web #1404 exception).
+ */
+enum class SessionListStatus {
+    All,
+    Active,
+    Archived;
+
+    fun includes(summary: SessionSummary): Boolean {
+        val live = summary.active || summary.runningAttachedJob != null
+        return when (this) {
+            All -> true
+            Active -> live
+            Archived -> !live
+        }
+    }
 }
 
 data class MachineFilterUi(
@@ -107,6 +171,15 @@ data class SessionListUiState(
     val titleSuggestionAvailable: Boolean = false,
     /** Transient date-range lens (web `customStart`/`customEnd` `useState`); null = off, never persisted. */
     val dateRange: SessionDateRange? = null,
+    /** Transient "Show" filter; the open session always stays listed. */
+    val statusFilter: SessionListStatus = SessionListStatus.All,
+    /** Transient unread lens; the open session always stays listed. */
+    val unreadOnly: Boolean = false,
+    /**
+     * Persisted sort key + Active first (ignored while searching). Defaults to
+     * the uncustomized order so the toolbar dot never flashes before prefs load.
+     */
+    val order: SessionListOrder = SessionListOrder.Default,
     /**
      * Local epoch-days that carry any session activity — the picker's
      * activity hint, derived before any list filtering (web
@@ -114,19 +187,50 @@ data class SessionListUiState(
      * active).
      */
     val dateActivityEpochDays: Set<Long> = emptySet(),
+    /** Live search-box text; blank = no filtering/ranking. */
+    val searchQuery: String = "",
+    /** Last successful sessions fetch (epoch ms), for "Offline · updated …". */
+    val lastRefreshedAt: Long? = null,
+    /**
+     * Transient global-SSE status, already delayed by [CONNECTION_REVEAL_MS]
+     * so routine foreground reconnects never flash; null while connected.
+     */
+    val connectionStatus: HomeConnectionStatus? = null,
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
+    val hasActiveFilters: Boolean
+        get() = activeMachineFilter != null || dateRange != null || statusFilter != SessionListStatus.All || unreadOnly
+
+    /** Filters or a non-default order: the toolbar button carries a dot (web). */
+    val isCustomized: Boolean get() = hasActiveFilters || !order.isDefault
     val isSearching: Boolean get() = searchQuery.isNotBlank()
 }
 
 /** Grouping inputs that travel together through the uiState combine. */
 private data class SelectionSnapshot(
-    val filter: String?,
-    val query: String,
-    val selected: String?,
+    val machineFilter: String?,
+    val searchQuery: String,
+    val selectedSessionId: String?,
     val overrides: Map<String, Boolean>,
     val activeSessionsOnly: Boolean = false,
+    val statusFilter: SessionListStatus = SessionListStatus.All,
+    val unreadOnly: Boolean = false,
 )
+
+/** Toolbar/toggle lenses that travel together through the uiState combine. */
+private data class LensesSnapshot(
+    val showUnreadOnly: Boolean = false,
+    val showActiveOnly: Boolean = false,
+    val pinInProgress: Boolean = false,
+    val grouped: Boolean = SessionDisplayPrefs.DEFAULT_GROUPED,
+    val titleSuggestionAvailable: Boolean = false,
+)
+
+/** Quiet, transient connection states (the failed-refresh offline notice is [SessionListUiState.isOffline]). */
+enum class HomeConnectionStatus { Connecting, Reconnecting, Paused }
+
+/** A transient state must persist this long before the home shows it (Telegram-style). */
+const val CONNECTION_REVEAL_MS: Long = 2_000
 
 /**
  * Session-list state machine: combines [SessionListStore] / [MachineListStore]
@@ -152,10 +256,8 @@ class SessionListViewModel(
     private val displayPrefs: SessionDisplayPrefs? = null,
     /** Group-collapse overrides; null keeps them in-memory (tests). */
     private val groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
-    /** Clock zone for the date-range lens; injectable so JVM tests are host-timezone-independent. */
-    private val zone: ZoneId = ZoneId.systemDefault(),
-    /** Live zone resolver for runtime timezone changes (upstream TIME_CHANGED refresh). */
-    private val zoneProvider: () -> ZoneId = { ZoneId.systemDefault() },
+    /** Current clock zone; resolved for every date derivation, including after resume. */
+    private val zoneProvider: () -> ZoneId = ZoneId::systemDefault,
     /**
      * Cursor chat-store probe (`GET /api/sessions/:id/cursor-chat-store`).
      * Fail-loud default: an unwired probe throws, which the gate catches as
@@ -165,8 +267,14 @@ class SessionListViewModel(
     private val cursorChatStoreProbe: suspend (String) -> CursorChatStoreStatus = {
         error("cursor chat-store probe not wired")
     },
-    /** Wall clock for the probe staleness window; injectable for JVM tests. */
-    private val now: () -> Long = System::currentTimeMillis,
+    /** Global SSE transport state (`SseEngine.connectionState(Global)`); none in tests by default. */
+    connectionState: Flow<ConnectionState> = emptyFlow(),
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * Sort key + Active first. Home passes the persisted prefs; the default is
+     * Home's unpersisted default, and the share picker passes the base order.
+     */
+    private val orderStore: SessionListOrderStore = InMemorySessionListOrderStore(),
     /**
      * P2 display "active sessions only" lens (app-wide `DisplayPrefs` flow;
      * default false = full list, so tests and previews construct without
@@ -175,6 +283,8 @@ class SessionListViewModel(
     private val showActiveSessionsOnly: Flow<Boolean> = flowOf(false),
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
+    private val statusFilter = MutableStateFlow(SessionListStatus.All)
+    private val unreadOnly = MutableStateFlow(false)
     private val searchQuery = MutableStateFlow("")
     private val selectedSessionId = MutableStateFlow<String?>(null)
     private val showUnreadOnly = MutableStateFlow(false)
@@ -185,12 +295,15 @@ class SessionListViewModel(
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
+    private val lastRefreshedAt = MutableStateFlow<Long?>(null)
+    private val connectionStatus = delayedConnectionStatus(connectionState)
+        .stateIn(scope, SharingStarted.Eagerly, null)
 
     /** Transient date-range lens; null = no date filtering (web: unpersisted `useState`). */
     private val dateRange = MutableStateFlow<SessionDateRange?>(null)
 
     /** Live clock zone; a timezone broadcast re-resolves it and re-derives dates. */
-    private val timeZone = MutableStateFlow(zone)
+    private val timeZone = MutableStateFlow(zoneProvider())
 
     private val _errors = MutableSharedFlow<SessionListError>(extraBufferCapacity = 8)
 
@@ -275,11 +388,11 @@ class SessionListViewModel(
         }
         val existing = mutableCursorProbe.value
         if (existing != null && existing.sessionId == summary.id &&
-            now() - existing.startedAtMs < CURSOR_PROBE_STALE_MS
+            nowMs() - existing.startedAtMs < CURSOR_PROBE_STALE_MS
         ) {
             return
         }
-        val startedAtMs = now()
+        val startedAtMs = nowMs()
         mutableCursorProbe.value = CursorProbeEntry(sessionId = summary.id, startedAtMs = startedAtMs)
         scope.launch {
             val settled = try {
@@ -329,13 +442,7 @@ class SessionListViewModel(
         scope.launch {
             sessionStore.sessions.drop(1).collect { sessions ->
                 if (isOffline.value) isOffline.value = false
-                // Seed the unread baseline from SSE data too — when REST
-                // refresh fails but the stream works, unseeded watermarks
-                // would light every row's unread dot (once-per-scope inside
-                // the store, so repeated calls are no-ops).
-                if (sessions.isNotEmpty()) {
-                    runCatching { lastSeenStore.initializeBaseline(hubKey, sessions) }
-                }
+
             }
         }
         // Health capability once per scope (store caches across calls); the
@@ -350,44 +457,62 @@ class SessionListViewModel(
         combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
             Triple(sessions, machines, lastSeen)
         },
-        combine(machineFilter, searchQuery, selectedSessionId, collapseOverrides, showActiveSessionsOnly) { filter, query, selected, overrides, activeOnly ->
-            SelectionSnapshot(filter, query, selected, overrides, activeOnly)
-
+        // Selection inputs (typed arity): machine filter + search + open row,
+        // the display lenses (group-collapse overrides, app-wide active-only),
+        // and the upstream sheet conditions (status, unread-only).
+        combine(
+            combine(machineFilter, searchQuery, selectedSessionId) { filter, query, selected ->
+                Triple(filter, query, selected)
+            },
+            combine(collapseOverrides, showActiveSessionsOnly) { overrides, displayActiveOnly ->
+                overrides to displayActiveOnly
+            },
+            combine(statusFilter, unreadOnly) { status, unread ->
+                status to unread
+            },
+        ) { (filter, query, selected), (overrides, displayActiveOnly), (status, unread) ->
+            SelectionSnapshot(filter, query, selected, overrides, displayActiveOnly, status, unread)
         },
         // Chrome quad carries the transient date-range lens alongside the
         // refresh/offline flags (batch13 C: web reads the unpersisted
         // `customStart`/`customEnd` state directly into the list build).
         // timeZone rides as a fifth source (ignored) so a zone refresh
         // re-emits the whole derived state (upstream TIME_CHANGED feature).
-        combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange, timeZone) { refreshing, offline, loaded, range, _ ->
-            ChromeState(refreshing, offline, loaded, range)
+        combine(
+            combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange, timeZone) { refreshing, offline, loaded, range, _ ->
+                ChromeState(refreshing, offline, loaded, range)
+            },
+            lastRefreshedAt,
+            connectionStatus,
+        ) { chrome, refreshedAt, status -> chrome.copy(lastRefreshedAt = refreshedAt, connectionStatus = status) },
+        combine(showUnreadOnly, showActiveOnly, pinInProgress, grouped, _titleSuggestionAvailable) {
+                unreadOnly, activeOnly, pinning, groupedMode, titleSuggestion ->
+                LensesSnapshot(unreadOnly, activeOnly, pinning, groupedMode, titleSuggestion)
         },
-        combine(showUnreadOnly, showActiveOnly) { unreadOnly, activeOnly ->
-            unreadOnly to activeOnly
-        },
-        combine(pinInProgress, grouped, _titleSuggestionAvailable) { pinning, groupedMode, titleSuggestion ->
-            Triple(pinning, groupedMode, titleSuggestion)
-        },
-    ) { (sessions, machines, lastSeen), selection, chrome, (unreadOnly, activeOnly), (pinning, grouped, titleSuggestion) ->
+        orderStore.order,
+    ) { (sessions, machines, lastSeen), selection, chrome, lenses, order ->
         buildUiState(
             sessions = sessions,
             machines = machines,
-            lastSeenState = lastSeen,
-            filter = selection.filter,
-            searchQuery = selection.query,
-            selectedSessionId = selection.selected,
-            collapseOverrides = selection.overrides,
-            showActiveSessionsOnly = selection.activeSessionsOnly,
+            lastSeen = lastSeen,
+            filter = selection.machineFilter,
+            searchQuery = selection.searchQuery,
+            selectedSessionId = selection.selectedSessionId,
+            collapseOverrides = selection.collapseOverrides,
+            showActiveSessionsOnly = selection.showActiveSessionsOnly,
             isRefreshing = chrome.refreshing,
             isOffline = chrome.offline,
             hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
-            showUnreadOnly = unreadOnly,
-            showActiveOnly = activeOnly,
-            pinInProgress = pinning,
-            grouped = grouped,
-            titleSuggestionAvailable = titleSuggestion,
+            showUnreadOnly = lenses.showUnreadOnly,
+            showActiveOnly = lenses.showActiveOnly,
+            pinInProgress = lenses.pinInProgress,
+            grouped = lenses.grouped,
+            titleSuggestionAvailable = lenses.titleSuggestionAvailable,
             dateRange = chrome.dateRange,
-        )
+            statusFilter = selection.statusFilter,
+            unreadOnly = selection.unreadOnly,
+            order = order,
+        ).copy(lastRefreshedAt = chrome.lastRefreshedAt, connectionStatus = chrome.connectionStatus)
     }.stateIn(
         scope = scope,
         started = SharingStarted.Eagerly,
@@ -406,9 +531,13 @@ class SessionListViewModel(
      * this only kicks the explicit entry refresh (the snapshot may be stale
      * and a `resume: ok` handshake deliberately skips the REST resync).
      * Safe to call repeatedly.
+     *
+     * Silent: the screen is composed as soon as a predictive back gesture
+     * starts previewing it, so an indicator here would flash a spinner on
+     * every back swipe. The empty state covers a first load with no rows.
      */
     fun start() {
-        refresh()
+        refresh(showIndicator = false)
     }
 
     /** Screen exit. The hub-lifetime global pipe stays up by design. */
@@ -416,24 +545,29 @@ class SessionListViewModel(
         refreshJob?.cancel()
     }
 
-    /** Pull-to-refresh / initial load. Coalesces concurrent calls. */
-    fun refresh() {
+    /**
+     * Pull-to-refresh / retry (indicator shown) or entry load (silent).
+     * Coalesces concurrent calls; a user refresh joining a silent one in
+     * flight still shows the indicator until it settles.
+     */
+    fun refresh(showIndicator: Boolean = true) {
         refreshTimeZone()
-        if (refreshJob?.isActive == true) return
+        if (refreshJob?.isActive == true) {
+            if (showIndicator) isRefreshing.value = true
+            return
+        }
         refreshJob = scope.launch {
-            isRefreshing.value = true
+            if (showIndicator) isRefreshing.value = true
             try {
                 // Only a failed *sessions* fetch means "offline". Machines and
-                // the unread baseline are secondary: their failures must not
+                // other stores are secondary: their failures must not
                 // pin the offline banner over a perfectly live list (this
                 // exact cascade shipped once — a machines decode error kept
                 // the banner up while SSE streamed active sessions).
                 sessionStore.refresh()
                 isOffline.value = false
+                lastRefreshedAt.value = nowMs()
                 hasRefreshedOnce.value = true
-                // First successful list for this hub seeds the unread baseline
-                // so historical sessions do not all light up as unread.
-                runCatching { lastSeenStore.initializeBaseline(hubKey, sessionStore.sessions.value) }
                 try {
                     machineStore.refresh()
                 } catch (cancellation: CancellationException) {
@@ -466,7 +600,7 @@ class SessionListViewModel(
     }
 
     /** Unread-lens toggle; transient — resets with the process like the web's. */
-    fun setUnreadOnly(enabled: Boolean) {
+    fun setShowUnreadLens(enabled: Boolean) {
         showUnreadOnly.value = enabled
     }
 
@@ -514,13 +648,29 @@ class SessionListViewModel(
     /** Row action: park the watermark behind the current activity and pin the mark. */
     fun markSessionUnread(sessionId: String) {
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
-        lastSeenStore.markUnread(sessionId, summary.updatedAt)
+        scope.launch {
+            try {
+                lastSeenStore.markUnread(sessionId, summary.readState)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                // Advisory only: the row reverts on the next server sync.
+            }
+        }
     }
 
     /** Toolbar action: stamp every session on this hub as seen. */
     fun markAllSessionsRead() {
-        lastSeenStore.markAllSeen(sessionStore.sessions.value)
-}
+        scope.launch {
+            try {
+                lastSeenStore.markAllSeen(sessionStore.sessions.value)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                // Advisory only: the rows revert on the next server sync.
+            }
+        }
+    }
 
     /**
      * Sets the transient date-range lens. The two picks are normalized into
@@ -540,11 +690,51 @@ class SessionListViewModel(
         dateRange.value = null
     }
 
-    /** Call when navigating into a session: stamps the last-seen watermark. */
+    /** Web "Show" filter (transient, like the other sheet conditions). */
+    fun setStatusFilter(status: SessionListStatus) {
+        statusFilter.value = status
+    }
+
+    /** Web "Unread only" lens (transient). */
+    fun setUnreadOnly(enabled: Boolean) {
+        unreadOnly.value = enabled
+    }
+
+    /** Persisted sort key (app-wide). */
+    fun setSort(sort: SessionListSort) {
+        scope.launch { orderStore.setSort(sort) }
+    }
+
+    /** Persisted Active first (app-wide). */
+    fun setActiveFirst(enabled: Boolean) {
+        scope.launch { orderStore.setActiveFirst(enabled) }
+    }
+
+    /** Reset the consolidated sheet's conditions without changing the search or the order. */
+    fun clearFilters() {
+        machineFilter.value = null
+        dateRange.value = null
+        statusFilter.value = SessionListStatus.All
+        unreadOnly.value = false
+    }
+
+    /** Keep the selected row visible under list filters; reading is acknowledged by the transcript. */
     fun onSessionOpened(sessionId: String) {
         selectedSessionId.value = sessionId
+    }
+
+    /** Swipe action: mark the observed head of one session as read (iOS `markRead`). */
+    fun markRead(sessionId: String) {
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
-        lastSeenStore.markSeen(sessionId, summary.updatedAt)
+        scope.launch {
+            try {
+                lastSeenStore.markSeen(summary.id, summary.contentRevision ?: 0, summary.readState)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _errors.tryEmit(SessionListError.MarkReadFailed(sessionId, error.message))
+            }
+        }
     }
 
     /** `PUT /sessions/:id/pin` with optimistic re-sort; failures surface on [errors]. */
@@ -652,7 +842,7 @@ class SessionListViewModel(
     private fun buildUiState(
         sessions: List<SessionSummary>,
         machines: List<Machine>,
-        lastSeenState: LastSeenState,
+        lastSeen: LastSeenState,
         filter: String?,
         searchQuery: String,
         selectedSessionId: String?,
@@ -667,9 +857,10 @@ class SessionListViewModel(
         grouped: Boolean = SessionDisplayPrefs.DEFAULT_GROUPED,
         titleSuggestionAvailable: Boolean = false,
         dateRange: SessionDateRange? = null,
+        statusFilter: SessionListStatus = SessionListStatus.All,
+        unreadOnly: Boolean = false,
+        order: SessionListOrder = SessionListOrder.Base,
     ): SessionListUiState {
-        val lastSeen = lastSeenState.lastSeen
-        val manualUnread = lastSeenState.manualUnread
         val names = machines.mapNotNull { machine ->
             val metadata = machine.metadata ?: return@mapNotNull null
             val name = metadata.displayName?.trim()?.takeIf { it.isNotEmpty() }
@@ -739,10 +930,18 @@ class SessionListViewModel(
             corpus.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, timeZone.value) }
         }
 
-        val visible = if (activeFilter == null) {
+        val machineScoped = if (activeFilter == null) {
             timeScoped
         } else {
             timeScoped.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
+        }
+
+        // Status and unread lenses never hide the open session (web).
+        val visible = machineScoped.filter { summary ->
+            summary.id == selectedSessionId || (
+                statusFilter.includes(summary) &&
+                    (!unreadOnly || LastSeenStore.isUnread(summary, lastSeen))
+                )
         }
 
         // Sidebar list body, matching the web list: collapse duplicate
@@ -762,9 +961,10 @@ class SessionListViewModel(
         }
 
         // Text search: relevance ranking over the already-prepared corpus,
-        // pins kept contiguous ahead of ordinary rows.
+        // pins kept contiguous ahead of ordinary rows, base-order ties (web
+        // keeps the default order while a query is active).
         val searched = if (searchQuery.isBlank()) {
-            activeLensed
+            if (order == SessionListOrder.Base) activeLensed else sortSessionSummaries(activeLensed, order)
         } else {
             val machineLabels = filters.associate { it.id to it.label }
             val index = SessionListSearch.buildSessionSearchScoreIndex(activeLensed, searchQuery) { machineId ->
@@ -805,11 +1005,7 @@ class SessionListViewModel(
                     summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
                 }.takeIf { it.isNotEmpty() }?.joinToString(" · "),
                 flavor = summary.metadata?.flavor,
-                unread = LastSeenStore.hasUnreadActivity(
-                    summary.updatedAt,
-                    lastSeen[summary.id] ?: 0,
-                    manualUnread[summary.id],
-                ),
+                unread = LastSeenStore.isUnread(summary, lastSeen),
                 machine = if (showMachine) filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) } else null,
             )
         }
@@ -832,13 +1028,16 @@ class SessionListViewModel(
             showActiveOnly = showActiveOnly,
             pinInProgress = pinInProgress,
             grouped = grouped,
-            unreadCount = LastSeenStore.unreadSessionCount(sessions, lastSeen, manualUnread),
+            unreadCount = sessions.count { LastSeenStore.isUnread(it, lastSeen) },
             titleSuggestionAvailable = titleSuggestionAvailable,
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
             dateRange = dateRange,
             dateActivityEpochDays = activityDays,
+            statusFilter = statusFilter,
+            unreadOnly = unreadOnly,
+            order = order,
         )
     }
 
@@ -965,7 +1164,44 @@ class SessionListViewModel(
         val offline: Boolean,
         val refreshedOnce: Boolean,
         val dateRange: SessionDateRange?,
+        val lastRefreshedAt: Long? = null,
+        val connectionStatus: HomeConnectionStatus? = null,
     )
+
+    /**
+     * Maps transport phases to quiet statuses, revealed only after the
+     * outage has lasted [CONNECTION_REVEAL_MS]. The clock starts at the first
+     * non-connected phase, so Connecting → Backoff does not restart it.
+     * `Idle` means no subscription (not an outage) and shows nothing.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun delayedConnectionStatus(source: Flow<ConnectionState>): Flow<HomeConnectionStatus?> {
+        var outageSince: Long? = null
+        return source
+            .map {
+                when (it.phase) {
+                    ConnectionState.Phase.Connecting -> HomeConnectionStatus.Connecting
+                    ConnectionState.Phase.Backoff -> HomeConnectionStatus.Reconnecting
+                    ConnectionState.Phase.Suspended -> HomeConnectionStatus.Paused
+                    ConnectionState.Phase.Connected, ConnectionState.Phase.Idle -> null
+                }
+            }
+            .distinctUntilChanged()
+            .transformLatest { status ->
+                if (status == null) {
+                    outageSince = null
+                    emit(null)
+                    return@transformLatest
+                }
+                val since = outageSince ?: nowMs().also { outageSince = it }
+                val remaining = since + CONNECTION_REVEAL_MS - nowMs()
+                if (remaining > 0) {
+                    emit(null)
+                    delay(remaining)
+                }
+                emit(status)
+            }
+    }
 
     companion object {
         /**
@@ -1049,6 +1285,8 @@ sealed interface SessionListError {
         val stillActive: Boolean = false,
     ) : SessionListError
     data class ReopenFailed(override val sessionId: String, override val message: String?) : SessionListError
+
+    data class MarkReadFailed(override val sessionId: String, override val message: String?) : SessionListError
 
     /** Machines list refresh failed — advisory only, never the offline banner. */
     data class MachinesRefreshFailed(override val message: String?) : SessionListError {

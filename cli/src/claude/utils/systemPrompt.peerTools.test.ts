@@ -43,6 +43,32 @@ describe('peer-tools citation steer across flavors', () => {
 
             expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).toContain('are disabled on this machine')
             expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).not.toContain('Call "hapi_inspect_peer"')
+            for (const prompt of [claudePrompt, codex.TITLE_INSTRUCTION, opencode.TITLE_INSTRUCTION, opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
+                expect(prompt).not.toContain('auto (default)')
+            }
+        } finally {
+            restore()
+        }
+    })
+
+    it('leaves media delivery to tool contracts across flavors', async () => {
+        const { claude, codex, opencode, restore } = await importFlavorPrompts(false)
+        try {
+            for (const prompt of [claude.getSystemPrompt(), codex.getCodexSystemPrompt({}), opencode.getTitleInstruction({})]) {
+                expect(prompt).not.toContain('display_image')
+                expect(prompt).not.toContain('display_video')
+                expect(prompt).not.toContain('display_media')
+                expect(prompt).not.toContain('Web/PWA')
+                expect(prompt).toContain('change_title')
+                expect(prompt).toContain('hapi job run')
+            }
+            // Native ACP sessions discover change_title through MCP tool
+            // descriptions (#2416): their prompt carries jobs + skill lookup
+            // but no per-tool guidance.
+            const nativePrompt = opencode.getOpencodeNativeToolInstruction({})
+            expect(nativePrompt).not.toContain('display_image')
+            expect(nativePrompt).not.toContain('change_title')
+            expect(nativePrompt).toContain('hapi job run')
         } finally {
             restore()
         }
@@ -55,6 +81,13 @@ describe('peer-tools citation steer across flavors', () => {
             expect(codex.TITLE_INSTRUCTION).toContain('Call "functions.hapi__inspect_peer"')
             expect(opencode.TITLE_INSTRUCTION).toContain('Call "hapi_inspect_peer"')
             expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).toContain('Call "hapi_inspect_peer"')
+            for (const prompt of [claude.getSystemPrompt(), codex.TITLE_INSTRUCTION, opencode.TITLE_INSTRUCTION, opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
+                expect(prompt).toContain('auto (default)')
+                expect(prompt).toContain('Prefer auto for routine collaboration')
+                expect(prompt).toContain('steer: use for important, time-sensitive findings the peer needs to know now')
+                expect(prompt).toContain('does not abort the current turn or guarantee an immediate response')
+                expect(prompt).toContain('do not resend automatically')
+            }
         } finally {
             restore()
         }

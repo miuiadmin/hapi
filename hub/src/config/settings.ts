@@ -41,6 +41,8 @@ export interface Settings {
      * into supported flavor system / developer instructions. Default off.
      */
     sessionSummaryContract?: boolean
+    /** Hub-wide defaults for MCP/CLI spawn_peer (Layer 0 A2A). */
+    peerSpawnDefaults?: import('@hapi/protocol/peerSpawnDefaults').PeerSpawnDefaults
     /**
      * When true, web chat shows a compact AGENT_NOTIFY_SUMMARY row.
      * Default off: render/copy strip the footer; store stays raw.
@@ -58,6 +60,11 @@ export interface Settings {
      * browse or message each other. Default off.
      */
     disablePeerTools?: boolean
+    /**
+     * When true, Cursor CLI sessions auto-enqueue a one-shot bridge after a
+     * transient model error. Default off. Survives hub/CLI restarts.
+     */
+    autoBridgeTransientModelErrors?: boolean
     /**
      * Hub-side provider API keys / endpoints managed from Settings.
      * Env vars still win when set at process start (ops override).

@@ -1,11 +1,12 @@
 import { claudeLocal } from "./claudeLocal";
 import { Session } from "./session";
 import { createSessionScanner } from "./utils/sessionScanner";
-import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
+import { isImportableClaudeEntry } from "./utils/transcriptEntry";
 import { BaseLocalLauncher } from "@/modules/common/launcher/BaseLocalLauncher";
 import { applySessionTitleFallback } from './utils/sessionTitleFallback';
 import { resolveClaudeLaunchModel } from './utils/claudeSettings';
 import type { RawJSONLines } from './types';
+import { ClaudeToolResultImages } from './utils/toolResultImages';
 
 // Local transcripts carry bare model ids and no context_window, so the web
 // guesses 200k. When the TUI runs a "[1m]" model, stamp 1M on messages from
@@ -28,6 +29,7 @@ function isInterruptMarker(message: RawJSONLines): boolean {
 }
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
+    const toolResultImages = new ClaudeToolResultImages();
 
     // Create scanner
     const scanner = await createSessionScanner({
@@ -54,18 +56,14 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 applySessionTitleFallback(session.client, message.summary)
                 return
             }
-            // Filter out internal meta messages (e.g. skill injections) and
-            // compact summaries to avoid them appearing in the web UI
-            if (message.isMeta || message.isCompactSummary) {
-                return
-            }
-            // Filter out invisible system messages (e.g. init, stop_hook_summary)
-            // to avoid them showing as raw JSON in the web UI
-            if (!isClaudeChatVisibleMessage(message)) {
+            // Filter out internal meta messages (e.g. skill injections), compact
+            // summaries, and invisible system messages (e.g. init,
+            // stop_hook_summary) to avoid them appearing in the web UI
+            if (!isImportableClaudeEntry(message)) {
                 return
             }
             stampContextWindow(message, session.localContextModel)
-            session.client.sendClaudeSessionMessage(message)
+            toolResultImages.send(session.client, message)
         }
     });
 

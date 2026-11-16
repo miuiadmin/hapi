@@ -1,13 +1,14 @@
 /**
  * Kill switch for the peer-session MCP tools (`list_peers` / `inspect_peer` /
- * `ping_peer`).
+ * `ping_peer` / `spawn_peer`).
  *
  * Wrapped agents with these tools can browse the session list and message
- * other sessions, polluting peer contexts on busy runners. When the switch is
- * on, the tools are not registered on the session MCP server, not advertised
+ * other sessions, polluting peer contexts on busy runners. Set
+ * `HAPI_DISABLE_PEER_TOOLS=1` in the runner environment to stop that:
+ * the tools are not registered on the session MCP server, not advertised
  * via `--allowedTools` / `--tools`, and the peer steer block is dropped from
  * flavor system prompts. The core module refuses as defense in depth, so
- * `hapi ping-peer` / `inspect-peer` from inside a wrapped agent shell fails
+ * `hapi ping-peer` / `inspect-peer` / `spawn-peer` from inside a wrapped agent shell fails
  * loudly instead of silently bypassing the switch. Operators who keep the
  * switch off in their interactive terminal keep full CLI access.
  *
@@ -17,7 +18,7 @@
  * 3. Default: off (tools available)
  */
 
-export const PEER_TOOL_NAMES = ['list_peers', 'ping_peer', 'inspect_peer'] as const;
+export const PEER_TOOL_NAMES = ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'] as const;
 
 let hubPreference: boolean | undefined
 

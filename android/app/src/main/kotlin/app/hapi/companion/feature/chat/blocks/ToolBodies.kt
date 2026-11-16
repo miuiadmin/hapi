@@ -5,6 +5,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -18,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -28,6 +33,7 @@ import app.hapi.companion.ui.components.HapiCircleDotGlyph
 import app.hapi.companion.ui.components.HapiSquareCheckGlyph
 import app.hapi.companion.ui.components.HapiSquareGlyph
 import app.hapi.companion.ui.markdown.Markdown
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputString
@@ -80,8 +86,16 @@ internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modif
         }
         var sourceExpanded by rememberSaveable(tool.id) { mutableStateOf(false) }
         if (tool.input != null || tool.result != null || answers != null) {
-            TextButton(onClick = { sourceExpanded = !sourceExpanded }) {
-                Text(stringResource(R.string.files_viewer_source))
+            TextButton(
+                onClick = { sourceExpanded = !sourceExpanded },
+                contentPadding = PaddingValues(start = 0.dp, end = 12.dp),
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.hapi.textSecondary),
+            ) {
+                Icon(
+                    painterResource(if (sourceExpanded) R.drawable.ic_sym_expand_more else R.drawable.ic_sym_chevron_right),
+                    contentDescription = null, modifier = Modifier.size(18.dp),
+                )
+                Text(stringResource(R.string.files_viewer_source), style = HapiTypography.rowSubtitle, modifier = Modifier.padding(start = 4.dp))
             }
             if (sourceExpanded) {
                 tool.input?.let {
@@ -103,8 +117,11 @@ internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modif
 
 @Composable
 private fun QuestionToolBody(tool: ChatToolCall) {
+    // Compose test effects can resume on a worker. Keep CPU work off-main,
+    // but publish every resulting state change on Android's main thread.
     val details by produceState<QuestionToolDetails?>(null, tool) {
-        value = withContext(Dispatchers.Default) { questionToolDetails(tool) }
+        val prepared = withContext(Dispatchers.Default) { questionToolDetails(tool) }
+        withContext(Dispatchers.Main.immediate) { value = prepared }
     }
     val prepared = details
     if (prepared == null) {
@@ -249,8 +266,9 @@ private fun GenericJsonInput(input: JsonElement?) {
         input is JsonPrimitive && input.isString -> ToolTextContent(code = input.content, language = null)
         else -> {
             val text by produceState<String?>(null, input) {
-                value = null
-                value = withContext(Dispatchers.Default) { prettyJson(input) }
+                withContext(Dispatchers.Main.immediate) { value = null }
+                val prepared = withContext(Dispatchers.Default) { prettyJson(input) }
+                withContext(Dispatchers.Main.immediate) { value = prepared }
             }
             text?.let { ToolTextContent(code = it, language = "json") }
         }
@@ -308,11 +326,25 @@ internal sealed interface ResultRendering {
 
 @Composable
 private fun ToolResultSection(tool: ChatToolCall) {
-    val result = tool.result ?: return
-    if (result is JsonNull) return
+    val result = tool.result?.takeUnless { it is JsonNull }
+    if (result == null) {
+        // Say so instead of ending the page on the input (iOS parity).
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SectionLabel(stringResource(R.string.chat_result))
+            Text(
+                stringResource(
+                    if (tool.state == "running" || tool.state == "pending") R.string.chat_result_waiting else R.string.chat_result_none,
+                ),
+                style = HapiTypography.rowSubtitle,
+                color = MaterialTheme.hapi.textSecondary,
+            )
+        }
+        return
+    }
     val isError = tool.state == "error"
     val rendering by produceState<ResultRendering?>(null, tool) {
-        value = withContext(Dispatchers.Default) { resultRendering(tool) }
+        val prepared = withContext(Dispatchers.Default) { resultRendering(tool) }
+        withContext(Dispatchers.Main.immediate) { value = prepared }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -418,7 +450,8 @@ private fun checklistItems(input: JsonElement?): List<ChecklistItem> {
 private fun SectionLabel(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.hapi.hint,
+        style = HapiTypography.caption.copy(fontWeight = FontWeight.Medium),
+        color = MaterialTheme.hapi.textSecondary,
+        modifier = Modifier.padding(top = 4.dp),
     )
 }

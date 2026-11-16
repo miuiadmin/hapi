@@ -2,7 +2,7 @@ import { trimIdent } from "@/utils/trimIdent";
 import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from "@hapi/protocol/sessionCitation";
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
 import { shouldIncludeCoAuthoredBy } from "./claudeSettings";
-import { DISPLAY_IMAGE_PROMPT_CLAUDE, DISPLAY_MEDIA_PROMPT_CLAUDE, DISPLAY_VIDEO_PROMPT_CLAUDE } from "@/modules/common/displayImagePrompt";
+import { withSessionJobInstruction } from "@/modules/common/sessionJobInstruction";
 import { withSessionSummaryInstruction } from "@/modules/common/sessionSummaryInstruction";
 import { buildPerTurnTitleParagraph, isAutoTitlePerTurnEnabled } from "@/modules/common/titleInstruction";
 
@@ -24,13 +24,11 @@ function buildBaseSystemPrompt(env: NodeJS.ProcessEnv): string {
         : TITLE_SPARING_LINE;
     return trimIdent(`
     ${titleSteer}
-    ${DISPLAY_IMAGE_PROMPT_CLAUDE}
-    ${DISPLAY_VIDEO_PROMPT_CLAUDE}
-    ${DISPLAY_MEDIA_PROMPT_CLAUDE}
     ${isPeerToolsDisabled(env) ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'mcp__hapi__inspect_peer',
         pingTool: 'mcp__hapi__ping_peer',
         listPeersTool: 'mcp__hapi__list_peers',
+        spawnTool: 'mcp__hapi__spawn_peer',
     })}
 `);
 }
@@ -59,5 +57,5 @@ export function getSystemPrompt(env: NodeJS.ProcessEnv = process.env): string {
     const base = includeCoAuthored
         ? buildBaseSystemPrompt(env) + '\n\n' + CO_AUTHORED_CREDITS
         : buildBaseSystemPrompt(env);
-    return withSessionSummaryInstruction(base, env);
+    return withSessionSummaryInstruction(withSessionJobInstruction(base), env);
 }

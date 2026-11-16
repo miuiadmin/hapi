@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.sessions
 
+import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
@@ -114,8 +115,8 @@ object SessionListFilters {
     fun filterUnreadSessionsOnly(
         sessions: List<SessionSummary>,
         selectedSessionId: String?,
-        lastSeen: Map<String, Long>,
+        lastSeen: LastSeenState,
     ): List<SessionSummary> = sessions.filter { session ->
-        session.id == selectedSessionId || LastSeenStore.isUnread(session, lastSeen[session.id] ?: 0)
+        session.id == selectedSessionId || LastSeenStore.isUnread(session, lastSeen)
     }
 }

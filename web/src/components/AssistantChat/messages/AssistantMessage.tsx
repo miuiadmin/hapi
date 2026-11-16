@@ -32,6 +32,10 @@ export const HappyAssistantMessage = memo(function HappyAssistantMessage() {
     const showSessionSummaryInChat = useSessionSummaryInChat()
     const messageId = useAuiState((s) => s.message.id)
     const elementId = getConversationMessageAnchorId(messageId)
+    const sourceMessageIds = useAuiState((s) => {
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.sourceMessageIds
+    })
     const isCliOutput = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'
@@ -66,9 +70,17 @@ export const HappyAssistantMessage = memo(function HappyAssistantMessage() {
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount, roundSummary }
 
     const history = ctx.metadata?.capabilities?.conversationHistory
+    const historicalForkLocalId = ctx.assistantForkPoints?.get(messageId)
     const showForkCurrent = Boolean(
-        history?.forkCurrent
+        (history?.forkCurrent || ctx.allowInactiveFork)
         && ctx.isLatestCompletedBoundary?.(messageId)
+        && (!ctx.disabled || ctx.allowInactiveFork === true)
+        && ctx.onForkConversation
+    )
+    const showHistoricalFork = Boolean(
+        !showForkCurrent
+        && history?.forkAtMessage
+        && historicalForkLocalId
         && !ctx.disabled
         && ctx.onForkConversation
     )
@@ -81,6 +93,7 @@ export const HappyAssistantMessage = memo(function HappyAssistantMessage() {
         <MessagePrimitive.Root
             id={elementId}
             data-hapi-message-role="assistant"
+            data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             className={`happy-message ${rootClass} scroll-mt-4`}
         >
             {isCliOutput
@@ -93,9 +106,13 @@ export const HappyAssistantMessage = memo(function HappyAssistantMessage() {
                 copyText={copyText || undefined}
                 metadata={metadata}
                 messageElementId={elementId}
-                showFork={showForkCurrent}
+                showFork={showForkCurrent || showHistoricalFork}
                 historyActionPending={ctx.historyActionPending}
-                onFork={showForkCurrent ? () => ctx.onForkConversation!() : undefined}
+                onFork={showForkCurrent
+                    ? () => ctx.onForkConversation!()
+                    : showHistoricalFork
+                        ? () => ctx.onForkConversation!(historicalForkLocalId!)
+                        : undefined}
             />
         </MessagePrimitive.Root>
     )

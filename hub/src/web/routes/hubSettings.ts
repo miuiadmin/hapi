@@ -1,11 +1,15 @@
 import { Hono } from 'hono'
 import { UpdateHubSettingsRequestSchema, type HubSettingsResponse } from '@hapi/protocol'
+import { mergePeerSpawnDefaults } from '@hapi/protocol/peerSpawnDefaults'
 import {
     getSettingsFile,
     readSettingsOrThrowCached,
     updateSettings,
     type Settings
 } from '../../config/settings'
+import { applyPeerSpawnDefaultsPatch } from '../../config/peerSpawnDefaults'
+import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
+import type { SyncEngine } from '../../sync/syncEngine'
 import type { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 
@@ -16,11 +20,17 @@ function toHubSettings(settings: Settings): HubSettingsResponse {
         sessionSummaryContract: settings.sessionSummaryContract === true,
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
         autoTitlePerTurn: settings.autoTitlePerTurn === true,
-        disablePeerTools: settings.disablePeerTools === true
+        disablePeerTools: settings.disablePeerTools === true,
+        autoBridgeTransientModelErrors: settings.autoBridgeTransientModelErrors === true,
+        peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults)
     }
 }
 
-export function createHubSettingsRoutes(dataDir: string, store: Store): Hono<WebAppEnv> {
+export function createHubSettingsRoutes(
+    dataDir: string,
+    getSyncEngine?: () => SyncEngine | null,
+    store?: Store
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
     // Authenticated readers (any namespace) can observe hub-wide display/emit
@@ -40,6 +50,39 @@ export function createHubSettingsRoutes(dataDir: string, store: Store): Hono<Web
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
+        const providedFieldCount = [
+            parsed.data.sessionSummaryContract,
+            parsed.data.sessionSummaryInChat,
+            parsed.data.autoTitlePerTurn,
+            parsed.data.disablePeerTools,
+            parsed.data.autoBridgeTransientModelErrors
+        ].filter((value) => value !== undefined).length
+        if (providedFieldCount > 1) {
+            return c.json({ error: 'Update one hub setting per request' }, 400)
+        }
+        // Auto-bridge is not a plain settings write: SyncEngine fans the pref out
+        // to live Cursor CLIs and rolls the disk value back if any session refuses.
+        // Keep it outside the updateSettings transaction so the engine owns both
+        // halves under its own lock; the write still goes through updateSettings
+        // underneath, so the settings read cache stays write-through fresh.
+        if (parsed.data.autoBridgeTransientModelErrors !== undefined) {
+            const enabled = parsed.data.autoBridgeTransientModelErrors
+            const engine = getSyncEngine?.() ?? null
+            if (engine) {
+                try {
+                    // Disk write + fanout + rollback share SyncEngine's lock so
+                    // concurrent PUTs cannot leave CLI prefs ahead of settings.json.
+                    await engine.applyAutoBridgeTransientModelErrorsSetting(dataDir, enabled)
+                } catch (error) {
+                    const message = error instanceof Error
+                        ? error.message
+                        : 'Failed to update every active Cursor session'
+                    return c.json({ error: message }, 409)
+                }
+            } else {
+                await writeAutoBridgeTransientModelErrorsEnabled(dataDir, enabled)
+            }
+        }
         const response = await updateSettings(getSettingsFile(dataDir), (current) => {
             const settings: Settings = { ...current }
             if (parsed.data.sessionSummaryContract !== undefined) {
@@ -54,6 +97,12 @@ export function createHubSettingsRoutes(dataDir: string, store: Store): Hono<Web
             if (parsed.data.disablePeerTools !== undefined) {
                 settings.disablePeerTools = parsed.data.disablePeerTools
             }
+            if (parsed.data.peerSpawnDefaults !== undefined) {
+                settings.peerSpawnDefaults = applyPeerSpawnDefaultsPatch(
+                    current,
+                    parsed.data.peerSpawnDefaults
+                )
+            }
             return {
                 settings,
                 result: toHubSettings(settings)
@@ -62,7 +111,7 @@ export function createHubSettingsRoutes(dataDir: string, store: Store): Hono<Web
         // Re-enabling per-turn rewrites resets the "manual rename wins" era:
         // every nameLocked pin is cleared so the agent can retake the title.
         if (parsed.data.autoTitlePerTurn === true) {
-            store.sessions.clearSessionNameLocks()
+            store?.sessions.clearSessionNameLocks()
         }
         c.header('Cache-Control', 'no-store')
         return c.json(response)

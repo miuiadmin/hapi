@@ -7,6 +7,7 @@ const {
     listResumableSessionsMock,
     getLocalResumeTargetMock,
     handoffSessionToLocalMock,
+    prepareSessionForLocalResumeMock,
     renderMock,
     runCodexMock,
     runClaudeMock,
@@ -24,6 +25,7 @@ const {
     listResumableSessionsMock: vi.fn(),
     getLocalResumeTargetMock: vi.fn(),
     handoffSessionToLocalMock: vi.fn(async () => {}),
+    prepareSessionForLocalResumeMock: vi.fn(async () => {}),
     renderMock: vi.fn(),
     runCodexMock: vi.fn(async () => {}),
     runClaudeMock: vi.fn(async () => {}),
@@ -44,7 +46,8 @@ vi.mock('@/api/api', () => ({
         create: async () => ({
             listResumableSessions: listResumableSessionsMock,
             getLocalResumeTarget: getLocalResumeTargetMock,
-            handoffSessionToLocal: handoffSessionToLocalMock
+            handoffSessionToLocal: handoffSessionToLocalMock,
+            prepareSessionForLocalResume: prepareSessionForLocalResumeMock
         })
     }
 }))
@@ -80,6 +83,7 @@ describe('resumeCommand', () => {
         listResumableSessionsMock.mockReset()
         getLocalResumeTargetMock.mockReset()
         handoffSessionToLocalMock.mockClear()
+        prepareSessionForLocalResumeMock.mockClear()
         renderMock.mockReset()
         renderMock.mockImplementation((element: { props?: { onSelect?: (sessionId: string) => void } }) => {
             queueMicrotask(() => element.props?.onSelect?.('picked-session'))
@@ -150,7 +154,8 @@ describe('resumeCommand', () => {
             workingDirectory: '/tmp/project',
             resumeSessionId: 'acp-session-1',
             startedBy: 'terminal',
-            permissionMode: 'default'
+            permissionMode: 'default',
+            model: undefined
         })
         expect(runCursorMock).not.toHaveBeenCalled()
     })
@@ -212,7 +217,8 @@ describe('resumeCommand', () => {
             workingDirectory: '/tmp/project',
             resumeSessionId: 'acp-session-1',
             startedBy: 'terminal',
-            permissionMode: 'default'
+            permissionMode: 'default',
+            model: undefined
         })
     })
 
@@ -276,6 +282,56 @@ describe('resumeCommand', () => {
         })
     })
 
+    it('resumes a DSH target through the DSH launcher instead of falling through to Cursor', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'dsh-session-1',
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'dsh-session-1',
+            startedBy: 'terminal',
+            permissionMode: undefined,
+            model: undefined
+        })
+    })
+
+    it('hands off an active DSH target before starting its remote launcher', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh-active',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: true,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'dsh-session-active'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh-active']))
+
+        expect(handoffSessionToLocalMock).toHaveBeenCalledWith('hapi-session-dsh-active')
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh-active',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'dsh-session-active',
+            startedBy: 'terminal',
+            permissionMode: undefined,
+            model: undefined
+        })
+    })
+
     it('resumes an inactive Claude target without handoff', async () => {
         getLocalResumeTargetMock.mockResolvedValue({
             sessionId: 'hapi-session-2',
@@ -294,6 +350,10 @@ describe('resumeCommand', () => {
         await resumeCommand.run(createContext(['hapi-session-2']))
 
         expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        // The hub clears a hub-authored archive before the reopen (#1911 guard).
+        expect(prepareSessionForLocalResumeMock).toHaveBeenCalledWith('hapi-session-2')
+        expect(prepareSessionForLocalResumeMock.mock.invocationCallOrder[0])
+            .toBeLessThan(runClaudeMock.mock.invocationCallOrder[0]!)
         expect(runClaudeMock).toHaveBeenCalledWith({
             existingSessionId: 'hapi-session-2',
             workingDirectory: '/tmp/project',

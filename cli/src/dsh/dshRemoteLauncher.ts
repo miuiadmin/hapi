@@ -209,6 +209,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             }
 
             // Snapshot before any await in this iteration: a user stop that
+            // Snapshot before any await in this iteration: a user stop that
             // lands while the dequeued batch waits for a pending close (or for
             // the respawn) resets the queue, but a batch already removed by
             // waitForMessagesAndGetAsString cannot be discarded that way — the
@@ -253,6 +254,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     }
                     continue
                 }
+                if (generationAtDequeue !== this.abortGeneration) {
+                    // A user stop landed while the replacement backend was
+                    // being established: the user already saw 'Session
+                    // aborted' and the queue was reset, so this already-
+                    // dequeued batch must not run (same contract as the
+                    // mid-prompt reconnect below).
+                    this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
+                }
             }
 
             // Reference the CURRENT backend/session per iteration (not a
@@ -278,29 +291,51 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // saw 'Session aborted').
                 const generationBeforeRespawn = this.abortGeneration
                 let resumed = false
-                if (this.session.sessionId && backend.supportsSessionResume()) {
-                    try {
-                        acpSessionId = await backend.resumeSession({
-                            sessionId: this.session.sessionId,
+                try {
+                    if (this.session.sessionId && backend.supportsSessionResume()) {
+                        try {
+                            acpSessionId = await backend.resumeSession({
+                                sessionId: this.session.sessionId,
+                                cwd: this.session.path,
+                                // Same cwd as the original establishment: dsh
+                                // compares the resume cwd by realpath and rejects
+                                // mismatches terminally (invalidParams).
+                                mcpServers: this.acpMcpServers
+                            })
+                            resumed = true
+                        } catch (error) {
+                            // Mirror the startup path: a stale on-disk session must
+                            // not strand the HAPI session.
+                            const message = error instanceof Error ? error.message : String(error)
+                            logger.warn('[dsh-acp] session/resume after abort failed; starting a fresh session', { message })
+                        }
+                    }
+                    if (!resumed) {
+                        acpSessionId = await backend.newSession({
                             cwd: this.session.path,
-                            // Same cwd as the original establishment: dsh
-                            // compares the resume cwd by realpath and rejects
-                            // mismatches terminally (invalidParams).
                             mcpServers: this.acpMcpServers
                         })
-                        resumed = true
-                    } catch (error) {
-                        // Mirror the startup path: a stale on-disk session must
-                        // not strand the HAPI session.
-                        const message = error instanceof Error ? error.message : String(error)
-                        logger.warn('[dsh-acp] session/resume after abort failed; starting a fresh session', { message })
                     }
-                }
-                if (!resumed) {
-                    acpSessionId = await backend.newSession({
-                        cwd: this.session.path,
-                        mcpServers: this.acpMcpServers
-                    })
+                } catch (error) {
+                    // The backend itself died inside the recovery window
+                    // (child exit, closed transport): every RPC on it now
+                    // rejects the same way, so let the exception escape the
+                    // recovery instead of the loop — surface one error, drop
+                    // the batch, clear the dead backend so the next message
+                    // goes through the reconnect branch, and keep the
+                    // ended marker so recovery is retried after the rebuild.
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[dsh-acp] session restart failed; the backend will be rebuilt for the next message', { message })
+                    const failureMessage = `DSH session restart failed: ${message}`
+                    this.session.sendSessionEvent({ type: 'message', message: failureMessage })
+                    this.messageBuffer.addMessage(failureMessage, 'status')
+                    this.backend = null
+                    this.acpSessionId = null
+                    this.session.onThinkingChange(false)
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
                 }
                 this.acpSessionId = acpSessionId
                 // Re-pin through onSessionFound: the respawn replaces the stored
@@ -427,6 +462,20 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 const message = error instanceof Error ? error.message : String(error)
                 logger.warn('[dsh-acp] prompt preparation failed', { message })
                 prompt = [{ type: 'text', text: batch.message }]
+            }
+            if (generationAtDequeue !== this.abortGeneration) {
+                // A user stop landed while the prompt content was being
+                // prepared (image reads await): the user already saw
+                // 'Session aborted' and the queue was reset, so the
+                // already-dequeued batch must not run (same contract as the
+                // reconnect windows).
+                this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
+                this.session.onThinkingChange(false)
+                await this.permissionHandler?.cancelAll('Prompt finished')
+                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                    this.session.sendSessionEvent({ type: 'ready' })
+                }
+                continue
             }
             let failureMessage: string | null = null
             try {
@@ -657,14 +706,24 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // mode RPC, so only spawn-time DSH_PERMISSION_MODE reaches the
             // server sandbox.
             () => this.session.getPermissionMode() as PermissionMode | undefined,
-            // Permission 'abort' decisions cancel through the backend directly
-            // and never enter handleAbort: record the pending close here so the
-            // main loop defers the next message until the session/close response
-            // lands, exactly like a handleAbort-initiated close. The cancel it
-            // issues also arms the implicit-end detector, mirroring handleAbort.
-            (cancellation) => {
-                this.abortCompletion ??= cancellation
-                this.cancelSinceEstablishment = true
+            {
+                // Permission 'abort' decisions cancel through the backend
+                // directly and never enter handleAbort: record the pending
+                // close here so the main loop defers the next message until
+                // the session/close response lands, exactly like a
+                // handleAbort-initiated close. The cancel it issues also arms
+                // the implicit-end detector, mirroring handleAbort.
+                onAbortClose: (cancellation) => {
+                    this.abortCompletion ??= cancellation
+                    this.cancelSinceEstablishment = true
+                },
+                // Arms the implicit-end detector independently of the close
+                // bookkeeping: the detector only needs to know a cancel was
+                // issued through the backend, and this hook fires exactly
+                // then (see AcpPermissionHandler.handlePermissionResponse).
+                onCancelIssued: () => {
+                    this.cancelSinceEstablishment = true
+                }
             }
         )
     }
@@ -816,6 +875,14 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // short by the context limit and must not read as a normal
                 // completion.
                 if (message.stopReason === 'max_tokens') {
+                    // Remote clients see the transcript, not this local log:
+                    // publish the truncation through the session event
+                    // channel too, or a cut-short turn just falls silent in
+                    // the web/mobile UI.
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Turn truncated: the model hit its output limit before finishing (max_tokens).'
+                    })
                     this.messageBuffer.addMessage('Turn truncated: context limit reached', 'status')
                 } else {
                     this.messageBuffer.addMessage('Turn complete', 'status')
@@ -826,6 +893,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             case 'tool_call':
             case 'tool_result':
             case 'plan':
+            case 'round_summary':
                 break
             default: {
                 const _exhaustive: never = message
@@ -855,7 +923,6 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 message: 'Cannot switch model: the DSH agent exposes no model config option.'
             })
             return null
-
         }
         try {
             await backend.setConfigOption(acpSessionId, option.id, model)

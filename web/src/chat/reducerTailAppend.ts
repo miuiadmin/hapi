@@ -24,6 +24,10 @@ export type TailAppendReduceState = {
     /** Last input array; kept by identity so appends can be detected. */
     normalized: NormalizedMessage[]
     agentState: AgentState | null | undefined
+    /** Last navigation-targeted pending request id; a change can synthesize a
+     * block outside the append-only suffix (it may predate the loaded window),
+     * so it is tracked like agentState to decide fast-path eligibility. */
+    pendingRequestTargetId: string | undefined
     result: ReduceChatBlocksResult
     /** Every id that keys a tool block in reduceTimeline's toolBlocksById
      * registry — tool-call ids *and* tool-result tool_use_ids (a result can
@@ -40,12 +44,13 @@ export function createTailAppendReduceState(
     sessionId: string,
     normalized: NormalizedMessage[],
     agentState: AgentState | null | undefined,
-    result: ReduceChatBlocksResult
+    result: ReduceChatBlocksResult,
+    pendingRequestTargetId?: string
 ): TailAppendReduceState {
     const toolCallIds = new Set<string>()
     const streamIds = new Set<string>()
     collectAppendIdentities(normalized, toolCallIds, streamIds)
-    return { sessionId, normalized, agentState, result, toolCallIds, streamIds }
+    return { sessionId, normalized, agentState, pendingRequestTargetId, result, toolCallIds, streamIds }
 }
 
 function collectAppendIdentities(
@@ -218,22 +223,26 @@ export function reduceChatBlocksWithTailAppend(
         normalized: NormalizedMessage[]
         agentState: AgentState | null | undefined
         goalStateMessages?: NormalizedMessage[]
+        pendingRequestTargetId?: string
     }
 ): { result: ReduceChatBlocksResult; state: TailAppendReduceState } {
     const { sessionId, normalized, agentState } = params
     const goalSource = params.goalStateMessages ?? normalized
+    const pendingRequestTargetId = params.pendingRequestTargetId
 
     const fullReduce = (): { result: ReduceChatBlocksResult; state: TailAppendReduceState } => {
-        const options: ReduceChatBlocksOptions = params.goalStateMessages
-            ? { goalStateMessages: params.goalStateMessages }
-            : {}
+        const options: ReduceChatBlocksOptions = {
+            ...(params.goalStateMessages ? { goalStateMessages: params.goalStateMessages } : {}),
+            ...(pendingRequestTargetId !== undefined ? { pendingRequestTargetId } : {})
+        }
         const result = reduceChatBlocks(normalized, agentState, options)
-        return { result, state: createTailAppendReduceState(sessionId, normalized, agentState, result) }
+        return { result, state: createTailAppendReduceState(sessionId, normalized, agentState, result, pendingRequestTargetId) }
     }
 
     if (
         state === null
         || state.sessionId !== sessionId
+        || state.pendingRequestTargetId !== pendingRequestTargetId
         // Permission/agentState changes can alter prefix blocks (permission
         // merging, pending-card synthesis), so only identical agentState
         // references qualify.
@@ -275,6 +284,6 @@ export function reduceChatBlocksWithTailAppend(
     collectAppendIdentities(appended, toolCallIds, streamIds)
     return {
         result,
-        state: { sessionId, normalized, agentState, result, toolCallIds, streamIds }
+        state: { sessionId, normalized, agentState, pendingRequestTargetId, result, toolCallIds, streamIds }
     }
 }

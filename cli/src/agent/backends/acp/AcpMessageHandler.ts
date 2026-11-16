@@ -4,6 +4,7 @@ import type { AgentMessage, PlanItem } from '@/agent/types';
 import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedImages';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 import { asString, isObject } from '@hapi/protocol';
+import { extractNotifySummary } from '@hapi/protocol/messages';
 import { canonicalizeDiffToolInput, deriveToolNameWithSource, isPlaceholderToolName, resolveDiffToolSemanticHint } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { isInternalEventJson } from '@/agent/internalEventFilter';
@@ -375,6 +376,43 @@ function normalizeAcpToolContent(content: unknown): string | object | null {
     return diffBlock ?? parts.join('');
 }
 
+/**
+ * True when rawOutput is a plain object whose only key is `metadata`, i.e. it
+ * carries execution details but no output body. Agents such as OpenCode v2
+ * send the actual output in the ACP content array next to such a rawOutput.
+ */
+function isMetadataOnlyRawOutput(rawOutput: unknown): rawOutput is { metadata: unknown } {
+    if (!isObject(rawOutput)) return false;
+    const keys = Object.keys(rawOutput);
+    return keys.length === 1 && keys[0] === 'metadata';
+}
+
+/**
+ * Chooses the value reported as a tool result.
+ *
+ * rawOutput is preferred (Claude/Codex path). When absent, the ACP content
+ * array sent by agents such as Gemini and OpenCode is normalized. If content
+ * is not an array (normalizeAcpToolContent returns null), the original
+ * content value is used to avoid silent data loss.
+ *
+ * When rawOutput carries only `metadata` and content normalizes, the
+ * normalized content becomes the output and the metadata is kept next to it.
+ */
+function resolveToolResultOutput(rawOutput: unknown, content: unknown): unknown {
+    if (rawOutput !== undefined) {
+        if (isMetadataOnlyRawOutput(rawOutput)) {
+            const normalized = normalizeAcpToolContent(content);
+            if (normalized !== null) {
+                const body = typeof normalized === 'string' ? { output: normalized } : normalized;
+                return { ...body, metadata: rawOutput.metadata };
+            }
+        }
+        return rawOutput;
+    }
+    const normalized = normalizeAcpToolContent(content);
+    return normalized !== null ? normalized : content;
+}
+
 function normalizePlanEntries(entries: unknown): PlanItem[] {
     if (!Array.isArray(entries)) return [];
 
@@ -506,6 +544,9 @@ function mayBeUnfinishedControlEnvelope(text: string): boolean {
 
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
+    // The agent's own tool name and args by call id (agy sends `name`/`args`
+    // on every tool_call and tool_call_update).
+    private readonly nativeTools = new Map<string, { nativeName: string; nativeArgs: unknown }>();
     private acceptingUpdates = true;
     private bufferedText = '';
     // Stable stream id for a text segment that has already been emitted by an
@@ -659,6 +700,34 @@ export class AcpMessageHandler {
     drainBuffers(): void {
         this.flushReasoning();
         this.flushText();
+    }
+
+    /**
+     * Drop buffered speech/reasoning without emitting. Used when a post-done
+     * harness resume was suppressed as live snapshots (#2267): idle flush keeps
+     * the text in the buffer, and the next prompt()'s pre-swap drain would
+     * otherwise forward it once the silence gate reopens.
+     */
+    discardBuffers(): void {
+        this.bufferedText = '';
+        this.textStreamId = null;
+        this.clearTextIdleFlushTimer();
+        this.resetReasoningState();
+    }
+
+    /**
+     * #2267 / #2268 — if the open text buffer already ends with a done footer,
+     * flush it now (before the post-prompt quiet window) so finished-shell
+     * harness prose cannot coalesce onto the same segment.
+     *
+     * End-anchored only: destructive truncation of buried harness/steer text
+     * belongs in the Cursor launcher, which knows soft-steer ownership.
+     */
+    sealDoneNotifySummaryIfPresent(): boolean {
+        if (!this.bufferedText) return false;
+        if (extractNotifySummary(this.bufferedText)?.status !== 'done') return false;
+        this.drainBuffers();
+        return true;
     }
 
     private clearTextIdleFlushTimer(): void {
@@ -925,6 +994,17 @@ export class AcpMessageHandler {
         return source;
     }
 
+    private nativeToolFields(toolCallId: string, update: Record<string, unknown>): { nativeName?: string; nativeArgs?: unknown } {
+        const nativeName = asString(update.name);
+        if (nativeName) {
+            this.nativeTools.set(toolCallId, {
+                nativeName,
+                nativeArgs: update.args !== undefined ? update.args : update.rawInput
+            });
+        }
+        return this.nativeTools.get(toolCallId) ?? {};
+    }
+
     private handleToolCall(update: Record<string, unknown>): void {
         const toolCallId = asString(update.toolCallId);
         if (!toolCallId) return;
@@ -983,7 +1063,8 @@ export class AcpMessageHandler {
             input,
             status,
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         });
     }
 
@@ -995,7 +1076,8 @@ export class AcpMessageHandler {
         const existing = this.toolCalls.get(toolCallId);
         const presentation = {
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         };
 
         if (isUsableRawInput(update.rawInput)) {
@@ -1100,8 +1182,10 @@ export class AcpMessageHandler {
             // generated-image registration agent_message_chunk images use;
             // only the remaining blocks become the tool output, so the raw
             // multi-MB base64 array never leaks into the transcript.
+            // A rawOutput carrying only `metadata` defers to the normalized
+            // content, keeping the metadata beside it (#2299).
             let output: unknown;
-            if (update.rawOutput !== undefined) {
+            if (update.rawOutput !== undefined && !isMetadataOnlyRawOutput(update.rawOutput)) {
                 output = update.rawOutput;
             } else {
                 const { imageBlocks, remaining, hadImages } = splitToolContentImages(update.content);
@@ -1111,11 +1195,23 @@ export class AcpMessageHandler {
                     }
                 }
                 const source = hadImages ? remaining : update.content;
-                // If content is not an array (normalizeAcpToolContent returns
-                // null), fall back to the image-stripped value to avoid silent
-                // data loss — without ever re-introducing the image payload.
-                const normalized = normalizeAcpToolContent(source);
-                output = normalized !== null ? normalized : source;
+                if (update.rawOutput !== undefined) {
+                    // Metadata-only rawOutput with normalizable content: the
+                    // content becomes the body and the metadata rides along.
+                    const normalized = normalizeAcpToolContent(source);
+                    if (normalized !== null) {
+                        const body = typeof normalized === 'string' ? { output: normalized } : normalized;
+                        output = { ...body, metadata: update.rawOutput.metadata };
+                    } else {
+                        output = update.rawOutput;
+                    }
+                } else {
+                    // If content is not an array (normalizeAcpToolContent returns
+                    // null), fall back to the image-stripped value to avoid silent
+                    // data loss — without ever re-introducing the image payload.
+                    const normalized = normalizeAcpToolContent(source);
+                    output = normalized !== null ? normalized : source;
+                }
             }
             this.onMessage({
                 type: 'tool_result',

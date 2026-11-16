@@ -1,3 +1,4 @@
+import { OpencodeCompactionProjector, opencodeCompactionEventId } from './utils/opencodeCompactionProjector';
 import { logger } from '@/ui/logger';
 import { canonicalizeDiffToolInput } from '@/agent/utils';
 import { opencodeLocal } from './opencodeLocal';
@@ -19,6 +20,7 @@ import { configuration } from '@/configuration';
 import type { PermissionCompletion } from '@/modules/common/permission/BasePermissionHandler';
 import { hashObject } from '@/utils/deterministicJson';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
+import { createLocalHistoryPublisher } from './localHistory';
 
 type OpencodeLocalLauncherOptions = {
     hookServer: OpencodeHookServer;
@@ -50,18 +52,6 @@ function parseMaybeJson(value: unknown): unknown {
         }
     }
     return value;
-}
-
-function getNumber(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-        return value;
-    }
-    return null;
-}
-
-function getTextDelta(payloadRecord: Record<string, unknown> | null): string | null {
-    const delta = payloadRecord?.delta;
-    return typeof delta === 'string' && delta.length > 0 ? delta : null;
 }
 
 function buildToolSignature(name: string, input: unknown): string {
@@ -180,6 +170,17 @@ export async function opencodeLocalLauncher(
     session: OpencodeSession,
     opts: OpencodeLocalLauncherOptions
 ): Promise<'switch' | 'exit'> {
+    // Terminal resume reaches this path without starting a remote controller.
+    // Reject before config/plugin/scanner work or any native writer/stdio spawn.
+    const release = session.runtimeGate.enterLocalRuntime(session.client.getMetadata()?.opencodeRewind);
+    try { return await launchLocal(session, opts); }
+    finally { release(); }
+}
+
+async function launchLocal(
+    session: OpencodeSession,
+    opts: OpencodeLocalLauncherOptions
+): Promise<'switch' | 'exit'> {
     const hookUrl = opts.hookUrl;
 
     const opencodeConfigDir = resolveOpencodeConfigDir(session);
@@ -239,7 +240,28 @@ export async function opencodeLocalLauncher(
     });
 
     let storageScanner: OpencodeStorageScannerHandle | null = null;
-    const messageRoles = new Map<string, string>();
+    const projectors = new Map<string, OpencodeCompactionProjector>();
+    const projectorFor = (sessionId: string) => {
+        let projector = projectors.get(sessionId);
+        if (!projector) {
+            projector = new OpencodeCompactionProjector({
+                sessionId,
+                onControlMessage: messageId => historyPublisher.publish(sessionId, messageId, () => {}),
+                onSummary: (id, summary) => historyPublisher.publish(sessionId, id, () =>
+                    session.client.sendAgentMessage({ type: 'compact-summary', summary }, opencodeCompactionEventId(sessionId, id))),
+                onFailure: id => historyPublisher.publish(sessionId, id, () =>
+                    session.client.sendAgentMessage({ type: 'error', message: 'OpenCode compaction failed or was interrupted.' }, `${opencodeCompactionEventId(sessionId, id)}:failed`)),
+                onText: (part) => {
+                    if (!part.complete || part.type !== 'text' || sentTextParts.has(part.id)) return;
+                    if (part.role === 'user') sendLocalUserMessage(part.text, part.messageId);
+                    else sendLocalAgentMessage({ type: 'message', message: part.text }, part.messageId);
+                    sentTextParts.add(part.id);
+                }
+            });
+            projectors.set(sessionId, projector);
+        }
+        return projector;
+    };
     const sentTextParts = new Set<string>();
     const sentToolCalls = new Set<string>();
     const sentToolResults = new Set<string>();
@@ -247,8 +269,15 @@ export async function opencodeLocalLauncher(
     // emitted first (e.g. `{filePath}`), a later canonical full input replaces
     // it so the web Edit/Write view receives the complete arguments.
     const emittedToolInputs = new Map<string, unknown>();
-    const textBuffers = new Map<string, string>();
     const toolExecutionQueues = new Map<string, string[]>();
+    const historyPublisher = session.localHistoryPublisher ??= createLocalHistoryPublisher(session.client,
+        (error) => logger.warn('[opencode-local] History publication paused after synchronization failure', error));
+    const sendLocalUserMessage = (text: string, messageId: string | null) => {
+        historyPublisher.publish(session.sessionId, messageId, () => session.sendUserMessage(text));
+    };
+    const sendLocalAgentMessage = (message: Parameters<OpencodeSession['sendAgentMessage']>[0], messageId: string | null) => {
+        historyPublisher.publish(session.sessionId, messageId, () => session.sendAgentMessage(message));
+    };
 
     const handleHookEvent = (event: OpencodeHookEvent) => {
         const payload = event.payload;
@@ -260,6 +289,11 @@ export async function opencodeLocalLauncher(
         if (sessionId) {
             session.onSessionFound(sessionId);
             storageScanner?.onNewSession(sessionId);
+        }
+
+        if (eventType === 'transcript.scan.completed' && sessionId) {
+            projectorFor(sessionId).flush();
+            return;
         }
 
         if (eventType === 'session.created' || eventType === 'session.updated') {
@@ -279,11 +313,7 @@ export async function opencodeLocalLauncher(
             if (!message) {
                 return;
             }
-            const messageId = getString(message.id) || getString(message.messageId);
-            const role = getString(message.role);
-            if (messageId && role) {
-                messageRoles.set(messageId, role);
-            }
+            if (sessionId) projectorFor(sessionId).message(message);
             return;
         }
 
@@ -293,48 +323,11 @@ export async function opencodeLocalLauncher(
                 return;
             }
             const partType = getString(part.type);
-            const partId = getString(part.id);
             const messageId = getString(part.messageID)
                 || getString(part.messageId)
                 || (payloadRecord ? getString(payloadRecord.messageID) || getString(payloadRecord.messageId) : null);
-            const delta = getTextDelta(payloadRecord);
-
-            if (partType === 'text') {
-                if (partId && sentTextParts.has(partId)) {
-                    return;
-                }
-                const role = (messageId && messageRoles.get(messageId)) ?? 'assistant';
-                const key = partId ?? messageId;
-                const bufferValue = key ? textBuffers.get(key) ?? '' : '';
-                const textFromPart = getString(part.text);
-                const nextBuffer = delta ? bufferValue + delta : bufferValue;
-
-                if (key && (delta || textFromPart)) {
-                    textBuffers.set(key, textFromPart ?? nextBuffer);
-                }
-
-                const time = isObject(part.time) ? part.time as Record<string, unknown> : null;
-                const hasEnd = time ? getNumber(time.end) !== null : false;
-                const shouldFlush = role === 'user'
-                    || part.synthetic === true
-                    || hasEnd
-                    || (!delta && Boolean(textFromPart));
-                const text = textFromPart ?? (key ? textBuffers.get(key) : null);
-                if (shouldFlush && text) {
-                    if (role === 'user') {
-                        session.sendUserMessage(text);
-                    } else {
-                        session.sendAgentMessage({ type: 'message', message: text });
-                    }
-                    if (partId) {
-                        sentTextParts.add(partId);
-                    }
-                    if (key) {
-                        textBuffers.delete(key);
-                    }
-                }
-                return;
-            }
+            if (sessionId) projectorFor(sessionId).part(part);
+            if (partType === 'text' || partType === 'compaction' || partType === 'reasoning') return;
 
             const toolCall = parseToolCall(part);
             if (toolCall && isUsableToolInput(toolCall.input) && !sentToolResults.has(toolCall.callId)) {
@@ -352,13 +345,13 @@ export async function opencodeLocalLauncher(
                 if (shouldEmit) {
                     emittedToolInputs.set(toolCall.callId, toolCall.input);
                     sentToolCalls.add(toolCall.callId);
-                    session.sendAgentMessage({
+                    sendLocalAgentMessage({
                         type: 'tool-call',
                         name: toolCall.name,
                         callId: toolCall.callId,
                         input: toolCall.input,
                         ...(toolCall.title ? { nativeTitle: toolCall.title } : {})
-                    });
+                    }, messageId);
                 }
             }
 
@@ -368,21 +361,21 @@ export async function opencodeLocalLauncher(
                 // whatever input is on this completed part before the result.
                 if (!sentToolCalls.has(toolResult.callId) && toolCall) {
                     sentToolCalls.add(toolResult.callId);
-                    session.sendAgentMessage({
+                    sendLocalAgentMessage({
                         type: 'tool-call',
                         name: toolCall.name,
                         callId: toolCall.callId,
                         input: toolCall.input,
                         ...(toolCall.title ? { nativeTitle: toolCall.title } : {})
-                    });
+                    }, messageId);
                 }
                 sentToolResults.add(toolResult.callId);
                 emittedToolInputs.delete(toolResult.callId);
-                session.sendAgentMessage({
+                sendLocalAgentMessage({
                     type: 'tool-call-result',
                     callId: toolResult.callId,
                     output: toolResult.output
-                });
+                }, messageId);
             }
             return;
         }
@@ -393,6 +386,8 @@ export async function opencodeLocalLauncher(
             }
             const record = payload as Record<string, unknown>;
             const tool = isObject(record.tool) ? record.tool as Record<string, unknown> : record;
+            const nativeMessageId = getString(record.messageID) || getString(record.messageId)
+                || getString(tool.messageID) || getString(tool.messageId);
             let name = getString(tool.name) || getString(record.name);
             if (!name) {
                 return;
@@ -462,13 +457,13 @@ export async function opencodeLocalLauncher(
                 if (shouldEmit) {
                     emittedToolInputs.set(callId, toolInput);
                     sentToolCalls.add(callId);
-                    session.sendAgentMessage({
+                    sendLocalAgentMessage({
                         type: 'tool-call',
                         name,
                         callId,
                         input: toolInput,
                         ...(getString(tool.title ?? record.title) ? { nativeTitle: getString(tool.title ?? record.title) } : {})
-                    });
+                    }, nativeMessageId);
                 }
                 return;
             }
@@ -485,17 +480,17 @@ export async function opencodeLocalLauncher(
                 if (!sentToolCalls.has(callId) || shouldEmit) {
                     emittedToolInputs.set(callId, toolInput);
                     sentToolCalls.add(callId);
-                    session.sendAgentMessage({
+                    sendLocalAgentMessage({
                         type: 'tool-call',
                         name,
                         callId,
                         input: toolInput,
                         ...(getString(tool.title ?? record.title) ? { nativeTitle: getString(tool.title ?? record.title) } : {})
-                    });
+                    }, nativeMessageId);
                 }
                 sentToolResults.add(callId);
                 emittedToolInputs.delete(callId);
-                session.sendAgentMessage({
+                sendLocalAgentMessage({
                     type: 'tool-call-result',
                     callId,
                     output: {
@@ -503,7 +498,7 @@ export async function opencodeLocalLauncher(
                         metadata: tool.metadata ?? record.metadata,
                         isError: tool.is_error ?? record.is_error
                     }
-                });
+                }, nativeMessageId);
                 return;
             }
         }
@@ -532,6 +527,10 @@ export async function opencodeLocalLauncher(
                 ?? record.pattern
                 ?? record.message
                 ?? record.metadata;
+            const toolCallId = getString(record.toolCallId)
+                ?? getString(record.tool_call_id)
+                ?? getString(metadata?.toolCallId)
+                ?? getString(metadata?.tool_call_id);
 
             session.client.updateAgentState((currentState) => ({
                 ...currentState,
@@ -539,6 +538,7 @@ export async function opencodeLocalLauncher(
                     ...currentState.requests,
                     [id]: {
                         tool: toolName,
+                        ...(toolCallId ? { toolCallId } : {}),
                         arguments: toolInput,
                         createdAt: Date.now()
                     }
@@ -640,6 +640,7 @@ export async function opencodeLocalLauncher(
         if (storageScanner) {
             await storageScanner.cleanup();
         }
+        await historyPublisher.flush();
         if (happyServer) {
             happyServer.stop();
             logger.debug('[opencode-local]: Stopped hapi MCP server');

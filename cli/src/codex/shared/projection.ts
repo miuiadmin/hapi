@@ -1,4 +1,5 @@
 import { CodexRoundDuration } from '../utils/roundDuration';
+import { CodexGenerationLedger } from '../utils/codexGenerationLedger';
 import { createHash } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { normalizeSessionDisplayTitle } from '@/agent/sessionDisplayRename';
@@ -6,6 +7,8 @@ import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
 import { codexPlanProposalId } from './plan';
+import { CodexCompactionSummaryLookup } from '../utils/codexCompactionSummary';
+import { asyncQuestionReplies, asyncQuestionsForItem } from './asyncQuestions';
 
 export function inputText(input: unknown): string {
     if (!Array.isArray(input)) return '';
@@ -37,6 +40,7 @@ function metadataHasDisplayTitle(metadata: { name?: string; summary?: { text: st
 export class SharedCodexProjection {
     private converter = new AppServerEventConverter();
     private readonly roundDuration = new CodexRoundDuration();
+    private readonly generation = new CodexGenerationLedger();
     private readonly emitted = new Set<string>();
     private readonly turns = new Map<string, string>();
     private readonly turnModels = new Map<string, string>();
@@ -44,13 +48,27 @@ export class SharedCodexProjection {
     private readonly pendingTitles = new Map<string, string>();
     private readonly completedTitles = new Set<string>();
     private titleRevision = 0;
+    private readonly compactionSummaries: CodexCompactionSummaryLookup;
+    private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
+        private readonly readSummaryThread?: () => Promise<unknown>,
+        private readonly observeItem?: (threadId: string, item: unknown) => void) {
+        this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
-    reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
+    reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); this.generation.reset(); }
+
+    /**
+     * Hub-only reconnect variant: replay final history with stable IDs, but
+     * the native turn keeps running without a new turn/started, so the
+     * active round's ledger identity, baseline and windows must survive.
+     * Only an app-server reconnect may drop the ledger (reset), because the
+     * resumed turn re-announces itself and re-measures from its own start.
+     */
+    resetAfterHubReconnect(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
     private send(body: Record<string, unknown>, key: string): void {
         if (this.emitted.has(key)) return;
         this.emitted.add(key);
@@ -89,19 +107,24 @@ export class SharedCodexProjection {
                 }
             }
         }
-        await this.project(method, params, modelAtReceipt);
+        await this.project(method, params, modelAtReceipt, false, receivedAt);
         if (p.threadId === this.threadId && !this.parentThreadId) {
             const turn = record(p.turn);
             const turnId = string(turn.id);
-            if (method === 'turn/started') this.roundDuration.start(turnId, receivedAt);
+            if (method === 'turn/started') {
+                this.roundDuration.start(turnId, receivedAt);
+                this.generation.startTurn(turnId, receivedAt);
+            }
             if (method === 'turn/completed') {
-                const duration = this.roundDuration.finish(turnId, receivedAt, turn.status === 'completed');
-                if (duration) this.send(duration, `duration:${turnId}`);
+                const completed = turn.status === 'completed';
+                const duration = this.roundDuration.finish(turnId, receivedAt, completed);
+                const generation = this.generation.settle(turnId, receivedAt, completed);
+                if (duration) this.send({ ...duration, ...(generation ?? {}) }, `duration:${turnId}`);
             }
         }
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, receivedAt = Date.now()): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
@@ -109,6 +132,17 @@ export class SharedCodexProjection {
         const send = (body: Record<string, unknown>, key: string) => this.send({
             ...body, ...(turnId ? { turn_id: turnId } : {})
         }, key);
+        const asyncQuestions = asyncQuestionsForItem(this.threadId, item);
+        if (asyncQuestions.length) {
+            if (method === 'item/completed') {
+                for (const question of asyncQuestions) {
+                    send({ type: 'tool-call', name: 'request_user_input', callId: question.id, input: question.input }, question.id);
+                }
+                this.observeItem?.(this.threadId, item);
+            }
+            return;
+        }
+        if (method === 'item/completed') this.observeItem?.(this.threadId, item);
         // Settings may already describe the next turn by the time queued
         // notifications are projected. Never attribute usage to that model.
         if (turnId && method === 'turn/started' && modelAtReceipt && !this.turnModels.has(turnId)) {
@@ -125,7 +159,9 @@ export class SharedCodexProjection {
                 if (turnId) this.turns.set(id, turnId);
                 await this.committed(id);
                 const text = inputText(item.content);
-                if (text) this.session.sendUserMessage(text, undefined, id);
+                const replies = asyncQuestionReplies(text);
+                const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
+                if (displayText) this.session.sendUserMessage(displayText, undefined, id);
                 this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));
@@ -137,7 +173,11 @@ export class SharedCodexProjection {
             }, `lifecycle:${turnId}:${method}`);
         }
         const events = this.converter.handleNotification(method, params);
+        // Only a live root-turn feed reaches the generation ledger: history
+        // replays re-project old items, and child threads summarize nowhere.
+        const liveRound = !fromHistory && !this.parentThreadId;
         for (const event of events) {
+            if (liveRound) this.observeGenerationEvent(event, receivedAt);
             const callId = string(event.call_id);
             const key = `${turnId ?? 'thread'}:${itemId ?? callId ?? createHash('sha256').update(JSON.stringify(event)).digest('hex')}:${event.type}`;
             if (event.type === 'agent_message') send({ type: 'message', message: event.message }, key);
@@ -145,7 +185,10 @@ export class SharedCodexProjection {
             else if (event.type === 'exec_command_begin' && callId) {
                 send({ type: 'tool-call', name: 'CodexBash', callId, input: event }, key);
             } else if (event.type === 'exec_command_end' && callId) {
-                send({ type: 'tool-call-result', callId, output: { ...event, stdout: event.output } }, key);
+                const failed = ['failed', 'cancelled', 'canceled', 'declined', 'interrupted'].includes(String(event.status))
+                    || (typeof event.exit_code === 'number' && event.exit_code !== 0)
+                    || Boolean(event.error);
+                send({ type: 'tool-call-result', callId, output: { ...event, stdout: event.output }, is_error: failed }, key);
             } else if (event.type === 'patch_apply_begin' && callId) {
                 send({ type: 'tool-call', name: 'CodexPatch', callId, input: { changes: event.changes, auto_approved: event.auto_approved } }, key);
             } else if (event.type === 'patch_apply_end' && callId) {
@@ -174,7 +217,19 @@ export class SharedCodexProjection {
                     this.emitted.add(key);
                     this.session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
                 }
-            } else if (event.type === 'token_count' || event.type === 'context_compacted' || event.type.startsWith('thread_goal_')) {
+            } else if (event.type === 'context_compacted') {
+                if (!fromHistory && this.readSummaryThread) {
+                    try { this.summaryThread = await this.readSummaryThread(); } catch { this.summaryThread = undefined; }
+                }
+                const compact = turnId && itemId ? await this.compactionSummaries.find(this.summaryThread, turnId, itemId, fromHistory ? { attempts: 1 } : undefined) : null;
+                if (compact) {
+                    // A distinct durable ID can enrich a previously stored boundary.
+                    // Clients fold it back into that exact compaction's original position.
+                    send({ type: 'compact-summary', ...compact, summary: compact.summary ?? '', compactionId: `codex:${this.threadId}:${key}` }, `${key}:summary`);
+                } else {
+                    send({ ...event, flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
+                }
+            } else if (event.type === 'token_count' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
             } else if (event.type === 'proposed_plan' && turnId && itemId) {
@@ -189,6 +244,12 @@ export class SharedCodexProjection {
             } else if (event.type === 'generated_image' && typeof event.saved_path === 'string') {
                 const image = await registerGeneratedImageFromPath({ path: event.saved_path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex'), fileName: string(event.file_name) });
                 if (image) send({ type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType }, key);
+            } else if (event.type === 'viewed_image' && typeof event.path === 'string') {
+                const image = await registerGeneratedImageFromPath({ path: event.path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex') });
+                if (image) send({
+                    type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType,
+                    source: { ingress: 'tool_result', flavor: 'codex', toolName: 'view_image', ...(callId ? { toolCallId: callId } : {}) }
+                }, key);
             } else if (event.type === 'task_failed') {
                 send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
             }
@@ -205,7 +266,61 @@ export class SharedCodexProjection {
         }
     }
 
+    /**
+     * Feeds one converted live event into the generation ledger: tool item
+     * lifecycles become excluded windows (Codex's own durations win), and
+     * token usage updates the thread-cumulative output total.
+     */
+    private observeGenerationEvent(event: Record<string, unknown>, receivedAt: number): void {
+        const callId = string(event.call_id);
+        const positiveInt = (value: unknown): number | null => {
+            const parsed = typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+            return parsed !== null && parsed > 0 ? parsed : null;
+        };
+        switch (event.type) {
+            case 'exec_command_begin':
+            case 'mcp_tool_call_begin':
+            case 'patch_apply_begin':
+            case 'codex_tool_call_begin':
+                if (callId) this.generation.beginTool(callId, positiveInt(event.started_at_ms) ?? receivedAt);
+                return;
+            case 'exec_command_end':
+            case 'mcp_tool_call_end':
+            case 'patch_apply_end':
+            case 'codex_tool_call_end':
+                if (callId) this.generation.endTool(callId, positiveInt(event.completed_at_ms) ?? receivedAt,
+                    typeof event.duration_ms === 'number' ? event.duration_ms : undefined);
+                return;
+            case 'token_count': {
+                const info = record(event.info);
+                const total = record(info.total ?? info.totalTokenUsage ?? info.total_token_usage);
+                const raw: unknown = total.outputTokens ?? total.output_tokens;
+                const output = typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+                if (output !== null) this.generation.noteTokenUsage(output);
+                return;
+            }
+        }
+    }
+
+    /** The host's approval hooks: a wait for the user is not generation time. */
+    beginUserWait(startedAt: number): (endedAt: number) => void {
+        return this.generation.beginUserWait(startedAt);
+    }
+
+    /**
+     * Seeds a thread this process created (thread/start) to zero cumulative
+     * usage, making its first turn measurable. Call exactly once right
+     * after the thread is created and before any turn: resumed and forked
+     * threads must not be seeded, because their totals arrive through the
+     * app-server's attach-time usage replay and already include inherited
+     * history.
+     */
+    seedFreshUsage(): void {
+        this.generation.noteTokenUsage(0);
+    }
+
     async history(thread: unknown): Promise<void> {
+        if (record(thread).id === this.threadId) this.summaryThread = thread;
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const titleRevision = this.titleRevision;
@@ -223,7 +338,8 @@ export class SharedCodexProjection {
                 await this.project('item/started', params, undefined, true);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
-                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
+                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
+                    || asyncQuestionsForItem(this.threadId, item).length > 0) {
                     if (!this.parentThreadId) {
                         const title = successfulTitle(record(item));
                         if (title && string(record(item).id)) {

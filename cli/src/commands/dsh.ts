@@ -8,7 +8,9 @@ import type { CommandDefinition } from './types'
 
 export function parseDshCommandOptions(commandArgs: string[]) {
     // Permission modes apply through the shared ACP permission bridge
-    // (auto-approval decisions), including `--yolo`.
+    // (auto-approval decisions), including `--yolo` (which also pins the
+    // spawn-time DSH_PERMISSION_MODE sandbox preset).
+
     const options = parseRemoteAgentCommandOptions(commandArgs, DSH_PERMISSION_MODES, ['remote'])
     if (options.effort || options.modelReasoningEffort) {
         throw new Error('DeepSeek Harness effort is configured by the ACP server')

@@ -1,4 +1,5 @@
 import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction'
+import { withSessionJobInstruction } from '@/modules/common/sessionJobInstruction'
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction'
 import { buildPerTurnTitleParagraph, isAutoTitlePerTurnEnabled } from '@/modules/common/titleInstruction'
 
@@ -9,5 +10,5 @@ export function getGrokTitleInstruction(env: NodeJS.ProcessEnv = process.env): s
     const base = isAutoTitlePerTurnEnabled(env)
         ? `${buildPerTurnTitleParagraph('hapi_change_title')}\n${SKILL_LOOKUP_INSTRUCTION}`
         : GROK_TITLE_INSTRUCTION
-    return withSessionSummaryInstruction(base, env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(base), env)
 }

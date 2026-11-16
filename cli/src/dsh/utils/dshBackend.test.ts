@@ -90,6 +90,7 @@ describe('createDshBackend spawn configuration', () => {
             options: { env: Record<string, string | undefined>; cancelMode?: string; flavor?: string }
         }).options
 
+        expect(backend).toBeInstanceOf(AcpSdkBackend)
         expect(options.env.DSH_PERMISSION_MODE).toBe('read-only')
         expect(options.env.PATH).toBe('/usr/bin')
         expect(options.cancelMode).toBe('standard')

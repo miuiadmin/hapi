@@ -14,7 +14,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -57,6 +56,9 @@ import app.hapi.protocol.wire.UpdateHubSettingsRequest
  * speaks the fork extension), and About (app/protocol versions + hub
  * health). The former owner-only Usage/Storage rows moved hub-level (see
  * [SettingsHubCatalog]); their owner gate is unchanged.
+ * mode + color theme + Material You), Language, and About (app/protocol
+ * versions + hub health). The former owner-only Usage/Storage rows moved
+ * hub-level (see [SettingsHubCatalog]); their owner gate is unchanged.
  */
 @Composable
 fun SettingsGeneralScreen(
@@ -532,22 +534,32 @@ private fun LanguageDialog(
     )
 }
 
+/**
+ * Expressive color-theme picker: each card carries the preset's light/dark
+ * canvas split plus its accent strip, so the options are recognizable at a
+ * glance. Proper nouns stay untranslated on every locale (web parity); only
+ * the default entry localizes.
+ */
 @Composable
-private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = onClick)
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(start = 4.dp),
-        )
-    }
+private fun ColorThemeDialog(
+    selected: ColorThemePreset,
+    onSelect: (ColorThemePreset) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ChoiceDialog(
+        title = stringResource(R.string.settings_color_theme),
+        options = ColorThemePreset.entries.map { preset ->
+            ChoiceOption(
+                value = preset,
+                label = stringResource(colorThemePresetLabelRes(preset)),
+                swatch = colorThemePresetSwatch(preset),
+            )
+        },
+        selected = selected,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
+    )
 }
 
 /** Transcription provider picker — the hub's standard-capable entries only. */

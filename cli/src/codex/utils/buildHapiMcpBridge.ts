@@ -49,6 +49,9 @@ export interface HapiMcpBridgeOptions {
     exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    onChangeTitle?: (title: string) => void;
+    /** Session project cwd for relative spawn_peer directories (Codex --cd aware). */
+    workingDirectory?: string;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -89,7 +92,9 @@ export async function buildHapiMcpBridge(
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
         skillLookup: options.skillLookup,
-        askUserTool: options.askUserTool
+        askUserTool: options.askUserTool,
+        onChangeTitle: options.onChangeTitle,
+        workingDirectory: options.workingDirectory ?? options.skillLookup?.workingDirectory
     });
     // Stamp the hub row id so orphanReap can find MCP helpers after the agent
     // root dies without a full tree kill (#2003 / #1911 follow-up).
@@ -127,9 +132,13 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
-    // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
-    // bridge, but are not auto-approved: they target another session (resume +
-    // inject, or read peer histories).
+    // Own-session progress meter (tiann/hapi#1404) — hub REST, not peer inject.
+    tools.session_job = {
+        approval_mode: 'approve'
+    };
+    // ping_peer / inspect_peer / spawn_peer are registered on the HTTP MCP
+    // server / stdio bridge, but are not auto-approved: they target another
+    // session (resume + inject, read peer histories, or create + inject).
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'

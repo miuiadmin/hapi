@@ -3,9 +3,10 @@ import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
 import type { SessionModelReasoningEffort } from '@/api/types'
 import type { PermissionMode } from '@hapi/protocol/types'
+
 import type { DshMode } from './types'
 
-/** Remote-only HAPI session wrapper for the fresh-session DSH ACP server. */
+/** Remote-only HAPI session wrapper for the DSH ACP server. */
 export class DshSession extends AgentSessionBase<DshMode> {
     readonly startedBy: 'runner' | 'terminal'
 
@@ -18,18 +19,22 @@ export class DshSession extends AgentSessionBase<DshMode> {
         sessionId: string | null
         /** Spawn-time model override (opaque ACP config-option value). */
         model?: string
+        /** Spawn-time permission mode: pins DSH_PERMISSION_MODE on the child
+         *  env (read-only / danger-full-access) and drives the ACP permission
+         *  bridge's auto-approval decisions. */
+        permissionMode?: PermissionMode
         messageQueue: MessageQueue2<DshMode>
         onModeChange: (mode: 'local' | 'remote') => void
         startedBy: 'runner' | 'terminal'
-        permissionMode?: PermissionMode
     }) {
         super({
             api: opts.api,
             client: opts.client,
             path: opts.path,
             logPath: opts.logPath,
-            sessionId: opts.sessionId,
+            sessionId: opts.sessionId ?? null,
             model: opts.model,
+            permissionMode: opts.permissionMode,
             messageQueue: opts.messageQueue,
             onModeChange: opts.onModeChange,
             mode: 'remote',
@@ -41,8 +46,7 @@ export class DshSession extends AgentSessionBase<DshMode> {
             applySessionIdToMetadata: (metadata, sessionId) => ({
                 ...metadata,
                 dshSessionId: sessionId
-            }),
-            permissionMode: opts.permissionMode
+            })
         })
         this.startedBy = opts.startedBy
     }

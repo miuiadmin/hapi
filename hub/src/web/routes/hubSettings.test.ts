@@ -3,13 +3,19 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
+import { STOCK_PEER_SPAWN_DEFAULTS } from '@hapi/protocol/peerSpawnDefaults'
 import type { WebAppEnv } from '../middleware/auth'
 import { createHubSettingsRoutes } from './hubSettings'
+import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { writeSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { writeSessionSummaryInChatEnabled } from '../../config/sessionSummaryInChat'
 import { Store } from '../../store'
 
 const directories: string[] = []
+const stockPeerSpawnDefaults = {
+    ...STOCK_PEER_SPAWN_DEFAULTS,
+    permissionMode: 'bypassPermissions' as const
+}
 
 afterEach(async () => {
     await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
@@ -29,11 +35,11 @@ describe('GET/PUT /api/hub-settings', () => {
             c.set('namespace', namespace)
             await next()
         })
-        app.route('/api', createHubSettingsRoutes(dataDir, store))
+        app.route('/api', createHubSettingsRoutes(dataDir, undefined, store))
         return { app, dataDir }
     }
 
-    it('returns default off for emit and chat display', async () => {
+    it('returns default off for emit, chat display, auto-bridge, and stock peer spawn defaults', async () => {
         const { app } = await createApp()
         const response = await app.request('/api/hub-settings')
         expect(response.status).toBe(200)
@@ -42,11 +48,13 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
 
-    it('persists emit toggle for owner without changing display', async () => {
+    it('persists emit toggle for owner without changing display or auto-bridge', async () => {
         const { app } = await createApp()
         const put = await app.request('/api/hub-settings', {
             method: 'PUT',
@@ -58,7 +66,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
         const get = await app.request('/api/hub-settings')
@@ -66,7 +76,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
 
@@ -84,7 +96,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
 
@@ -100,7 +114,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoTitlePerTurn: true,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
         const get = await app.request('/api/hub-settings')
@@ -108,7 +124,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoTitlePerTurn: true,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
         const off = await app.request('/api/hub-settings', {
@@ -121,7 +139,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
 
@@ -196,12 +216,139 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(response.status).toBe(400)
     })
 
+    it('persists autoBridgeTransientModelErrors toggle for owner', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ autoBridgeTransientModelErrors: true })
+        })
+        expect(put.status).toBe(200)
+        expect(await put.json()).toEqual({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            autoTitlePerTurn: false,
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: true,
+            peerSpawnDefaults: stockPeerSpawnDefaults
+        })
+    })
+
+    it('persists peer spawn defaults', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                peerSpawnDefaults: {
+                    agent: 'cursor',
+                    permissionMode: 'yolo',
+                    models: { cursor: 'auto' }
+                }
+            })
+        })
+        expect(put.status).toBe(200)
+        expect(await put.json()).toEqual({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            autoTitlePerTurn: false,
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: {
+                agent: 'cursor',
+                permissionMode: 'yolo',
+                models: {
+                    claude: 'sonnet',
+                    cursor: 'auto'
+                }
+            }
+        })
+    })
+
+    it('clears a saved peer spawn model override with an empty string', async () => {
+        const { app } = await createApp()
+        await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                peerSpawnDefaults: {
+                    agent: 'codex',
+                    permissionMode: 'default',
+                    models: { codex: 'gpt-5' }
+                }
+            })
+        })
+
+        const clear = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                peerSpawnDefaults: {
+                    agent: 'codex',
+                    permissionMode: 'default',
+                    models: { codex: '' }
+                }
+            })
+        })
+        expect(clear.status).toBe(200)
+        expect(await clear.json()).toEqual({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            autoTitlePerTurn: false,
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: {
+                agent: 'codex',
+                permissionMode: 'default',
+                models: {
+                    claude: 'sonnet'
+                }
+            }
+        })
+    })
+
     it('rejects invalid body', async () => {
         const { app } = await createApp()
         const response = await app.request('/api/hub-settings', {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ sessionSummaryContract: 'yes' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('rejects combined two-field updates', async () => {
+        const { app } = await createApp()
+        const response = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                sessionSummaryContract: true,
+                autoBridgeTransientModelErrors: true
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Update one hub setting per request' })
+    })
+
+    it('rejects retired gemini as peer spawn default agent', async () => {
+        const { app } = await createApp()
+        const response = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                peerSpawnDefaults: { agent: 'gemini' }
+            })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('rejects empty body', async () => {
+        const { app } = await createApp()
+        const response = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
         })
         expect(response.status).toBe(400)
     })
@@ -215,7 +362,7 @@ describe('GET/PUT /api/hub-settings', () => {
             c.set('namespace', 'tenant')
             await next()
         })
-        tenantApp.route('/api', createHubSettingsRoutes(dataDir, fakeStore()))
+        tenantApp.route('/api', createHubSettingsRoutes(dataDir, undefined, fakeStore()))
 
         const get = await tenantApp.request('/api/hub-settings')
         expect(get.status).toBe(200)
@@ -223,7 +370,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
         const put = await tenantApp.request('/api/hub-settings', {
@@ -249,7 +398,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
-            disablePeerTools: true
+            disablePeerTools: true,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
         const get = await app.request('/api/hub-settings')
@@ -257,7 +408,9 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
-            disablePeerTools: true
+            disablePeerTools: true,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
 
@@ -265,12 +418,15 @@ describe('GET/PUT /api/hub-settings', () => {
         const { app, dataDir } = await createApp()
         await writeSessionSummaryContractEnabled(dataDir, true)
         await writeSessionSummaryInChatEnabled(dataDir, true)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, true)
         const response = await app.request('/api/hub-settings')
         expect(await response.json()).toEqual({
             sessionSummaryContract: true,
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
-            disablePeerTools: false
+            disablePeerTools: false,
+            autoBridgeTransientModelErrors: true,
+            peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
 })

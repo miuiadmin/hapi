@@ -25,6 +25,7 @@ export function createCopilotBackend(opts?: { agentMode?: CopilotAgentMode; env?
     return new AcpSdkBackend({
         command: getAgentLaunchCommand('copilot'),
         args: buildCopilotAcpArgs(opts),
-        env: filterEnv(opts?.env ?? process.env)
+        env: filterEnv(opts?.env ?? process.env),
+        configOptionUpdates: true
     });
 }

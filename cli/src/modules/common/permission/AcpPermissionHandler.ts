@@ -10,6 +10,7 @@ import {
     isUnclassifiablePermissionRequest,
     isWriteClassifiedToolName,
     type AutoApprovalDecision,
+    type AutoApprovalRuleSet,
     type PendingPermissionRequest,
     type PermissionCompletion
 } from './BasePermissionHandler'
@@ -23,6 +24,24 @@ interface PermissionResponseMessage {
     /** AskUserQuestion payloads from web/mobile: Record<questionIndex, string[]>
      * (labels + free-text "Other" appended). Absent on plain approve/deny. */
     answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+}
+
+export type UserAnswer = {
+    decision: NonNullable<PermissionResponseMessage['decision']>
+    answers?: Record<string, string[]>
+}
+
+/** Upstream also accepts a nested answers shape (request_user_input); flatten
+ *  it into the Record<string, string[]> form HAPI's ask-user pipeline uses. */
+function normalizeUserAnswers(
+    answers: PermissionResponseMessage['answers']
+): Record<string, string[]> | undefined {
+    if (!answers) return undefined
+    const out: Record<string, string[]> = {}
+    for (const [key, value] of Object.entries(answers)) {
+        out[key] = Array.isArray(value) ? value : value.answers
+    }
+    return out
 }
 
 /** Outcome of a synthetic ask-user escalation surfaced to the HAPI client. */
@@ -249,29 +268,24 @@ function buildPendingStateOptions(request: PermissionRequest): Record<string, un
     }
 }
 
-/** Per-backend options for the ACP permission bridge. */
-export interface AcpPermissionHandlerOptions {
-    /**
-     * Map session-scoped grant decisions (`approved_for_session`) to
-     * `allow_once` instead of `allow_always`.
-     *
-     * Berry persists allow_always answers STICKILY in tool-policy.json
-     * inside its dataDir — they survive the session and even process
-     * restarts, so a HAPI "allow for session" pick must not become one.
-     * Flavors without sticky grant storage (or that treat allow_always as
-     * session-scoped) keep the default preference.
-     */
-    sessionScopedPermissionGrants?: boolean
-}
-
+/**
+ * Map session-scoped grant decisions (`approved_for_session`) to
+ * `allow_once` instead of `allow_always`.
+ *
+ * Berry persists allow_always answers STICKILY in tool-policy.json
+ * inside its dataDir — they survive the session and even process
+ * restarts, so a HAPI "allow for session" pick must not become one.
+ * Flavors without sticky grant storage (or that treat allow_always as
+ * session-scoped) keep the default preference.
+ */
 function mapDecisionToOutcome(
     request: PermissionRequest,
     decision: PermissionResponseMessage['decision'],
-    opts?: AcpPermissionHandlerOptions
+    sessionScopedPermissionGrants?: boolean
 ): PermissionResponse {
     if (decision === 'abort') return { outcome: 'cancelled' }
     if (decision === 'approved_for_session') {
-        const preference = opts?.sessionScopedPermissionGrants
+        const preference = sessionScopedPermissionGrants
             ? ['allow_once', 'allow_always']
             : ['allow_always', 'allow_once']
         const optionId = pickOptionId(request, preference)
@@ -292,16 +306,47 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
      * from Permission responses that carry `answers`. */
     private readonly askUserResolvers = new Map<string, (outcome: AcpAskUserOutcome) => void>()
     private readonly pendingBackendRequests = new Map<string, PermissionRequest>()
+    private readonly userWaitEnds = new Map<string, () => void>()
+    private readonly userQuestions = new Map<string, (answer: UserAnswer) => void>()
+    // Clients hide a pending request whose id was already completed.
+    private readonly usedIds = new Set<string>()
 
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
         private readonly getPermissionMode: () => PermissionMode | undefined,
-        /** Called synchronously with the pending close-based cancellation when
-         *  a permission decision aborts, before the handler awaits it — lets
-         *  the host serialize follow-up work against the close response. */
-        private readonly onAbortClose?: (cancellation: Promise<void>) => void,
-        private readonly handlerOptions: AcpPermissionHandlerOptions = {}
+        private readonly options: {
+            // Agents that title requests with free text (agy: the command
+            // line) turn off the HAPI tool-name hints, which could match it.
+            autoApprovalRules?: AutoApprovalRuleSet
+            // A long-lived agent process outlives mode switches, so automatic
+            // approvals must not leave standing grants behind.
+            autoApproveOnce?: boolean
+            // Questions need the user's answer in every mode.
+            requiresUser?: (request: PermissionRequest) => boolean
+            // Called when a request starts waiting for the user; the returned
+            // callback runs once it is answered (agents timing their own work).
+            onUserWait?: () => () => void
+            // Called synchronously when a permission 'abort' decision cancels
+            // the prompt through the backend directly (never via the
+            // launcher's abort handler). Flavors that track cancels — e.g.
+            // dsh's implicit session-end detection on custom wrappers that
+            // close the session on session/cancel — use this to arm their
+            // detector for that cancel.
+            onCancelIssued?: () => void
+            /** Called synchronously with the pending close-based cancellation
+             * when a permission decision aborts, before the handler awaits it
+             * — lets the host serialize follow-up work against the close
+             * response (dsh records it as its in-flight abortCompletion so
+             * queued prompts defer until the session/close response lands). */
+            onAbortClose?: (cancellation: Promise<void>) => void
+            /**
+             * Map session-scoped grant decisions (`approved_for_session`) to
+             * `allow_once` instead of `allow_always` (berry's sticky
+             * tool-policy.json grants — see mapDecisionToOutcome).
+             */
+            sessionScopedPermissionGrants?: boolean
+        } = {}
     ) {
         super(session)
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request))
@@ -326,24 +371,33 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         // choice-1 behind the user's back is the exact bug this mirrors the
         // ask-user escalation exemption for). The sensitive-path valve
         // likewise surfaces edit-shaped cards that hermes itself force-asks
-        // under auto-approve policies.
+        // under auto-approve policies. `requiresUser` is the per-flavor
+        // equivalent of the same exemption (e.g. agy questions).
         const clarify = isClarifyPermissionRequest(request)
         const askUser = isAskUserPermissionRequest(request)
-        const autoDecision = clarify || askUser || isSensitiveEditPermissionRequest(request, toolName)
+        const autoDecision = (this.options.requiresUser?.(request)
+            || clarify
+            || askUser
+            || isSensitiveEditPermissionRequest(request, toolName))
             ? null
             : this.resolveAutoApprovalDecision(
                 this.getPermissionMode(),
                 toolName,
                 request.toolCallId,
-                undefined,
+                this.options.autoApprovalRules,
                 { unclassifiable }
             )
         if (autoDecision) {
-            void this.autoApprove(request, toolName, toolInput, autoDecision)
+            const decision = this.options.autoApproveOnce && autoDecision === 'approved_for_session'
+                ? 'approved'
+                : autoDecision
+            void this.autoApprove(request, toolName, toolInput, decision)
             return
         }
 
         this.pendingBackendRequests.set(request.id, request)
+        this.usedIds.add(request.id)
+        this.startUserWait(request.id)
         // A clarify card or a zcode ask popup rides the existing
         // ask_user_question pipeline: the pending entry is registered under
         // that exact tool name with the choices as the question's options,
@@ -360,6 +414,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                 resolve: () => {},
                 reject: () => {}
             },
+            clarify || askUser ? undefined : request.toolCallId,
             buildPendingStateOptions(request)
         )
         logger.debug(`[ACP] Permission request queued for ${toolName} (${request.id})`)
@@ -374,7 +429,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         await this.backend.respondToPermission(
             request.sessionId,
             request,
-            mapDecisionToOutcome(request, decision, this.handlerOptions)
+            mapDecisionToOutcome(request, decision, this.options.sessionScopedPermissionGrants)
         )
         const timestamp = Date.now()
         this.client.updateAgentState((currentState) => ({
@@ -409,7 +464,22 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
      * response resolves the caller directly (the MCP tool returns the answer
      * batch to the model in-band).
      */
-    askUser(input: unknown): Promise<AcpAskUserOutcome> {
+    askUser(input: unknown): Promise<AcpAskUserOutcome>
+    /**
+     * A question the agent asks the user, shown as `toolName` with `input`.
+     * Never answered automatically, whatever the permission mode.
+     */
+    askUser(id: string, toolName: string, input: unknown): Promise<UserAnswer>
+    askUser(idOrInput: unknown, toolName?: string, input?: unknown): Promise<AcpAskUserOutcome | UserAnswer> {
+        if (typeof idOrInput === 'string' && toolName !== undefined) {
+            const id = idOrInput
+            return new Promise((resolve) => {
+                this.userQuestions.set(id, resolve)
+                this.usedIds.add(id)
+                this.startUserWait(id)
+                this.addPendingRequest(id, toolName, input, { resolve: () => {}, reject: () => {} })
+            })
+        }
         return new Promise<AcpAskUserOutcome>((resolve) => {
             // Supersede: dsh enforces a 60s per-call MCP timeout it cannot
             // raise, so an unanswered question times out and the model retries
@@ -449,7 +519,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             }
             const id = `askuser-${randomUUID()}`
             this.askUserResolvers.set(id, resolve)
-            this.addPendingRequest(id, 'ask_user_question', input, {
+            this.addPendingRequest(id, 'ask_user_question', idOrInput, {
                 resolve: () => {},
                 reject: (error) => {
                     this.askUserResolvers.delete(id)
@@ -480,10 +550,24 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                 status: response.approved ? 'approved' : 'denied',
                 decision: response.decision,
                 reason: response.reason,
-                answers: response.answers
+                answers: normalizeUserAnswers(response.answers)
             }
         }
-
+        const question = this.userQuestions.get(response.id)
+        if (question) {
+            this.userQuestions.delete(response.id)
+            const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
+            this.endUserWait(response.id)
+            const flatAnswers = normalizeUserAnswers(response.answers)
+            question(flatAnswers ? { decision, answers: flatAnswers } : { decision })
+            pending.resolve()
+            return {
+                status: response.approved ? 'approved' : 'denied',
+                decision,
+                reason: response.reason,
+                answers: flatAnswers
+            }
+        }
         const request = this.pendingBackendRequests.get(response.id)
         this.pendingBackendRequests.delete(response.id)
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
@@ -495,11 +579,12 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             // the wire, and the host must not send follow-up work to the
             // closing session in that gap.
             const cancellation = this.backend.cancelPrompt(request.sessionId)
-            this.onAbortClose?.(cancellation)
+            this.options.onAbortClose?.(cancellation)
+            this.options.onCancelIssued?.()
             await cancellation
         }
         if (request) {
-            let outcome = mapDecisionToOutcome(request, decision, this.handlerOptions)
+            let outcome = mapDecisionToOutcome(request, decision, this.options.sessionScopedPermissionGrants)
             if (response.approved && (isClarifyPermissionRequest(request) || isAskUserPermissionRequest(request))) {
                 const answeredOptionId = mapClarifyAnswerToOptionId(request, response.answers)
                 if (answeredOptionId !== null) {
@@ -509,7 +594,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                     // cannot be expressed on the permission surface — send
                     // hermes' dismissal semantics (the Skip option) instead
                     // of fabricating an answer the user never picked.
-                    outcome = mapDecisionToOutcome(request, 'denied', this.handlerOptions)
+                    outcome = mapDecisionToOutcome(request, 'denied', this.options.sessionScopedPermissionGrants)
                 }
                 // No answer text at all → plain-approve mapping (first
                 // allow_once choice) already applies.
@@ -520,6 +605,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                 outcome
             )
         }
+        this.endUserWait(response.id)
         pending.resolve()
 
         return {
@@ -534,11 +620,40 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         logger.debug('[ACP] Permission response received for unknown request', response.id)
     }
 
+    private startUserWait(id: string): void {
+        const end = this.options.onUserWait?.()
+        if (end) this.userWaitEnds.set(id, end)
+    }
+
+    private endUserWait(id: string): void {
+        const end = this.userWaitEnds.get(id)
+        this.userWaitEnds.delete(id)
+        end?.()
+    }
+
+    /** Whether a request with this id is open or was already shown. */
+    isUsed(id: string): boolean {
+        return this.usedIds.has(id) || this.pendingRequests.has(id)
+    }
+
+    hasPendingRequests(): boolean {
+        return this.pendingBackendRequests.size > 0 || this.userQuestions.size > 0
+    }
+
     async cancelAll(reason: string): Promise<void> {
+        // Questions first: answering them cannot fail, while a permission
+        // reply can throw once the agent process is gone.
+        const questions = Array.from(this.userQuestions.entries())
+        this.userQuestions.clear()
+        for (const [id, answer] of questions) {
+            this.endUserWait(id)
+            answer({ decision: 'abort' })
+        }
         const pending = Array.from(this.pendingBackendRequests.values())
         this.pendingBackendRequests.clear()
         for (const request of pending) {
             await this.backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' })
+            this.endUserWait(request.id)
         }
         this.cancelPendingRequests({
             completedReason: reason,

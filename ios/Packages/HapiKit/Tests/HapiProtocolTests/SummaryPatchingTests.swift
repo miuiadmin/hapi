@@ -187,6 +187,14 @@ struct SummaryPatchingTests {
         )
         #expect(claude?.agentSessionId == nil)
 
+        let dsh = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path: "/p", host: "h", flavor: "dsh",
+                codexSessionId: "stale", dshSessionId: "  dsh-1  "
+            )
+        )
+        #expect(dsh?.agentSessionId == "dsh-1")
+
         // Unknown flavor: legacy fallback chain, codex first, untrimmed.
         let unknown = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(
@@ -208,6 +216,10 @@ struct SummaryPatchingTests {
             SessionMetadata(path: "/p", host: "h", flavor: "zcode", codexSessionId: "cx", zcodeSessionId: "zc-1")
         )
         #expect(zcode?.agentSessionId == "zc-1")
+        let dshLegacy = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(path: "/p", host: "h", flavor: nil, dshSessionId: "dsh-legacy")
+        )
+        #expect(dshLegacy?.agentSessionId == "dsh-legacy")
     }
 
     // MARK: - Patch application
@@ -257,6 +269,20 @@ struct SummaryPatchingTests {
         #expect(next.pendingRequestsCount == 1)
         #expect(next.pendingRequestKinds == [.permission])
         #expect(next.agentStateVersion == 5)
+    }
+
+    @Test func metadataPatchPreservesDshAgentSessionId() {
+        let current = makeSummary(metadataVersion: 1)
+        let next = SummaryPatching.applySessionSummaryPatch(
+            current,
+            SessionPatch(metadata: VersionedValue(
+                version: 2,
+                value: SessionMetadata(
+                    path: "/p", host: "h", flavor: "dsh", dshSessionId: "dsh-1"
+                )
+            ))
+        )
+        #expect(next.metadata?.agentSessionId == "dsh-1")
     }
 
     @Test func staleVersionedPatchesAreRejected() {

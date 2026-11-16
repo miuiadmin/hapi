@@ -135,7 +135,6 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             this.session.client,
             backend,
             () => this.session.getPermissionMode() as PermissionMode | undefined,
-            undefined,
             // Berry persists allow_always answers STICKILY in tool-policy.json
             // (surviving even process restarts). A HAPI "allow for session"
             // pick means exactly one session, so it must map to allow_once
@@ -351,7 +350,6 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
                 this.session.client,
                 backend,
                 () => this.session.getPermissionMode() as PermissionMode | undefined,
-                undefined,
                 { sessionScopedPermissionGrants: true }
             )
             this.messageBuffer.addMessage('Berry agent restarted', 'status')
@@ -400,6 +398,7 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             case 'tool_call':
             case 'tool_result':
             case 'plan':
+            case 'round_summary':
                 break
             default: {
                 const _exhaustive: never = message

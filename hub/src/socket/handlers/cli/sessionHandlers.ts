@@ -68,12 +68,20 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
+// Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
+// (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
+    'opencodeRewind',
     'supersededBySessionId',
     'opencodeClearOperation',
     'nameLocked',
+    'opencodeForkPending',
     'titleSuggestionAutoAttemptedAt',
-    'titleSuggestionTurn'
+    'titleSuggestionTurn',
+    'jobsAcceptedFromSessionIds',
+    'jobsTransferredToSessionId',
+    'jobKeyRedirects',
+    'promptTitle'
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
@@ -92,6 +100,10 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
     // above, so only the owner toggle (re-enable) can lift the pin.
     if (existing.nameLocked === true && typeof existing.name === 'string') {
         next.name = existing.name
+    }
+    const rewind = existing.opencodeRewind as { phase?: string } | undefined
+    if (rewind && ['reserved', 'prepared', 'unknown'].includes(rewind.phase ?? '')) {
+        for (const key of ['opencodeHistoryCheckpoint', 'conversationHistoryIndexes', 'conversationHistoryPoints']) next[key] = existing[key]
     }
     return next
 }
@@ -198,6 +210,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
         // so stamp them at merge time instead.
         const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
+        // A merged row keeps its first snapshot's createdAt for stable
+        // ordering, but each repeated tick must still advance the
+        // keepalive-idle clock: feeding onAgentProgress the frozen
+        // first-snapshot timestamp lets an ACP call with thinking=false and
+        // no background task be marked idle despite fresh updates.
+        const progressAt = stored.updated ? Date.now() : msg.createdAt
         // The durable row already exists; replay must not be mistaken for
         // fresh agent progress or trigger another round of UI updates.
         if (wasStored) return
@@ -216,7 +234,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // tiann/hapi#1820: every stored message proves the agent is doing
         // something, so it refreshes the keepalive-idle clock. Only human
         // turns additionally bump `updatedAt` (list ordering).
-        onAgentProgress?.(sid, msg.createdAt)
+        onAgentProgress?.(sid, progressAt)
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
@@ -293,7 +311,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
-                invokedAt: msg.invokedAt
+                invokedAt: msg.invokedAt,
+                ...(msg.contentRevision ? { contentRevision: msg.contentRevision } : {})
             }
         })
     })
@@ -544,8 +563,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 sessionAccess.value.namespace
             )
             reply({ ok })
-            if (ok && data.state === 'queued') {
-                onWebappEvent?.({ type: 'messages-requeued', sessionId: data.sid, localIds })
+            if (ok) {
+                onWebappEvent?.(data.state === 'queued'
+                    ? { type: 'messages-requeued', sessionId: data.sid, localIds }
+                    : { type: 'messages-indeterminate', sessionId: data.sid, localIds, dispatching: true })
             }
         } catch (err) {
             console.error('recordSteerDeliveryState failed', err)

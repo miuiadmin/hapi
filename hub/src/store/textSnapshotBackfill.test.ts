@@ -36,7 +36,7 @@ describe('schema migration v28 to v29', () => {
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'store_maintenance'"
         ).all() as Array<{ name: string }>
 
-        expect(version.user_version).toBe(29)
+        expect(version.user_version).toBe(37)
         expect(tables).toHaveLength(1)
         expect(isTextSnapshotBackfillDone(internalDb)).toBe(false)
         migrated.close()

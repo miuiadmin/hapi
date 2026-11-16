@@ -367,7 +367,7 @@ describe('BerryRemoteLauncher', () => {
                 .includes('mode'))
         expect(modeFailures).toEqual([])
         expect(harness.permissionHandlerArgs).toHaveLength(1)
-        expect(harness.permissionHandlerArgs[0][4]).toEqual({ sessionScopedPermissionGrants: true })
+        expect(harness.permissionHandlerArgs[0][3]).toEqual({ sessionScopedPermissionGrants: true })
         // The bridge still receives the live permission-mode getter.
         expect(typeof harness.permissionHandlerArgs[0][2]).toBe('function')
     })
@@ -605,7 +605,7 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.setConfigOptionCalls).toEqual([])
         expect(harness.permissionHandlerArgs).toHaveLength(2)
         for (const args of harness.permissionHandlerArgs) {
-            expect(args[4]).toEqual({ sessionScopedPermissionGrants: true })
+            expect(args[3]).toEqual({ sessionScopedPermissionGrants: true })
         }
     })
 

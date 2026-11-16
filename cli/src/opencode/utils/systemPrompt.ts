@@ -1,5 +1,5 @@
 /**
- * OpenCode-specific system prompt for hapi MCP tools (change_title, display_image, display_video, display_media).
+ * OpenCode-specific system prompt for HAPI title, peer, and skill tools.
  *
  * OpenCode exposes MCP tools with the naming pattern: <server-name>_<tool-name>
  * The hapi MCP server exposes `change_title`, `display_image`, `display_video`, and `display_media`.
@@ -9,12 +9,8 @@ import { trimIdent } from '@/utils/trimIdent';
 import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
 import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { buildHapiMcpBridgePrompt } from '@/modules/common/hapiMcpBridgePrompt';
-import {
-    DISPLAY_IMAGE_PROMPT_HAPI_MCP,
-    DISPLAY_MEDIA_PROMPT_HAPI_MCP,
-    DISPLAY_VIDEO_PROMPT_HAPI_MCP,
-} from '@/modules/common/displayImagePrompt';
 import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
+import { withSessionJobInstruction } from '@/modules/common/sessionJobInstruction';
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
 /**
@@ -29,13 +25,14 @@ function buildOpencodeTitleInstruction(env: NodeJS.ProcessEnv): string {
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
         listPeersTool: 'hapi_list_peers',
+        spawnTool: 'hapi_spawn_peer',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
 }
 
 export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(buildOpencodeTitleInstruction(env), env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(buildOpencodeTitleInstruction(env)), env)
 }
 
 /**
@@ -45,20 +42,18 @@ export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): strin
  */
 function buildOpencodeNativeToolInstruction(env: NodeJS.ProcessEnv): string {
     return trimIdent(`
-    ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
-    ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
-    ${DISPLAY_MEDIA_PROMPT_HAPI_MCP}
     ${isPeerToolsDisabled(env) ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
         listPeersTool: 'hapi_list_peers',
+        spawnTool: 'hapi_spawn_peer',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
 }
 
 export function getOpencodeNativeToolInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(buildOpencodeNativeToolInstruction(env), env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(buildOpencodeNativeToolInstruction(env)), env)
 }
 
 /**

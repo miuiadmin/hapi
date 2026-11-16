@@ -27,6 +27,9 @@ import java.time.LocalDate
  * defaults, surface-color presets), and the expressive choice dialogs the
  * General subpage opens (theme swatches in light and dark, color-theme
  * cards with accent strips, language cards without swatches).
+ * color theme preset), and the expressive choice dialogs that subpage opens
+ * (theme swatches in light and dark, color-theme cards with accent strips,
+ * language cards without swatches).
  */
 
 private fun bucket(

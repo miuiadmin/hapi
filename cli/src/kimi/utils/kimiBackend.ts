@@ -24,5 +24,6 @@ export function createKimiBackend(env: NodeJS.ProcessEnv = process.env): AcpSdkB
         args: ['acp'],
         env: filterEnv(env),
         flavor: 'kimi',
+        configOptionUpdates: true,
     });
 }

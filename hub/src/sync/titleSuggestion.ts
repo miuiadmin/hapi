@@ -33,7 +33,7 @@ export class TitleSuggestionError extends Error {
     constructor(
         readonly code: TitleSuggestionErrorCode,
         message: string,
-        readonly status: 422 | 429 | 502 | 503
+        readonly status: 422 | 429 | 500 | 503
     ) {
         super(message)
         this.name = 'TitleSuggestionError'
@@ -125,7 +125,7 @@ function extractChatText(value: unknown): string | null {
     return null
 }
 
-function extractUserText(content: unknown): string | null {
+export function extractUserText(content: unknown): string | null {
     if (Array.isArray(content)) {
         const text = content
             .flatMap((part) => {
@@ -455,7 +455,7 @@ export class TitleSuggestionService {
             throw new TitleSuggestionError(
                 'provider',
                 'The title suggestion provider failed',
-                502
+                500
             )
         } finally {
             this.inFlightSessionIds.delete(sessionId)

@@ -110,6 +110,19 @@ describe('bootstrapExistingSession', () => {
         delete process.env[HAPI_SESSION_ID_ENV]
     })
 
+    it('refuses local Codex resume of a CLI-archived source with a pending fork before creating a socket or changing metadata', async () => {
+        const session = createSession()
+        session.metadata = { ...session.metadata!, lifecycleState: 'archived', archivedBy: 'cli',
+            codexArchivedFork: { operationId: '11111111-1111-4111-8111-111111111111', childSessionId: '22222222-2222-4222-8222-222222222222' } }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+        await expect(bootstrapExistingSession({ sessionId: session.id, flavor: 'codex', workingDirectory: '/tmp/project' }))
+            .rejects.toThrow('pending archived fork')
+        expect(sessionSyncClientMock).not.toHaveBeenCalled()
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+    })
+
     it('does not wait for metadata when an existing session has no stale history capabilities', async () => {
         const session = createSession()
         const sessionClient = {
@@ -142,6 +155,41 @@ describe('bootstrapExistingSession', () => {
                 startedBy: 'terminal',
                 startedFromRunner: false,
                 machineId: 'machine-1'
+            })
+        )
+    })
+
+    it('exports the requested existing session id for Cursor runner resume (#1404)', async () => {
+        // Runner passes --existing-session-id (buildCliArgs); child bootstrap must
+        // publish that same hub row into HAPI_SESSION_ID for shell `hapi job run`.
+        const session = createSession()
+        session.metadata = {
+            ...session.metadata!,
+            flavor: 'cursor',
+            cursorSessionId: 'cursor-csid-1',
+            cursorSessionProtocol: 'acp'
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'cursor',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(getSessionMock).toHaveBeenCalledWith('hapi-session-1')
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hapi-session-1')
+        expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
+            'hapi-session-1',
+            expect.objectContaining({
+                flavor: 'cursor',
+                startedBy: 'runner',
+                startedFromRunner: true
             })
         )
     })
@@ -202,6 +250,7 @@ describe('bootstrapExistingSession', () => {
     })
 
     it('preserves existing native resume metadata when reactivating a session', async () => {
+        const checkpoint = { sessionId: 'native-child', messageIds: ['m1'], userMessageIds: ['m1'], localMessageIds: ['m2'], localPublicationPending: true as const }
         const session = createSession()
         const existingMetadata = session.metadata
         if (!existingMetadata) throw new Error('expected test session metadata')
@@ -216,6 +265,7 @@ describe('bootstrapExistingSession', () => {
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
+            dshSessionId: 'dsh-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
                 machineId: 'machine-1',
@@ -230,9 +280,12 @@ describe('bootstrapExistingSession', () => {
                 text: 'resume me',
                 updatedAt: 100
             },
+            acpManualTitle: true,
             tools: ['read_file'],
             slashCommands: ['/compact'],
             conversationHistoryPoints: { 'local-user-1': true },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true,
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
                 terminal: true,
@@ -255,6 +308,7 @@ describe('bootstrapExistingSession', () => {
         })
 
         expect(result.metadata).toEqual(expect.objectContaining({
+            acpManualTitle: true,
             claudeSessionId: 'claude-thread-1',
             codexSessionId: 'codex-thread-1',
             geminiSessionId: 'gemini-thread-1',
@@ -263,6 +317,7 @@ describe('bootstrapExistingSession', () => {
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
+            dshSessionId: 'dsh-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
                 machineId: 'machine-1',
@@ -280,6 +335,8 @@ describe('bootstrapExistingSession', () => {
             tools: ['read_file'],
             slashCommands: ['/compact'],
             conversationHistoryPoints: { 'local-user-1': true },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true,
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
                 terminal: true,
@@ -289,13 +346,17 @@ describe('bootstrapExistingSession', () => {
         expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
         const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
         expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
+            acpManualTitle: true,
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
-            conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
+            conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true
         }))
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
             'hapi-session-1',
             expect.objectContaining({
+                acpManualTitle: true,
                 codexSessionId: 'codex-thread-1',
                 grokSessionId: 'grok-thread-1',
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }

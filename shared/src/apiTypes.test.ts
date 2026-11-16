@@ -161,14 +161,18 @@ describe('disablePeerTools hub setting wire shapes', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
-            disablePeerTools: true
+            disablePeerTools: true,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: { agent: 'cursor', permissionMode: 'default', models: {} }
         })
         expect(parsed.success).toBe(true)
         if (parsed.success) expect(parsed.data.disablePeerTools).toBe(true)
         expect(HubSettingsResponseSchema.safeParse({
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
-            autoTitlePerTurn: false
+            autoTitlePerTurn: false,
+            autoBridgeTransientModelErrors: false,
+            peerSpawnDefaults: { agent: 'cursor', permissionMode: 'default', models: {} }
         }).success).toBe(false)
     })
 

@@ -10,6 +10,7 @@ import { isKnownFlavor } from '@hapi/protocol'
 
 export const sessionModelMutationKey = (sessionId: string) => ['session-model', sessionId] as const
 export const sessionArchiveMutationKey = (sessionId: string | null) => ['session-archive', sessionId] as const
+export const sessionPinMutationKey = (sessionId: string | null) => ['session-pin', sessionId] as const
 
 export function useSessionActions(
     api: ApiClient | null,
@@ -273,6 +274,7 @@ export function useSessionActions(
     })
 
     const pinMutation = useMutation({
+        mutationKey: sessionPinMutationKey(sessionId),
         mutationFn: async (mode: 'none' | 'project' | 'global') => {
             if (!api || !sessionId) throw new Error('Session unavailable')
             await api.setSessionPinMode(sessionId, mode)

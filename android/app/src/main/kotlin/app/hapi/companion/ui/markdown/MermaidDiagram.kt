@@ -35,11 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -48,6 +46,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.FullTextAction
 import app.hapi.companion.ui.theme.HapiExtendedColors
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -84,6 +83,17 @@ internal fun mermaidFallbackUi(state: MermaidRenderState): MermaidFallbackUi = w
     is MermaidRenderState.Error -> MermaidFallbackUi(showSource = true, showErrorNotice = true)
     MermaidRenderState.Rendered -> MermaidFallbackUi(showSource = false, showErrorNotice = false)
 }
+
+/**
+ * Rendered-diagram body height from the document's report, in dp — pure so
+ * the CSS-px boundary contract is JVM-testable. Both reporters (the bridge's
+ * `report()` and the WebView client's `scrollHeight` re-measure) return CSS
+ * px, and the document pins `initial-scale=1`, so at the default WebView
+ * scale 1 CSS px = 1 dp: [cssPxToDp], the same conversion the KaTeX block
+ * uses. `null` until a positive report lands (caller holds its floor).
+ */
+internal fun mermaidRenderedHeightDp(reportedCssPx: Int): Float? =
+    if (reportedCssPx > 0) cssPxToDp(reportedCssPx) else null
 
 /** Events forwarded from the document (bridge) and the WebView client. */
 internal sealed interface MermaidViewEvent {
@@ -231,7 +241,6 @@ internal fun MermaidDiagramView(code: String, modifier: Modifier = Modifier) {
     }
     val fallback = mermaidFallbackUi(renderState)
     val rendered = renderState is MermaidRenderState.Rendered
-    val density = LocalDensity.current
 
     Column(
         modifier = modifier
@@ -244,8 +253,12 @@ internal fun MermaidDiagramView(code: String, modifier: Modifier = Modifier) {
                 .fillMaxWidth()
                 .then(
                     if (rendered) {
-                        if (heightPx > 0) {
-                            Modifier.height(with(density) { heightPx.toDp() })
+                        // CSS px straight to dp — never a physical-px toDp()
+                        // (that would divide by display density and clip the
+                        // diagram into a scrolling WebView on 3x screens).
+                        val heightDp = mermaidRenderedHeightDp(heightPx)
+                        if (heightDp != null) {
+                            Modifier.height(heightDp.dp)
                         } else {
                             // Reported height lands within a frame or two of
                             // the rendered callback; hold a sane floor.
@@ -301,7 +314,7 @@ private fun MermaidDiagramHeader(code: String, colors: HapiExtendedColors) {
     ) {
         Text(
             text = "mermaid".uppercase(),
-            fontFamily = FontFamily.Monospace,
+            fontFamily = HapiTypography.monoFamily,
             fontSize = 11.sp,
             lineHeight = 16.sp,
             letterSpacing = 0.8.sp,
@@ -344,7 +357,7 @@ private fun MermaidDiagramFallback(
                     text = message,
                     fontSize = 11.sp,
                     lineHeight = 15.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = HapiTypography.monoFamily,
                     color = colors.hint,
                 )
             }
@@ -357,7 +370,7 @@ private fun MermaidDiagramFallback(
         ) {
             Text(
                 text = code,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = HapiTypography.monoFamily,
                 fontSize = 14.sp,
                 lineHeight = 20.sp,
                 softWrap = false,

@@ -14,6 +14,7 @@ export type HappyChatContextValue = {
     /** Hub-wide AGENT_NOTIFY_SUMMARY chat display; polled once at chat shell. */
     showSessionSummaryInChat: boolean
     disabled: boolean
+    allowInactiveFork?: boolean
     onRefresh: () => void
     codexPlanProposalId?: string | null
     onContinuePlan?: (planId: string) => void
@@ -23,6 +24,7 @@ export type HappyChatContextValue = {
     onForkConversation?: (messageLocalId?: string) => Promise<void>
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
+    assistantForkPoints?: ReadonlyMap<string, string>
     onShareTurn?: (
         messageElement: HTMLElement | string | null,
         clientY?: number,

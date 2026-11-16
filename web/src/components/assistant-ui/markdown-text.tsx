@@ -1,7 +1,7 @@
 import '@assistant-ui/react-markdown/styles/dot.css'
 
 import type { ComponentPropsWithoutRef, ComponentType, MouseEvent, ReactNode } from 'react'
-import { useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
+import { Children, Fragment, cloneElement, isValidElement, useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
 import {
     MarkdownTextPrimitive,
     unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -10,6 +10,7 @@ import {
 } from '@assistant-ui/react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
+import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkDisableIndentedCode from '@/lib/remark-disable-indented-code'
@@ -38,23 +39,41 @@ import { remarkSessionPathLinks } from '@/lib/remark-session-path-links'
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
 import { DEFAULT_OPEN_EXTERNAL_LINKS_IN_NEW_TAB, useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
+import { ChatMarkdownImage } from '@/components/assistant-ui/markdown-image'
+import {
+    classifyScheme,
+    denyOnlyTransform,
+    hasScheme,
+    isDeniedScheme,
+    isExternalHttpHref,
+    normalizedScheme,
+} from '@/lib/markdown-uri-policy'
+
+export { classifyScheme, denyOnlyTransform, isExternalHttpHref } from '@/lib/markdown-uri-policy'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
 // Session file being previewed; relative links/images resolve against its directory.
 // fileSearch carries the preview's browsing context (origin/tab/query) so Back still returns to it.
 export type MarkdownFileSearch = { origin?: 'chat'; tab?: 'changes' | 'directories'; query?: string }
-export const MarkdownFileBaseContext = createContext<{
+export type MarkdownFileBaseValue = {
     sessionId: string
     filePath: string
     workspacePath: string | null
     fileSearch: MarkdownFileSearch
-} | null>(null)
+}
+export const MarkdownFileBaseContext = createContext<MarkdownFileBaseValue | null>(null)
 
 // ── Plugin array ────────────────────────────────────────────────────────────
-// Order: remarkGfm → remarkRepairTables → remarkLatexBracketMath → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
+// Order: remarkGfm → remarkRepairTables → remarkCjkFriendly → remarkLatexBracketMath → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
 // remarkRepairTables must run immediately after remarkGfm — it reads file.value
 // (raw source) to pad short separator rows before remark-gfm parses the table.
+// remarkCjkFriendly is a parse-time micromark extension
+// (commonmark/commonmark-spec#650):
+// it lets `**` close before CJK particles that directly follow punctuation
+// (e.g. `**...(...)**은`). It stays after remarkRepairTables so the documented
+// remarkGfm → remarkRepairTables adjacency is preserved; position in the array
+// does not affect parsing, which happens once before any transformer runs.
 // remarkNonHttpsAutolink must run BEFORE remarkStripCjkAutolink so that the
 // CJK strip plugin sees the new link nodes and can trim trailing CJK punctuation
 // from them. Both must come before remarkMath (to avoid treating TeX as URI).
@@ -101,6 +120,7 @@ const REMARK_GFM_PLUGIN = [
 export const MARKDOWN_PLUGINS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkCjkFriendly,
     remarkLatexBracketMath,
     ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
@@ -108,6 +128,7 @@ export const MARKDOWN_PLUGINS = [
 export const MARKDOWN_PLUGINS_STANDALONE = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkCjkFriendly,
     remarkLatexBracketMath,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
@@ -117,6 +138,7 @@ export const MARKDOWN_PLUGINS_STANDALONE = [
 export const MARKDOWN_PLUGINS_WITH_BREAKS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkCjkFriendly,
     remarkLatexBracketMath,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL,
@@ -125,6 +147,7 @@ export const MARKDOWN_PLUGINS_WITH_BREAKS = [
 export const MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkCjkFriendly,
     remarkLatexBracketMath,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
@@ -138,28 +161,8 @@ export const MARKDOWN_COMPONENTS_BY_LANGUAGE = {
     },
 } satisfies NonNullable<MarkdownTextPrimitiveProps['componentsByLanguage']>
 
-// ── URI scheme policy (inlined from url-scheme-policy.ts) ───────────────────
-//
-// IANA-registered safe schemes — mirrors react-markdown defaultUrlTransform exactly.
-// Source: node_modules/react-markdown/lib/index.js:124  /^(https?|ircs?|mailto|xmpp)$/i
-const IANA_SAFE_SCHEMES: ReadonlySet<string> = new Set([
-    'http',
-    'https',
-    'irc',
-    'ircs',
-    'mailto',
-    'xmpp',
-])
-
-// Schemes that must always be blocked regardless of user preference.
-// Includes file: because Chromium denies navigation from http(s) origins.
-const DENY_SCHEMES: ReadonlySet<string> = new Set([
-    'javascript',
-    'data',
-    'vbscript',
-    'file',
-])
-
+// URI classification and deny-only URL transformation live in
+// `markdown-uri-policy.ts` so file assets and chat Markdown share one policy.
 /**
  * Extract the normalised scheme from a URL string.
  *
@@ -175,25 +178,6 @@ const DENY_SCHEMES: ReadonlySet<string> = new Set([
  *
  * Returns null when no valid scheme separator is found.
  */
-function normalizedScheme(url: string): string | null {
-    let value = url.trimStart()
-    for (let i = 0; i < 2; i++) {
-        try {
-            const next = decodeURIComponent(value)
-            if (next === value) break
-            value = next
-        } catch {
-            break
-        }
-    }
-    const colonIndex = value.indexOf(':')
-    if (colonIndex <= 0) return null
-    // Strip ASCII control chars (U+0000–U+001F, DEL U+007F) and all whitespace
-    // from the scheme name. Browsers strip exactly these characters during
-    // navigation, so `java\nscript` navigates as `javascript`.
-    return value.slice(0, colonIndex).replace(/[\x00-\x1F\x7F\s]/g, '').toLowerCase()
-}
-
 /**
  * Classify a URL string by its scheme.
  *
@@ -203,14 +187,6 @@ function normalizedScheme(url: string): string | null {
  *
  * @returns 'iana' | 'deny' | 'custom'
  */
-export function classifyScheme(url: string): 'iana' | 'deny' | 'custom' {
-    const scheme = normalizedScheme(url)
-    if (scheme === null) return 'deny'
-    if (DENY_SCHEMES.has(scheme)) return 'deny'
-    if (IANA_SAFE_SCHEMES.has(scheme)) return 'iana'
-    return 'custom'
-}
-
 /**
  * Returns true when href contains a URL scheme (i.e. a "scheme:" prefix that
  * appears before any path/query/fragment delimiter).
@@ -226,13 +202,6 @@ export function classifyScheme(url: string): 'iana' | 'deny' | 'custom' {
  * as 'iana' so the browser/router can handle them normally (fixing the regression
  * where relative markdown links were silently blocked by the onClick deny guard).
  */
-function hasScheme(href: string): boolean {
-    const colonIdx = href.indexOf(':')
-    if (colonIdx <= 0) return false
-    const boundaryIdx = href.search(/[/?#]/)
-    return boundaryIdx < 0 || colonIdx < boundaryIdx
-}
-
 /**
  * True when href is a genuine external http(s) link — as opposed to a
  * relative/SPA href (no scheme, e.g. `/settings`) or another scheme
@@ -243,13 +212,6 @@ function hasScheme(href: string): boolean {
  * a relative href would open the whole app in a second tab instead of
  * navigating in-app, so this must stay scoped to real http(s) URLs.
  */
-export function isExternalHttpHref(href: string | null | undefined): boolean {
-    if (!href || !hasScheme(href)) return false
-    const colonIdx = href.indexOf(':')
-    const scheme = href.slice(0, colonIdx).toLowerCase()
-    return scheme === 'http' || scheme === 'https'
-}
-
 // ── URL sanitize transform (deny-only) ──────────────────────────────────────
 // Passed as urlTransform to MarkdownTextPrimitive. Only deny-listed schemes
 // are stripped; every other scheme (IANA + custom) passes through so the
@@ -266,17 +228,6 @@ export function isExternalHttpHref(href: string | null | undefined): boolean {
 // <img src> is also stripped because DENY_SCHEMES includes 'data'. However,
 // react-markdown's own defaultUrlTransform strips all data: URLs identically,
 // so this is not a regression introduced by this PR.
-export function denyOnlyTransform(url: string): string {
-    if (!url) return url
-    const trimmed = url.trimStart()
-    const colonIdx = trimmed.indexOf(':')
-    const slashIdx = trimmed.search(/[/?#]/)
-    if (colonIdx < 0 || (slashIdx >= 0 && slashIdx < colonIdx)) {
-        return url
-    }
-    return classifyScheme(url) === 'deny' ? '' : url
-}
-
 // ── Allowed-schemes state (inlined from useAllowedSchemes.ts) ───────────────
 
 const STORAGE_KEY = 'hapi-allowed-schemes'
@@ -305,7 +256,7 @@ function readAllowedFromStorage(): Set<string> {
         return new Set(
             parsed
                 .filter((s): s is string => typeof s === 'string')
-                .filter((s) => !DENY_SCHEMES.has(s))
+                .filter((s) => !isDeniedScheme(s))
         )
     } catch {
         return new Set()
@@ -350,7 +301,7 @@ function useAllowedSchemes() {
     }, [])
 
     const allow = useCallback((scheme: string) => {
-        if (DENY_SCHEMES.has(scheme)) return
+        if (isDeniedScheme(scheme)) return
         setAllowed((prev) => {
             if (prev.has(scheme)) return prev
             const next = new Set(prev)
@@ -362,7 +313,7 @@ function useAllowedSchemes() {
 
     const isAllowed = useCallback(
         (scheme: string): boolean => {
-            if (DENY_SCHEMES.has(scheme)) return false
+            if (isDeniedScheme(scheme)) return false
             return allowed.has(scheme)
         },
         [allowed]
@@ -586,13 +537,14 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & {
 }
 
 function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessionId: string }) {
+    const { targetSessionId, ...anchorProps } = props
     const navigate = useNavigate()
-    const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
+    const rel = anchorProps.target === '_blank' ? (anchorProps.rel ?? 'noreferrer') : anchorProps.rel
     // Preserve Vite BASE_URL for copy / open-in-new-tab (SPA click uses navigate).
     const href = buildSessionReferencePath(props.targetSessionId)
 
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-        props.onClick?.(event)
+        anchorProps.onClick?.(event)
         if (event.defaultPrevented) return
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
 
@@ -606,7 +558,7 @@ function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessio
 
     return (
         <a
-            {...props}
+            {...anchorProps}
             href={href}
             rel={rel}
             onClick={handleClick}
@@ -647,6 +599,76 @@ function InertMarkdownHref(props: { href: string; children?: ReactNode; classNam
     )
 }
 
+type LinkChildSegment = {
+    interactiveImage: boolean
+    children: ReactNode[]
+}
+
+type SplitLinkNode = {
+    interactiveImage: boolean
+    node: ReactNode
+}
+
+function splitInteractiveImageNodes(child: ReactNode, fileBase: MarkdownFileBaseValue | null): SplitLinkNode[] {
+    if (!isValidElement<{ children?: ReactNode; src?: unknown }>(child)) {
+        return [{ interactiveImage: false, node: child }]
+    }
+
+    const src = typeof child.props.src === 'string' ? child.props.src : null
+    if (src) {
+        const standalonePath = fileBase
+            ? resolveMarkdownRelativePath(fileBase.filePath, src, fileBase.workspacePath)
+            : null
+        return [{ interactiveImage: !standalonePath, node: child }]
+    }
+
+    const nestedChildren = Children.toArray(child.props.children)
+    if (nestedChildren.length === 0) {
+        return [{ interactiveImage: false, node: child }]
+    }
+    const nested = nestedChildren.flatMap((nestedChild) => splitInteractiveImageNodes(nestedChild, fileBase))
+    if (!nested.some((segment) => segment.interactiveImage)) {
+        return [{ interactiveImage: false, node: child }]
+    }
+
+    return nested.map((segment, index) => ({
+        interactiveImage: segment.interactiveImage,
+        node: cloneElement(
+            child,
+            { key: `${String(child.key ?? 'node')}-${index}` },
+            segment.node,
+        ),
+    }))
+}
+
+function renderSplitInteractiveImageLink(
+    children: ReactNode,
+    fileBase: MarkdownFileBaseValue | null,
+    renderAnchor: (children: ReactNode, key: string) => ReactNode,
+): ReactNode | null {
+    const segments: LinkChildSegment[] = []
+    const splitNodes = Children.toArray(children).flatMap((child) => splitInteractiveImageNodes(child, fileBase))
+    for (const splitNode of splitNodes) {
+        if (splitNode.interactiveImage) {
+            segments.push({ interactiveImage: true, children: [splitNode.node] })
+            continue
+        }
+        const previous = segments.at(-1)
+        if (previous && !previous.interactiveImage) previous.children.push(splitNode.node)
+        else segments.push({ interactiveImage: false, children: [splitNode.node] })
+    }
+
+    if (!segments.some((segment) => segment.interactiveImage)) return null
+
+    return (
+        <>
+            {segments.map((segment, index) => segment.interactiveImage
+                ? <Fragment key={`image-${index}`}>{segment.children}</Fragment>
+                : renderAnchor(segment.children, `link-${index}`))}
+        </>
+    )
+}
+
 function A(props: ComponentPropsWithoutRef<'a'>) {
     const chat = useOptionalHappyChatContext()
     // useContext must be called unconditionally before any early return so that
@@ -671,10 +693,30 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         if (!chat) {
             return <>{props.children}</>
         }
+        const split = renderSplitInteractiveImageLink(
+            props.children,
+            fileBase,
+            (children, key) => (
+                <FilePathAnchor key={key} {...props} filePath={filePath} sessionId={chat.sessionId}>
+                    {children}
+                </FilePathAnchor>
+            ),
+        )
+        if (split) return split
         return <FilePathAnchor {...props} filePath={filePath} sessionId={chat.sessionId} />
     }
 
     if (targetSessionId) {
+        const split = renderSplitInteractiveImageLink(
+            props.children,
+            fileBase,
+            (children, key) => (
+                <SessionPathAnchor key={key} {...props} targetSessionId={targetSessionId}>
+                    {children}
+                </SessionPathAnchor>
+            ),
+        )
+        if (split) return split
         return <SessionPathAnchor {...props} targetSessionId={targetSessionId} />
     }
 
@@ -682,6 +724,22 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         ? resolveMarkdownRelativePath(fileBase.filePath, props.href, fileBase.workspacePath)
         : null
     if (fileBase && relativeFilePath) {
+        const split = renderSplitInteractiveImageLink(
+            props.children,
+            fileBase,
+            (children, key) => (
+                <FilePathAnchor
+                    key={key}
+                    {...props}
+                    filePath={relativeFilePath}
+                    sessionId={fileBase.sessionId}
+                    fileSearch={fileBase.fileSearch}
+                >
+                    {children}
+                </FilePathAnchor>
+            ),
+        )
+        if (split) return split
         return (
             <FilePathAnchor
                 {...props}
@@ -730,6 +788,16 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
             if (!chat) {
                 return <InertMarkdownHref href={href ?? windowsPathFromHref ?? ''} className={props.className}>{props.children}</InertMarkdownHref>
             }
+            const split = renderSplitInteractiveImageLink(
+                props.children,
+                fileBase,
+                (children, key) => (
+                    <FilePathAnchor key={key} {...props} filePath={decision.path} sessionId={chat.sessionId}>
+                        {children}
+                    </FilePathAnchor>
+                ),
+            )
+            if (split) return split
             return <FilePathAnchor {...props} filePath={decision.path} sessionId={chat.sessionId} />
         }
         if (decision.action === 'inert') {
@@ -792,6 +860,25 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         e.preventDefault()
         ctx?.openUri(url, scheme)
     }
+
+    const split = renderSplitInteractiveImageLink(
+        props.children,
+        fileBase,
+        (children, key) => (
+            <a
+                key={key}
+                {...rest}
+                href={domHref}
+                target={target}
+                rel={effectiveRel}
+                onClick={handleClick}
+                className={cn('aui-md-a font-medium text-[var(--app-link)] underline decoration-[color:var(--app-link-muted)] underline-offset-3', props.className)}
+            >
+                {children}
+            </a>
+        ),
+    )
+    if (split) return split
 
     return (
         <a
@@ -936,7 +1023,7 @@ function Image(props: ComponentPropsWithoutRef<'img'>) {
     if (fileBase && path) {
         return <SessionFileImage {...props} sessionId={fileBase.sessionId} path={path} />
     }
-    return <img {...props} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
+    return <ChatMarkdownImage {...props} />
 }
 
 type DefaultComponentsMap = {

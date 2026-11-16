@@ -262,7 +262,6 @@ describe('AcpPermissionHandler session-scoped grants', () => {
             harness.client as never,
             harness.backend as never,
             () => undefined,
-            undefined,
             { sessionScopedPermissionGrants: true }
         )
         const request = await answerSessionGrant(handler, harness)
@@ -280,7 +279,6 @@ describe('AcpPermissionHandler session-scoped grants', () => {
             harness.client as never,
             harness.backend as never,
             () => undefined,
-            undefined,
             { sessionScopedPermissionGrants: true }
         )
         const request = backendRequest()
@@ -307,7 +305,6 @@ describe('AcpPermissionHandler session-scoped grants', () => {
                 harness.client as never,
                 harness.backend as never,
                 () => undefined,
-                undefined,
                 options
             )
             const request = backendRequest()

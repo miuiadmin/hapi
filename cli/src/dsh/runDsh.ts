@@ -7,8 +7,9 @@ import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
-import type { AgentState } from '@/api/types'
+import type { AgentState, SessionPermissionMode } from '@/api/types'
 import type { DshPermissionMode } from '@hapi/protocol/types'
+
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 import { DshSession } from './session'
 import { dshModeForPreference, type DshMode } from './types'
@@ -24,8 +25,11 @@ export async function runDsh(opts: {
     resumeSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
-    workingDirectory?: string
+    /** Spawn-time permission mode — pinned into the child env as
+     * DSH_PERMISSION_MODE (read-only / danger-full-access); dsh reads it only
+     * at spawn and has no runtime mode RPC. */
     permissionMode?: DshPermissionMode
+    workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
     const startedBy = opts.startedBy ?? 'terminal'
@@ -50,7 +54,7 @@ export async function runDsh(opts: {
             reservedSessionId: opts.reservedSessionId,
             model: opts.model
         })
-    const { api, session } = bootstrap
+    const { api, session, sessionInfo } = bootstrap
     setControlledByUser(session, startingMode)
 
     const queue = new MessageQueue2<DshMode>((mode) => hashObject(mode))
@@ -106,6 +110,7 @@ export async function runDsh(opts: {
             if (config.permissionMode !== undefined) {
                 sessionRef.current?.setPermissionMode(config.permissionMode)
             }
+
         },
         onAfterApply: syncSessionMode
     })
@@ -121,6 +126,7 @@ export async function runDsh(opts: {
     // `hapi resume` hands active sessions over via the HandoffLocal RPC before
     // dispatching locally; without this registration an active DSH resume fails
     // with an unregistered-method error instead of archiving the running copy.
+
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const dshSession = new DshSession({
@@ -151,8 +157,13 @@ export async function runDsh(opts: {
             // A failed effort switch never took on the dsh side: reset the
             // tracking to the launcher's live value and re-sync so the hub
             // picker drops the failed pick and later turns stop carrying it
-            // (mirror of the model rollback path above).
-            currentReasoningEffort = effort
+            // (mirror of the model rollback path above). A dropped
+            // preference arrives as undefined; normalize it to null — the
+            // explicit "Default" spelling — so the keepalive overwrite
+            // clears the picker instead of leaving the last value in place
+            // (undefined is skipped by the merge), and later turns carry an
+            // explicit '' reset rather than no opinion.
+            currentReasoningEffort = effort ?? null
             syncSessionMode()
         },
         onConfigDiscovered: (model) => {

@@ -74,6 +74,7 @@ import app.hapi.companion.ui.components.DownloadGlyph
 import app.hapi.companion.ui.components.FolderGlyph
 import app.hapi.companion.ui.components.GitBranchGlyph
 import app.hapi.companion.ui.components.SortGlyph
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.git.GitFileStatus
 import app.hapi.protocol.wire.FileSearchItem
@@ -426,7 +427,7 @@ private fun GitFileRow(file: GitFileStatus, menuActions: FileMenuActions, onClic
                     if (file.linesAdded > 0 && file.linesRemoved > 0) append(' ')
                     if (file.linesRemoved > 0) append("-${file.linesRemoved}")
                 },
-                fontFamily = FontFamily.Monospace,
+                fontFamily = HapiTypography.monoFamily,
                 fontSize = 11.sp,
                 color = MaterialTheme.hapi.hint,
             )

@@ -39,6 +39,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -140,6 +142,8 @@ internal fun ChatScreen(
     readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    val foreground = lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
     val reconnecting by viewModel.reconnecting.collectAsState()
     val historyPaging by viewModel.historyPaging.collectAsState()
     val jumpToken by viewModel.jumpToken.collectAsState()
@@ -180,6 +184,12 @@ internal fun ChatScreen(
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
         onDispose { viewModel.setTranscriptVisible(false) }
+    }
+
+    LaunchedEffect(foreground, state.readThroughRevision, state.isSyncingTail, state.warning) {
+        if (foreground && state.blocks.isEmpty() && !state.hasMore) {
+            viewModel.markDisplayed(state.readThroughRevision, state.renderedReadState)
+        }
     }
 
     val context = LocalContext.current
@@ -482,7 +492,7 @@ internal fun ChatScreen(
                     )
                     ChatComposer(
                         state = composerState,
-                        onTextChange = viewModel::setComposerText,
+                        onTextChange = viewModel::onComposerChange,
                         onSend = { viewModel.sendMessage() },
                         onSendSteer = { viewModel.sendMessage(steer = true) },
                         onAbort = viewModel::abortSession,
@@ -567,6 +577,7 @@ internal fun ChatScreen(
                             jumpingLatest = jumpingLatest,
                             onViewport = viewModel::readingViewportChanged,
                             onLayout = viewModel::historyLaidOut,
+                            foreground = foreground, onTailDisplayed = viewModel::markDisplayed,
                             onRetryHistory = viewModel::loadOlder,
                             onJumpToLatest = viewModel::jumpToLatest,
                             listState = transcriptList, readingState = readingState,
@@ -602,6 +613,7 @@ internal fun ChatScreen(
     if (configSheetOpen) {
         SessionConfigSheet(
             config = configState,
+            contextUsage = state.contextUsage,
             onDismiss = { configSheetOpen = false },
             onSetPermissionMode = viewModel::setPermissionMode,
             onSetModel = viewModel::setModel,
@@ -991,6 +1003,7 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
     ChatNotice.QueuedEditScheduleDropped -> context.getString(R.string.chat_notice_edit_schedule_dropped)
+    ChatNotice.ScheduleAttachmentConflict -> context.getString(R.string.chat_notice_schedule_attachment_conflict)
     ChatNotice.QueuedAlreadyDelivered -> context.getString(R.string.chat_notice_already_delivered)
     ChatNotice.PermissionAlreadyHandled -> context.getString(R.string.chat_notice_request_already_handled)
     ChatNotice.DeleteConflictActive -> context.getString(R.string.sessions_error_delete_active)
@@ -1002,6 +1015,7 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     is ChatNotice.SteerFailed -> notice.detail ?: context.getString(R.string.chat_notice_steer_failed)
     is ChatNotice.PermissionRequestFailed -> notice.detail ?: context.getString(R.string.chat_notice_request_failed)
     is ChatNotice.ModelsLoadFailed -> notice.detail ?: context.getString(R.string.chat_notice_models_failed)
+    is ChatNotice.ReadStateFailed -> notice.detail ?: context.getString(R.string.chat_notice_read_state_failed)
     is ChatNotice.ConfigUpdateFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
     is ChatNotice.ForkFailed -> notice.detail ?: context.getString(R.string.chat_notice_fork_failed)
     is ChatNotice.RewindFailed -> notice.detail ?: context.getString(R.string.chat_notice_rewind_failed)

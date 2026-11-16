@@ -1,6 +1,7 @@
 package app.hapi.companion
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -9,6 +10,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -16,9 +20,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
@@ -29,6 +35,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.navigation
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
 import app.hapi.companion.di.AppGraph
 import app.hapi.companion.di.HubGraph
@@ -82,9 +89,11 @@ import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
 import app.hapi.companion.feature.sessions.ApiSessionExportFetcher
+import app.hapi.companion.feature.sessions.InMemorySessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionDisplayPrefs
 import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.companion.feature.sessions.SessionGroupCollapsePrefs
+import app.hapi.companion.feature.sessions.SessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.settings.ChatSettingsViewModel
 import app.hapi.companion.feature.settings.DictationSettingsViewModel
@@ -95,6 +104,10 @@ import app.hapi.companion.feature.settings.RenameMachineGateway
 import app.hapi.companion.feature.settings.SessionHeaderMetadata
 import app.hapi.companion.feature.settings.SettingsChatScreen
 import app.hapi.companion.feature.settings.SettingsDisplayScreen
+import app.hapi.companion.feature.share.ShareScreen
+import app.hapi.companion.feature.share.ShareSessionGateway
+import app.hapi.companion.feature.share.ShareTarget
+import app.hapi.companion.feature.share.ShareTargetController
 import app.hapi.companion.feature.settings.SettingsGeneralScreen
 import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
@@ -102,9 +115,6 @@ import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
-import app.hapi.companion.feature.share.ArmedShareSeed
-import app.hapi.companion.feature.share.ShareHandoffScreen
-import app.hapi.companion.feature.share.ShareHandoffViewModel
 import app.hapi.companion.feature.terminal.SharedPrefsTerminalFontPrefs
 import app.hapi.companion.feature.terminal.SocketIoTerminalGateway
 import app.hapi.companion.feature.terminal.TerminalEventListener
@@ -112,6 +122,8 @@ import app.hapi.companion.feature.terminal.TerminalScreen
 import app.hapi.companion.feature.terminal.TerminalViewModel
 import app.hapi.companion.feature.toasts.HubToasts
 import app.hapi.data.auth.AuthTerminalReason
+import app.hapi.data.sse.SseSubscriptionKey
+import app.hapi.protocol.wire.SessionListOrder
 import okhttp3.OkHttpClient
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
@@ -130,6 +142,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 object Routes {
     const val HOME = "home"
+    const val SHARE = "share/{requestId}"
+    fun share(requestId: String) = "share/$requestId"
 
     /** Read-only chat (B-M2d2). */
     const val CHAT = "chat/{sessionId}"
@@ -187,17 +201,6 @@ object Routes {
     fun newSession(machineId: String? = null) =
         if (machineId == null) "newSession" else "newSession?machineId=$machineId"
 
-    /**
-     * New-session form entered from the share picker: the payload
-     * waits in `AppGraph.pendingNewSessionShare`, and `onCreated` arms it
-     * bound to the fresh session (web: `?shareTransferId=`).
-     */
-    fun newSessionWithShareSeed(machineId: String? = null) =
-        if (machineId == null) "newSession?share=1" else "newSession?machineId=$machineId&share=1"
-
-    /** Share hand-off picker: system share → pick session → seed. */
-    const val SHARE = "share"
-
     /** Nested pairing graph (landing ⇄ scan ⇄ manual share one ViewModel). */
     const val PAIRING = "pairing"
     const val PAIRING_LANDING = "pairing/landing"
@@ -243,6 +246,12 @@ fun HapiNavigation() {
     val navController = rememberNavController()
     val registryState by graph.hubRegistry.state.collectAsState()
     val activeHubGraph by graph.activeHubGraph.collectAsState()
+    val shares by graph.shareInbox.batches.collectAsState()
+    val pendingShare = shares.firstOrNull()
+    val shareIntakeFailed by graph.shareIntakeFailed.collectAsState()
+    val currentEntry by navController.currentBackStackEntryAsState()
+    val navigationScope = rememberCoroutineScope()
+    val composedChat = remember { mutableStateOf<ComposedChat?>(null) }
     val startDestination = remember {
         if (graph.hubRegistry.activeHubUrl == null) Routes.PAIRING else Routes.HOME
     }
@@ -285,31 +294,8 @@ fun HapiNavigation() {
         }
     }
 
-    // A system share arrived (ACTION_SEND, cold start or onNewIntent): open
-    // the hand-off picker over home when a hub is paired. Without one the
-    // payload has no target and is dropped (native divergence: web would
-    // persist a transfer; the Android hand-off is process-lived).
-    val pendingShare by graph.pendingShare.collectAsState()
-    LaunchedEffect(pendingShare) {
-        if (pendingShare != null) {
-            if (graph.hubRegistry.activeHubUrl != null) {
-                // Already on the picker: navigating again would pop the live
-                // SHARE entry (popUpTo(HOME) runs first, so launchSingleTop
-                // compares against the post-pop top) and destroy its holding
-                // ViewModel while the old screen's own effect consumes the
-                // slot — both payloads lost. The open screen adopts the
-                // replacement in place instead.
-                if (navController.currentDestination?.route != Routes.SHARE) {
-                    navController.navigate(Routes.SHARE) {
-                        popUpTo(Routes.HOME)
-                        launchSingleTop = true
-                    }
-                }
-            } else {
-                graph.pendingShare.value = null
-            }
-        }
-    }
+    // A system share arrived (ACTION_SEND, cold start or onNewIntent): the
+    // share inbox above owns the hand-off (upstream flow); nothing to do here.
 
     // Last hub signed out (or roster wiped): nothing to show but pairing.
     // Any other active-hub change invalidates an open chat (old hub's session).
@@ -359,8 +345,110 @@ fun HapiNavigation() {
         }
     }
 
+    // Pending payloads outlive pairing and HubGraph replacement. A target is
+    // persisted before navigation, so process restoration follows the same path.
+    LaunchedEffect(pendingShare?.id, pendingShare?.target, shares.size, currentEntry, activeHubGraph, registryState.activeHubUrl) {
+        val share = pendingShare ?: return@LaunchedEffect
+        if (shares.size > 1 || currentEntry == null) return@LaunchedEffect
+        if (currentEntry?.destination?.hierarchy?.any { it.route == Routes.PAIRING } == true) return@LaunchedEffect
+        val hubUrl = registryState.activeHubUrl
+        if (hubUrl == null) {
+            navController.navigateClearingBackStack(Routes.PAIRING)
+            return@LaunchedEffect
+        }
+        val target = share.target
+        if (target != null) {
+            if (target.hubUrl !in registryState.hubs) {
+                graph.runShareAction { graph.shareInbox.clearTarget(share.id) }
+                return@LaunchedEffect
+            }
+            if (hubUrl != target.hubUrl) {
+                graph.hubRegistry.setActiveHub(target.hubUrl)
+                return@LaunchedEffect
+            }
+            if (activeHubGraph?.hubUrl != hubUrl) return@LaunchedEffect
+            if (currentEntry?.arguments?.getString("sessionId") == target.sessionId) return@LaunchedEffect
+            // In particular, return to the very same chat holder when sharing
+            // to the chat that was already open: preserve its attachment tray.
+            if (!navController.popBackStack(Routes.chat(target.sessionId), inclusive = false)) {
+                navController.navigate(Routes.chat(target.sessionId)) {
+                    popUpTo(Routes.HOME)
+                    launchSingleTop = true
+                }
+            }
+        } else if (currentEntry?.destination?.route != Routes.SHARE ||
+            currentEntry?.arguments?.getString("requestId") != share.id) {
+            graph.runShareAction {
+                composedChat.value?.takeIf { it.hubUrl == hubUrl }?.viewModel?.persistComposerDraft()
+            }
+            navController.navigate(Routes.share(share.id)) {
+                if (currentEntry?.destination?.route == Routes.SHARE) popUpTo(Routes.SHARE) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
+
+    if (shareIntakeFailed) {
+        AlertDialog(
+            onDismissRequest = { graph.shareIntakeFailed.value = false },
+            title = { Text(stringResource(R.string.share_error_title)) },
+            text = { Text(stringResource(R.string.share_receive_failed)) },
+            confirmButton = { TextButton(onClick = { graph.shareIntakeFailed.value = false }) {
+                Text(stringResource(R.string.share_ok))
+            } },
+        )
+    } else if (shares.size > 1) {
+        AlertDialog(
+            onDismissRequest = { navigationScope.launch { graph.runShareAction {
+                shares.firstOrNull()?.let { graph.shareInbox.keepOnly(it.id) }
+            } } },
+            title = { Text(stringResource(R.string.share_replace_title)) },
+            text = { Text(stringResource(R.string.share_replace_message)) },
+            confirmButton = { TextButton(onClick = {
+                navigationScope.launch { graph.runShareAction {
+                    shares.lastOrNull()?.let { graph.shareInbox.keepOnly(it.id) }
+                } }
+            }) { Text(stringResource(R.string.share_replace_current)) } },
+            dismissButton = { TextButton(onClick = {
+                navigationScope.launch { graph.runShareAction {
+                    shares.firstOrNull()?.let { graph.shareInbox.keepOnly(it.id) }
+                } }
+            }) { Text(stringResource(R.string.share_keep_current)) } },
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
     NavHost(navController = navController, startDestination = startDestination) {
+        composable(Routes.SHARE, arguments = listOf(navArgument("requestId") { type = NavType.StringType })) { entry ->
+            val batch = shares.find { it.id == entry.arguments?.getString("requestId") } ?: return@composable
+            val hubGraph = activeHubGraph?.takeIf { it.hubUrl == registryState.activeHubUrl } ?: return@composable
+            val holder = viewModel<ShareViewModelHolder>(factory = viewModelFactory { ShareViewModelHolder() })
+            val models = holder.forHub(hubGraph)
+            val selection by models.target.state.collectAsState()
+            LaunchedEffect(selection.resolvedSessionId, batch.id, hubGraph) {
+                val sessionId = selection.resolvedSessionId ?: return@LaunchedEffect
+                if (graph.hubRegistry.activeHubUrl != hubGraph.hubUrl || graph.activeHubGraph.value !== hubGraph) return@LaunchedEffect
+                try {
+                    graph.shareInbox.setTarget(batch.id, ShareTarget(hubGraph.hubUrl, sessionId))
+                    models.target.consumed()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    graph.shareIntakeFailed.value = true
+                }
+            }
+            ShareScreen(
+                batch = batch, hubUrl = hubGraph.hubUrl, pairedHubs = registryState.hubs,
+                sessions = models.sessions, target = models.target,
+                onSwitchHub = { hub -> navigationScope.launch { graph.hubRegistry.setActiveHub(hub) } },
+                onRetryFile = { id -> navigationScope.launch { graph.runShareAction { graph.shareInbox.retry(batch.id, id) } } },
+                onRemoveFile = { id -> navigationScope.launch { graph.runShareAction { graph.shareInbox.removeFile(batch.id, id) } } },
+                onCancel = { navigationScope.launch { graph.runShareAction {
+                    graph.shareInbox.discard(batch.id)
+                    navController.popBackStack()
+                } } },
+            )
+        }
         composable(Routes.HOME) {
             val activeHubUrl = registryState.activeHubUrl ?: return@composable
             val hubGraph = activeHubGraph ?: return@composable
@@ -376,7 +464,7 @@ fun HapiNavigation() {
                 },
             )
             HomeScreen(
-                viewModel = holder.forHub(hubGraph),
+                viewModel = holder.forHub(hubGraph, graph.sessionListOrderPrefs),
                 activeHubUrl = activeHubUrl,
                 pairedHubs = registryState.hubs,
                 onSwitchHub = { hub -> scope.launch { graph.hubRegistry.setActiveHub(hub) } },
@@ -492,7 +580,7 @@ fun HapiNavigation() {
             arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
         ) { entry ->
             val sessionId = entry.arguments?.getString("sessionId") ?: return@composable
-            val hubGraph = activeHubGraph ?: return@composable
+            val hubGraph = activeHubGraph?.takeIf { it.hubUrl == registryState.activeHubUrl } ?: return@composable
             val appContext = LocalContext.current.applicationContext
 
             // Feed the FCM suppress-when-open rule: while this chat is on
@@ -517,6 +605,36 @@ fun HapiNavigation() {
                     )
                 },
             )
+            DisposableEffect(holder) {
+                composedChat.value = ComposedChat(hubGraph.hubUrl, holder.viewModel)
+                onDispose {
+                    if (composedChat.value?.viewModel === holder.viewModel) composedChat.value = null
+                }
+            }
+            val assignedShare = pendingShare?.takeIf { it.target == ShareTarget(hubGraph.hubUrl, sessionId) }
+            val preparer = remember(appContext) { AttachmentPreparer(appContext) }
+            LaunchedEffect(holder, assignedShare?.id, shares.size) {
+                val batch = assignedShare ?: return@LaunchedEffect
+                if (shares.size > 1) return@LaunchedEffect
+                try {
+                    holder.viewModel.importShare(batch, complete = { failure ->
+                        if (failure == null) graph.shareInbox.discard(batch.id)
+                        else graph.shareInbox.importFailed(batch.id, failure.fileId, failure.status)
+                    }) { file ->
+                        preparer.prepare(graph.shareInbox.file(batch.id, file.id), file.filename, file.mimeType, file.id)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    graph.shareIntakeFailed.value = true
+                    graph.runShareAction { graph.shareInbox.clearTarget(batch.id) }
+                }
+            }
+            val closeChat: () -> Unit = { navigationScope.launch { graph.runShareAction {
+                assignedShare?.let { graph.shareInbox.discard(it.id) }
+                navController.popBackStack()
+            } } }
+            BackHandler(enabled = assignedShare != null, onBack = closeChat)
             ChatHost(
                 viewModel = holder.viewModel,
                 media = remember(hubGraph, sessionId, appContext) {
@@ -540,13 +658,10 @@ fun HapiNavigation() {
                         },
                     )
                 },
-                onBack = { navController.popBackStack() },
+                onBack = closeChat,
                 onNavigateToSession = { supersededId ->
                     // Resume/reopen handed the conversation to a different id:
                     // replace this chat entry with the superseding session.
-                    // An armed share seed follows the conversation (
-                    // web retargets its pending transfer the same way).
-                    graph.retargetPendingShareSeed(sessionId, supersededId)
                     navController.navigate(Routes.chat(supersededId)) {
                         popUpTo(Routes.CHAT) { inclusive = true }
                     }
@@ -759,18 +874,10 @@ fun HapiNavigation() {
                     nullable = true
                     defaultValue = null
                 },
-                // Slice A: present when the form was opened from the share
-                // picker (Routes.newSessionWithShareSeed).
-                navArgument("share") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                },
             ),
         ) { entry ->
             val hubGraph = activeHubGraph ?: return@composable
             val machineId = entry.arguments?.getString("machineId")
-            val seeding = entry.arguments?.getString("share") != null
             val formContext = LocalContext.current
             val holder = viewModel<NewSessionViewModelHolder>(
                 key = "newSession:${hubGraph.hubUrl}",
@@ -786,23 +893,8 @@ fun HapiNavigation() {
             )
             NewSessionScreen(
                 viewModel = holder.viewModel,
-                onBack = {
-                    // Seeding abandoned: drop the payload; back lands on the
-                    // picker, which still holds its own copy (web: form
-                    // cancel deletes the transfer and returns to /share).
-                    if (seeding) graph.pendingNewSessionShare.value = null
-                    navController.popBackStack()
-                },
+                onBack = { navController.popBackStack() },
                 onCreated = { sessionId ->
-                    // Share seeding: bind the waiting payload to
-                    // the fresh session; the chat's ShareSeedConsumer seeds
-                    // it once the session is live.
-                    if (seeding) {
-                        graph.pendingNewSessionShare.value?.let { payload ->
-                            graph.pendingNewSessionShare.value = null
-                            graph.pendingShareSeed.value = ArmedShareSeed(sessionId, payload)
-                        }
-                    }
                     // Navigate-replace: the form pops so back from the new
                     // chat lands on the session list, not a stale form.
                     navController.navigate(Routes.chat(sessionId)) {
@@ -810,29 +902,6 @@ fun HapiNavigation() {
                         launchSingleTop = true
                     }
                 },
-            )
-        }
-
-        composable(Routes.SHARE) {
-            val hubGraph = activeHubGraph ?: return@composable
-            val shareContext = LocalContext.current.applicationContext
-            val holder = viewModel<ShareHandoffViewModelHolder>(
-                key = "share:${hubGraph.hubUrl}",
-                factory = viewModelFactory {
-                    ShareHandoffViewModelHolder(graph, hubGraph, shareContext)
-                },
-            )
-            ShareHandoffScreen(
-                viewModel = holder.viewModel,
-                // Picker back = discard (web /share back deletes the transfer).
-                onBack = { navController.popBackStack() },
-                onPick = { sessionId ->
-                    navController.navigate(Routes.chat(sessionId)) {
-                        popUpTo(Routes.HOME)
-                        launchSingleTop = true
-                    }
-                },
-                onNewSession = { navController.navigate(Routes.newSessionWithShareSeed()) },
             )
         }
 
@@ -855,8 +924,11 @@ fun HapiNavigation() {
                 PairingScreen(
                     state = state,
                     prefill = prefill,
-                    notice = notice,
-                    onDismissNotice = { graph.pairingNotice.value = null },
+                    notice = notice ?: pendingShare?.let { stringResource(R.string.share_pair_first) },
+                    onDismissNotice = {
+                        if (notice != null) graph.pairingNotice.value = null
+                        else pendingShare?.let { batch -> navigationScope.launch { graph.runShareAction { graph.shareInbox.discard(batch.id) } } }
+                    },
                     onScanQr = { navController.navigate(Routes.PAIRING_SCAN) },
                     onManualEntry = { navController.navigate(Routes.PAIRING_MANUAL) },
                     onPairPrefill = viewModel::pairFromPrefill,
@@ -906,6 +978,59 @@ fun HapiNavigation() {
     }
 }
 
+private data class ComposedChat(val hubUrl: String, val viewModel: ChatViewModel)
+
+private suspend fun AppGraph.runShareAction(action: suspend () -> Unit) {
+    try {
+        action()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        shareIntakeFailed.value = true
+    }
+}
+
+private data class ShareModels(val sessions: SessionListViewModel, val target: ShareTargetController)
+
+private class ShareViewModelHolder : ViewModel() {
+    private var graph: HubGraph? = null
+    private var scope: CoroutineScope? = null
+    private var models: ShareModels? = null
+
+    fun forHub(hub: HubGraph): ShareModels {
+        models?.takeIf { graph === hub }?.let { return it }
+        models?.sessions?.stop()
+        scope?.cancel()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        scope = nextScope
+        graph = hub
+        val gateway = object : ShareSessionGateway {
+            override suspend fun isActive(sessionId: String) = hub.sessionStore.loadSessionDetail(sessionId).active
+            override suspend fun reopen(sessionId: String): String {
+                val response = hub.sessionStore.reopenSession(sessionId)
+                if (response.sessionId != sessionId) {
+                    hub.messageWindows.seed(sessionId, response.sessionId)
+                    hub.chatDrafts.move(sessionId, response.sessionId)
+                }
+                return response.sessionId
+            }
+        }
+        return ShareModels(
+            SessionListViewModel(
+                hub.sessionStore, hub.machineStore, hub.lastSeenStore, nextScope, hub.hubUrl,
+                // The picker keeps the base order, not Home's sort preference.
+                orderStore = InMemorySessionListOrderStore(SessionListOrder.Base),
+            ),
+            ShareTargetController(gateway, nextScope),
+        ).also { models = it }
+    }
+
+    override fun onCleared() {
+        models?.sessions?.stop()
+        scope?.cancel()
+    }
+}
+
 // ------------------------------------------------------ ViewModel holders --
 
 /**
@@ -925,7 +1050,7 @@ private class SessionListViewModelHolder(
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
 
-    fun forHub(hubGraph: HubGraph): SessionListViewModel {
+    fun forHub(hubGraph: HubGraph, orderStore: SessionListOrderStore): SessionListViewModel {
         model?.takeIf { graph === hubGraph }?.let { return it }
         model?.stop()
         scope?.cancel()
@@ -942,6 +1067,8 @@ private class SessionListViewModelHolder(
             groupCollapsePrefs = groupCollapsePrefs,
             showActiveSessionsOnly = showActiveSessionsOnly,
             cursorChatStoreProbe = hubGraph.session.api::getCursorChatStoreStatus,
+            connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
+            orderStore = orderStore,
         ).also { model = it }
     }
 
@@ -1070,9 +1197,6 @@ private class ChatViewModelHolder(
 
     override fun onCleared() {
         dictation.cancel()
-        // Leaving the chat for good (not rotation): an unconsumed share seed
-        // bound to this session is dropped (web drops on tab close).
-        appGraph.abandonPendingShareSeed(viewModel.sessionId)
         // Stop BEFORE discarding: the exit flush persists the final text +
         // tray references while the tray still holds them, then the discard
         // empties it (drafts v2 keeps the hub uploads — the persisted/carried
@@ -1314,26 +1438,6 @@ private class NewSessionViewModelHolder(
         codexImportStore = codexImportedSessionsStore,
         codexStrings = codexImportStrings,
         piStrings = piImportStrings,
-    )
-
-    override fun onCleared() {
-        scope.cancel()
-    }
-}
-
-/** Same shell for the share hand-off picker; one per active hub. */
-private class ShareHandoffViewModelHolder(
-    appGraph: AppGraph,
-    hubGraph: HubGraph,
-    appContext: Context,
-) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    val viewModel = ShareHandoffViewModel(
-        appGraph = appGraph,
-        hubGraph = hubGraph,
-        appContext = appContext,
-        scope = scope,
     )
 
     override fun onCleared() {

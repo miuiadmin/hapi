@@ -69,6 +69,31 @@ Or with Homebrew:
 brew install tiann/tap/hapi
 ```
 
+### Upgrades that still run an older version
+
+The `@twsxtd/hapi` package is a launcher. Its platform binary (for example,
+`@twsxtd/hapi-darwin-arm64`) is an optional dependency pinned to the same version.
+If a mirror has the new launcher but not the matching platform package, the
+package manager can finish upgrading the launcher while skipping the binary.
+A previous binary may remain installed. Older launchers can silently run it;
+launchers with version validation instead report a version mismatch.
+
+Retry against the official registry using your existing package manager. For Bun:
+
+```bash
+bun remove -g @twsxtd/hapi && bun add -g @twsxtd/hapi@latest --registry=https://registry.npmjs.org
+hapi --version
+```
+
+Removing the launcher first clears its dependency resolution; `--force` alone
+can leave a previously skipped platform package out of Bun's lockfile. This does
+not remove your HAPI settings or sessions. To stay on a specific release, replace
+`latest` with that version. For npm, use
+`npm install -g @twsxtd/hapi@latest --registry=https://registry.npmjs.org`.
+If the command still reports an old version, check for another HAPI installation
+earlier on `PATH`. Restart an already-running hub or runner after upgrading;
+installing a new binary does not replace running processes.
+
 ## Other install options
 
 <details>
@@ -94,7 +119,7 @@ sudo mv ./hapi /usr/local/bin/
 <details>
 <summary>Build from source</summary>
 
-Requires Bun 1.4.0.
+Requires Bun 1.4.4.
 
 ```bash
 git clone https://github.com/tiann/hapi.git
@@ -316,7 +341,7 @@ When the hub runs on one host and the runner on another, agents inside runner-sp
 [Runner host]  hapi runner start  → spawns session CLIs
                      │
                      ▼
-              agent session  → MCP list_peers / inspect_peer / ping_peer
+              agent session  → MCP list_peers / inspect_peer / ping_peer / spawn_peer
 ```
 
 On the runner host, configure the **same** hub URL and token the hub uses:
@@ -334,9 +359,9 @@ Session CLI may export an **explicit** non-default `HAPI_API_URL` (from env or s
 
 Hub owners can hide the peer tools hub-wide from the web UI: **Settings → General → Peer session tools → Disable peer session tools**. The preference is persisted on the hub, rides the session-creation / session-fetch responses, and applies to **new sessions on every runner** (running sessions keep their tool set until they end). No hub or runner restart is needed.
 
-For a per-runner hard override, set `HAPI_DISABLE_PEER_TOOLS` in the runner environment (systemd unit, launchd plist, or runner guard script) — for example when one agent digging through the session list and pinging peers pollutes other sessions' contexts. Resolution order: any non-empty env value decides for that runner (`0` / `false` / `off` / `no` → tools available; any other value, including typos, → disabled, so a kill switch fails safe); when the env is unset or empty, the hub toggle decides; default is tools available. Env wins over the hub value, so a pinned runner can always keep or kill the tools regardless of the web setting.
+For a per-runner hard override, set `HAPI_DISABLE_PEER_TOOLS=1` (also `true`/`yes`) in the runner environment (systemd unit, launchd plist, or runner guard script) to stop wrapped agents from browsing, messaging, or spawning other HAPI sessions — for example when one agent digging through the session list and pinging peers pollutes other sessions' contexts. Resolution order: any non-empty env value decides for that runner (`0` / `false` / `off` / `no` → tools available; any other value, including typos, → disabled, so a kill switch fails safe); when the env is unset or empty, the hub toggle decides; default is tools available. Env wins over the hub value, so a pinned runner can always keep or kill the tools regardless of the web setting.
 
-In every disabled case the switch is not advertised-then-refused: the `list_peers` / `inspect_peer` / `ping_peer` MCP tools are not registered on the session MCP server and not passed to `--allowedTools` / `--tools`, the peer steer block is dropped from agent system prompts (a pasted `/sessions/<id>` citation only reminds the agent it is a hub path, not a local file), and the peer core refuses with an explicit `disabled` error as defense in depth — so `hapi ping-peer` / `hapi inspect-peer` from inside a wrapped agent shell fails loudly too. The hub toggle never reaches an operator's interactive terminal (it only applies to bootstrapped agent sessions), so terminal `hapi ping-peer` keeps working there unless the env is exported globally.
+In every disabled case the switch is not advertised-then-refused: the `list_peers` / `inspect_peer` / `ping_peer` / `spawn_peer` MCP tools are not registered on the session MCP server and not passed to `--allowedTools` / `--tools`, the peer steer block is dropped from agent system prompts (a pasted `/sessions/<id>` citation only reminds the agent it is a hub path, not a local file), and the peer core refuses with an explicit `disabled` error as defense in depth — so `hapi ping-peer` / `hapi inspect-peer` / `hapi spawn-peer` from inside a wrapped agent shell fails loudly too. The hub toggle never reaches an operator's interactive terminal (it only applies to bootstrapped agent sessions), so terminal `hapi ping-peer` keeps working there unless the env is exported globally.
 
 Additional runner commands:
 

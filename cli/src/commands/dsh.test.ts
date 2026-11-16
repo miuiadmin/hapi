@@ -42,6 +42,10 @@ describe('parseDshCommandOptions', () => {
         })
         expect(() => parseDshCommandOptions(['--permission-mode', 'plan']))
             .toThrow('Invalid --permission-mode value')
+        // Modes outside dsh's catalog stay rejected (claude's yolo alias is
+        // not a dsh mode).
+        expect(() => parseDshCommandOptions(['--permission-mode', 'bypassPermissions']))
+            .toThrow('Invalid --permission-mode value: bypassPermissions')
     })
 
     it('accepts a model override applied through the ACP config option', () => {

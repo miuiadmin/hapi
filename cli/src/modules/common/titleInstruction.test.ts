@@ -71,7 +71,9 @@ describe('claude system prompt title steer', () => {
         expect(prompt).toContain('Per-turn title updates are enabled for this hub')
         expect(prompt).toContain('"mcp__hapi__change_title"')
         expect(prompt).not.toContain('Use the title tool sparingly.')
-        // Display / citation blocks stay in place either way.
-        expect(prompt).toContain('mcp__hapi__display_image')
+        // Display guidance moved to the MCP tool descriptions (#2416); the
+        // citation steer stays in the prompt either way.
+        expect(prompt).not.toContain('mcp__hapi__display_image')
+        expect(prompt).toContain('mcp__hapi__inspect_peer')
     })
 })

@@ -24,6 +24,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         pendingRequestsCount: 0,
         pendingRequestKinds: [],
         pendingRequests: [],
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
@@ -73,11 +75,13 @@ function makeGroupSessions(): SessionSummary[] {
         makeSession({
             id: 'alpha-1',
             updatedAt: 1_000,
+            lastUserMessageAt: 1_000,
             metadata: { path: ALPHA_PATH, machineId: 'machine-1', name: 'Alpha session' }
         }),
         makeSession({
             id: 'beta-1',
             updatedAt: 2_000,
+            lastUserMessageAt: 2_000,
             metadata: { path: BETA_PATH, machineId: 'machine-1', name: 'Beta session' }
         })
     ]

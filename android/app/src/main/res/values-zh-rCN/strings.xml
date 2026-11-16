@@ -283,10 +283,12 @@
     <string name="channel_permission_requests_desc">智能体正在等待您允许或拒绝一次工具调用</string>
     <string name="channel_input_requests">待回答的问题</string>
     <string name="channel_input_requests_desc">智能体需要您进入会话回答问题</string>
+    <string name="channel_model_errors">模型错误</string>
+    <string name="channel_model_errors_desc">智能体遇到需要处理的模型侧失败</string>
     <string name="channel_ready">代理就绪</string>
     <string name="channel_ready_desc">智能体已完成并正在等待输入</string>
-    <string name="channel_task_notifications">任务通知</string>
-    <string name="channel_task_notifications_desc">任务完成或失败等更新</string>
+    <string name="channel_other">其他通知</string>
+    <string name="channel_other_desc">来自 HAPI 的其他更新</string>
     <string name="notif_action_allow">允许</string>
     <string name="notif_action_deny">拒绝</string>
     <string name="notif_action_reply">回复</string>
@@ -310,8 +312,35 @@
     <string name="sessions_filter_all">全部</string>
     <string name="sessions_filter_unknown_machine">未知机器</string>
     <string name="sessions_offline_banner">离线 — 显示缓存的会话</string>
+    <string name="sessions_section_recent">最近</string>
+    <string name="sessions_status_connecting">连接中…</string>
+    <string name="sessions_status_reconnecting">重连中…</string>
+    <string name="sessions_status_paused">已暂停</string>
+    <string name="sessions_offline_updated">离线 · %1$s更新</string>
+    <string name="sessions_offline_retry">重试</string>
+    <string name="sessions_action_mark_read">标为已读</string>
+    <string name="sessions_unread">未读</string>
+    <string name="sessions_presence_connected">已连接</string>
+    <string name="sessions_presence_running">运行中</string>
+    <string name="sessions_presence_background">后台任务运行中</string>
+    <string name="sessions_presence_stopped">已停止</string>
+    <string name="sessions_view_sort">排序方式</string>
+    <string name="sessions_view_sort_last_message">最后消息时间</string>
+    <string name="sessions_view_sort_created">创建时间</string>
+    <string name="sessions_view_active_first">活跃会话优先</string>
+    <string name="sessions_view_status">显示</string>
+    <string name="sessions_view_status_all">全部会话</string>
+    <string name="sessions_view_status_active">仅活跃</string>
+    <string name="sessions_view_status_archived">仅已归档</string>
+    <string name="sessions_view_unread_only">仅未读</string>
+    <string name="sessions_filter_empty_title">没有匹配的会话</string>
+    <string name="sessions_filter_empty_hint">调整或重置筛选以查看更多会话。</string>
+    <string name="sessions_job_left">剩余 %1$s</string>
+    <string name="sessions_job_no_heartbeat">无心跳 %1$s</string>
+    <string name="sessions_error_mark_read">标记已读失败</string>
     <string name="sessions_search_hint">搜索会话</string>
-    <string name="sessions_search_clear">清除搜索</string>
+    <string name="sessions_search_open">搜索会话</string>
+    <string name="sessions_search_close">关闭搜索</string>
     <string name="sessions_search_no_results">没有匹配“%1$s”的会话</string>
     <string name="sessions_search_no_results_hint">换个关键词，或清除搜索。</string>
     <string name="sessions_grouped_layout">按目录分组</string>
@@ -381,7 +410,6 @@
     <string name="chat_open_settings">会话设置</string>
     <string name="chat_session_actions">会话操作</string>
     <string name="chat_scratchlist_badge">草稿夹</string>
-    <string name="chat_inactive_bar">会话已停止 — 发送消息即可恢复，或</string>
     <string name="chat_retry">重试</string>
     <string name="chat_loading_messages">加载消息…</string>
     <string name="chat_loading_older">正在加载更早的消息…</string>
@@ -449,6 +477,7 @@
     <string name="chat_notice_cancel_failed">取消队列消息失败</string>
     <string name="chat_notice_edit_kept_draft">消息已取消 — 已保留当前草稿</string>
     <string name="chat_notice_edit_schedule_dropped">定时已取消 — 附件不支持定时发送</string>
+    <string name="chat_notice_schedule_attachment_conflict">定时发送不能携带附件 — 请移除附件或取消定时</string>
     <string name="chat_notice_already_delivered">已发送给智能体</string>
     <string name="chat_notice_steer_failed">插入消息失败</string>
     <string name="chat_notice_request_already_handled">该请求已被处理</string>
@@ -492,11 +521,15 @@
     <string name="chat_mention_suggestions">提及建议</string>
     <string name="chat_send_steer">发送并插入当前回合</string>
     <string name="chat_schedule_send">定时发送</string>
+    <string name="chat_schedule_capsule">定时发送 · %1$s</string>
+    <string name="chat_schedule_clear">取消定时</string>
+    <string name="chat_attachment_remove">移除 %1$s</string>
     <string name="chat_schedule_relative_tab">相对时间</string>
     <string name="chat_schedule_specific_tab">指定时间</string>
     <string name="chat_schedule_specific_hint">最多 7 天。需 Hub 运行；CLI 下次连接时会接收消息。</string>
     <string name="chat_schedule_error_past">发送时间必须在未来。</string>
     <string name="chat_schedule_error_too_far">最多只能定时 7 天。</string>
+    <string name="chat_schedule_error_invalid">请输入完整的日期和时间(YYYY-MM-DD、HH:mm)。</string>
     <string name="chat_queued_one">1 条队列消息</string>
     <string name="chat_queued_many">%1$d 条队列消息</string>
     <string name="chat_queued_scheduled">定时发送: %1$s</string>
@@ -518,6 +551,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">会话已离线 — 更改将在恢复后生效，也可能被拒绝。</string>
+    <string name="chat_config_context">上下文</string>
     <string name="chat_config_terminal_note">会话由终端控制 — 配置更改会被拒绝。</string>
     <string name="chat_config_permission_mode">权限模式</string>
     <string name="chat_config_model">模型</string>
@@ -539,9 +573,32 @@
     <string name="chat_tool_denied">已拒绝</string>
     <string name="chat_tool_aborted">已中止</string>
     <string name="chat_tool_resolved">已处理</string>
-    <string name="chat_tool_canceled">— 已取消</string>
+    <string name="chat_tool_canceled">已取消</string>
     <string name="chat_tool_status_pending">等待中</string>
     <string name="chat_tool_status_error">错误</string>
+    <string name="chat_tool_status_done">完成</string>
+    <string name="chat_tool_status_running">运行中</string>
+    <plurals name="chat_group_reads">
+        <item quantity="other">%1$d 次读取</item>
+    </plurals>
+    <plurals name="chat_group_searches">
+        <item quantity="other">%1$d 次搜索</item>
+    </plurals>
+    <plurals name="chat_group_commands">
+        <item quantity="other">%1$d 条命令</item>
+    </plurals>
+    <plurals name="chat_group_edits">
+        <item quantity="other">%1$d 次修改</item>
+    </plurals>
+    <plurals name="chat_group_web_requests">
+        <item quantity="other">%1$d 次网络请求</item>
+    </plurals>
+    <plurals name="chat_group_other_tools">
+        <item quantity="other">%1$d 个其他工具</item>
+    </plurals>
+    <plurals name="chat_group_failed">
+        <item quantity="other">%1$d 个工具失败</item>
+    </plurals>
     <string name="chat_agent_steps_one">1 个智能体步骤</string>
     <string name="chat_agent_steps_many">%1$d 个智能体步骤</string>
     <string name="chat_group_tools_one">1 个工具</string>
@@ -551,8 +608,13 @@
     <string name="chat_edit_n_of_m">编辑 %1$d/%2$d</string>
     <string name="chat_empty_snippet">（空）</string>
     <string name="chat_result">结果</string>
+    <string name="chat_result_waiting">等待输出…</string>
+    <string name="chat_result_none">无输出</string>
     <string name="chat_result_error">结果 · 错误</string>
-    <string name="chat_reasoning">思考</string>
+    <string name="chat_reasoning_expanded">思考</string>
+    <string name="chat_reasoning_collapsed">思考…</string>
+    <string name="chat_reasoning_state_expanded">已展开</string>
+    <string name="chat_reasoning_state_collapsed">已收起</string>
     <string name="chat_not_delivered_retry">未送达 — 点按重试</string>
     <string name="chat_not_delivered">未送达</string>
     <string name="chat_steered_badge">已介入</string>
@@ -568,18 +630,31 @@
     <string name="chat_perm_abort">中止</string>
     <string name="chat_perm_allow_for_session">本会话允许</string>
     <string name="chat_perm_allow_all_edits">允许所有编辑</string>
+    <string name="chat_perm_more_options">更多选项</string>
     <string name="chat_perm_already_handled">已在其他设备处理</string>
     <string name="chat_perm_type_answer">输入您的答案…</string>
-    <string name="chat_perm_type_answer_first">请先输入答案</string>
-    <string name="chat_perm_answer_all">请先回答所有问题</string>
-    <string name="chat_perm_answer_required">请先回答所有必答问题</string>
-    <string name="chat_perm_submit">提交</string>
-    <string name="chat_perm_other">其他…</string>
-    <string name="chat_perm_optional_format">%1$s（可选）</string>
     <string name="chat_perm_add_note">添加备注…</string>
     <string name="chat_perm_none_of_the_above">以上都不是</string>
     <string name="chat_perm_other_note_optional">可在备注中补充说明（可选）。</string>
     <string name="chat_perm_open_signin_failed">无法打开登录页面。请检查是否安装浏览器后重试。</string>
+    <string name="chat_question_awaiting">等待回答</string>
+    <string name="chat_question_answered">已回答</string>
+    <string name="chat_question_handled">已处理</string>
+    <string name="chat_question_canceled">问题已取消</string>
+    <string name="chat_question_failed">问题处理失败</string>
+    <string name="chat_question_submitting">正在提交回答…</string>
+    <string name="chat_question_your_answer">你的回答</string>
+    <string name="chat_question_progress_a11y">第 %1$d 题，共 %2$d 题</string>
+    <string name="chat_question_details">详情</string>
+    <string name="chat_question_unavailable">无法显示这个问题。请打开详情查看原始请求。</string>
+    <string name="chat_question_select_all">可多选</string>
+    <string name="chat_question_optional">可选</string>
+    <string name="chat_question_other_answer">其他答案</string>
+    <string name="chat_question_hide_note">收起备注</string>
+    <string name="chat_question_previous">上一题</string>
+    <string name="chat_question_submit">提交回答</string>
+    <string name="chat_question_next">下一题</string>
+    <string name="chat_question_recommended">推荐</string>
 
     <!-- External links (B-M2d) -->
     <string name="chat_link_open_title">打开此链接？</string>
@@ -850,15 +925,20 @@
     <string name="media_play">播放</string>
     <string name="media_pause">暂停</string>
     <string name="chat_reconnecting_retry">正在重新连接… 点按重试</string>
-    <string name="sessions_filters">筛选</string>
+    <string name="sessions_filters">排序与筛选</string>
     <string name="sessions_filters_active">已应用筛选</string>
-    <string name="sessions_clear_filter">清除筛选</string>
+    <string name="sessions_filters_reset">重置</string>
+    <string name="sessions_filter_section">筛选</string>
+    <string name="sessions_sort_section">排序</string>
+    <string name="sessions_filters_done">完成</string>
+    <string name="sessions_filter_machines">机器</string>
+    <string name="sessions_filter_dates">活动日期</string>
+    <string name="sessions_filter_any_date">不限日期</string>
+    <string name="sessions_filter_clear_dates">清除日期筛选</string>
     <string name="sessions_machine_fallback">机器 · %1$s</string>
-    <string name="sessions_filter_summary">筛选：%1$s</string>
-    <string name="sessions_time_filter_label">按最后活动时间筛选会话</string>
     <string name="sessions_time_filter_apply">应用</string>
     <string name="sessions_time_filter_clear">清除</string>
-    <string name="sessions_time_filter_summary">活动时间：%1$s – %2$s</string>
+    <string name="sessions_time_filter_summary">%1$s – %2$s</string>
     <string name="sessions_time_filter_empty_title">此日期范围内没有会话</string>
     <string name="sessions_time_filter_empty_hint">调整或清除日期筛选以查看更多会话。</string>
     <string name="sessions_time_filter_recent_activity">近期活动</string>
@@ -988,6 +1068,35 @@
     <string name="pi_import_failed_partial">%1$d 个 session 导入失败：%2$s</string>
     <string name="pi_import_error_diverged">本机 Pi 分支在上次导入后发生变化，请先检查会话再继续。</string>
     <string name="pi_import_error_active">请先停止正在运行的 Hapi Pi session，再导入新增的原生历史。</string>
+    <!-- Incoming Android shares. -->
+    <string name="share_title">分享到会话</string>
+    <string name="share_choose_session">选择会话</string>
+    <string name="share_search_hint">搜索会话</string>
+    <string name="share_copying">正在准备分享文件…</string>
+    <string name="share_importing">正在添加分享内容…</string>
+    <string name="share_unreadable">无法读取此文件，请重试或移除。</string>
+    <string name="share_too_large">文件超过附件大小限制。</string>
+    <string name="share_interrupted">文件准备已中断，请重试或移除。</string>
+    <string name="share_retry">重试</string>
+    <string name="share_remove">移除</string>
+    <string name="share_cancel">取消</string>
+    <string name="share_receive_failed">无法接收分享内容，请重新分享。</string>
+    <string name="share_restore_title">恢复会话？</string>
+    <string name="share_restore_message">此会话已停止。恢复后再添加分享内容？</string>
+    <string name="share_restore_confirm">恢复并添加</string>
+    <string name="share_restore_label">已停止 · 添加前需恢复</string>
+    <string name="share_target_failed">无法打开此会话，请检查连接后重试。</string>
+    <string name="share_refresh">刷新会话</string>
+    <string name="share_no_sessions">没有匹配的会话</string>
+    <string name="share_offline">无法刷新会话，请检查连接或切换 Hub。</string>
+    <string name="share_replace_title">收到新的分享</string>
+    <string name="share_replace_message">已有尚未导入的分享内容。继续处理当前内容并放弃新分享，还是替换为新分享？</string>
+    <string name="share_keep_current">继续当前</string>
+    <string name="share_replace_current">替换为新分享</string>
+    <string name="share_error_title">分享暂不可用</string>
+    <string name="share_ok">确定</string>
+    <string name="share_pair_first">请先配对 Hub，再选择接收分享内容的会话。</string>
+    <string name="chat_notice_read_state_failed">无法保存已读状态</string>
 
     <!-- Global connection + runner version-skew banners (Home chrome). -->
     <string name="connection_reconnecting">正在重新连接…</string>
@@ -1009,7 +1118,6 @@
     <string name="runner_skew_binary_updated_hint">（磁盘上已有更新 CLI — 运行器应很快自行重启）</string>
     <string name="runner_skew_upgrade_cli_first">（磁盘尚无更新 CLI — 请先在该主机安装/升级）</string>
     <string name="runner_skew_restart_failed">重启运行器失败</string>
-    <string name="share_title">分享到 HAPI</string>
     <string name="share_subtitle">选择要附加到的会话。</string>
     <string name="share_recent_sessions">最近的活跃会话</string>
     <string name="share_search_results">匹配的会话</string>

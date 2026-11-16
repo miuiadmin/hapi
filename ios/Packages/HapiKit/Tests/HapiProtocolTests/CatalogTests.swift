@@ -94,7 +94,7 @@ struct CatalogTests {
     @Test func remainingFlavorsMatchTheirDeclaredSets() {
         #expect(permissionModes(forFlavor: "grok") == [.default, .auto, .plan, .bypassPermissions])
         #expect(permissionModes(forFlavor: "opencode") == [.default, .plan, .yolo])
-        #expect(permissionModes(forFlavor: "agy") == [.requestReview, .alwaysProceed])
+        #expect(permissionModes(forFlavor: "agy") == [.requestReview, .acceptEdits, .plan, .alwaysProceed])
         #expect(permissionModes(forFlavor: "cursor") == [.default, .plan, .ask, .debug, .autoReview, .yolo])
         // Pi has no runtime permission switching (always auto-approve).
         #expect(permissionModes(forFlavor: "pi") == [])
@@ -257,12 +257,10 @@ struct CatalogTests {
     @Test func newSessionCatalogsMatchTheWebOptionLists() {
         #expect(NewSessionCatalogs.claudeModels == [
             NewSessionOption(value: "auto", label: "Default"),
-            NewSessionOption(value: "sonnet", label: "Sonnet"),
-            NewSessionOption(value: "sonnet[1m]", label: "Sonnet 1M"),
             NewSessionOption(value: "opus", label: "Opus"),
-            NewSessionOption(value: "opus[1m]", label: "Opus 1M"),
             NewSessionOption(value: "fable", label: "Fable"),
-            NewSessionOption(value: "fable[1m]", label: "Fable 1M"),
+            NewSessionOption(value: "sonnet", label: "Sonnet"),
+            NewSessionOption(value: "haiku", label: "Haiku"),
         ])
         #expect(NewSessionCatalogs.claudeEfforts == [
             NewSessionOption(value: "auto", label: "Auto"),

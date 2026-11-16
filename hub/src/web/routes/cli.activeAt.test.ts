@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Database } from 'bun:sqlite'
 import { Hono } from 'hono'
-import { createConfiguration } from '../../configuration'
+import { _resetConfigurationForTests, createConfiguration } from '../../configuration'
 import { Store } from '../../store'
 import { RpcRegistry } from '../../socket/rpcRegistry'
 import { SyncEngine } from '../../sync/syncEngine'
@@ -53,6 +53,7 @@ afterAll(() => {
         process.env.HAPI_HOME = originalHapiHome
     }
     try { rmSync(testHapiHome, { recursive: true, force: true }) } catch {}
+    _resetConfigurationForTests()
 })
 
 describe('CLI GET /sessions/:id with null active_at', () => {

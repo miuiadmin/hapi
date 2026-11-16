@@ -25,7 +25,8 @@ export function getToolGroupTiming(tools: ToolCallBlock[], now: number): {
         .filter((tool) => tool.tool.state !== 'pending')
         .map((tool) => tool.tool.startedAt ?? tool.tool.createdAt)
         .filter((value): value is number => Number.isFinite(value))
-    const startedAt = startedValues.length > 0 ? Math.min(...startedValues) : null
+    const startedAt = !tools.some(tool => tool.tool.startUnavailable) && startedValues.length > 0
+        ? Math.min(...startedValues) : null
     const running = tools.some((tool) => tool.tool.state === 'running')
     const allFinished = tools.length > 0 && tools.every((tool) => tool.tool.state === 'completed' || tool.tool.state === 'error')
     const completedValues = allFinished
@@ -319,15 +320,14 @@ export function ToolGroupCard(props: {
                                     {primaryTitle}
                                 </CardTitle>
                             </div>
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-2 self-center text-[var(--app-hint)]">
                             <ToolTimingSummary
                                 startedAt={groupTiming.startedAt}
                                 completedAt={groupTiming.completedAt}
                                 durationMs={groupTiming.durationMs}
-                                typography="group"
                             />
-                        </div>
-
-                        <div className="flex shrink-0 items-center gap-2 self-center text-[var(--app-hint)]">
                             {groupTiming.running ? (
                                 <span className={toolStatusColorClass('running')} aria-label={t('toolGroup.rowStatus.running')}>
                                     <ToolStatusIcon state="running" />

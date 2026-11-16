@@ -1,7 +1,9 @@
+import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { Store } from '../store'
+import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
+import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
@@ -13,6 +15,10 @@ const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // but no longer — a runner that goes silent must not pin sessions online
 // forever (the normal keepalive timeouts take over again).
 export const RUNNER_DECLARED_ALIVE_TTL_MS = 90_000
+
+// A turn the hub closed when it restarted is picked up again if the agent
+// carries on with it this soon after the restart, instead of starting a new one.
+const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
 // restoreSessionArchiveMetadata) retry on version-mismatch with a fresh cache
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
@@ -20,12 +26,32 @@ export const RUNNER_DECLARED_ALIVE_TTL_MS = 90_000
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
 
+/**
+ * Codex and Claude keep their native session files on one machine, and
+ * local-session import binds a HAPI session to the machine it read the
+ * transcript from. Two sessions recorded on different machines are
+ * therefore separate conversations even when the native ids collide
+ * (copied or shared agent homes): dedup must not merge one into the other.
+ * Rows without a machine keep the id-only match. Pi and OpenCode are
+ * scoped strictly by their dedupe key instead.
+ */
+function isRecordedOnAnotherMachine(
+    field: string,
+    a: NonNullable<Session['metadata']>,
+    b: NonNullable<Session['metadata']>
+): boolean {
+    if (field !== 'codexSessionId' && field !== 'claudeSessionId') return false
+    return typeof a.machineId === 'string'
+        && typeof b.machineId === 'string'
+        && a.machineId !== b.machineId
+}
+
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
     private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
     private readonly deduplicateInProgress: Set<string> = new Set()
-    private readonly deduplicatePending: Set<string> = new Set()
+    private readonly deduplicatePending: Map<string, Set<string>> = new Map()
     private readonly pendingThinkingUntilBySessionId: Map<string, number> = new Map()
     private readonly runtimeConfigUpdatedAtBySessionId: Map<string, Partial<Record<RuntimeConfigKey, number>>> = new Map()
     /**
@@ -35,6 +61,12 @@ export class SessionCache {
      * so a hub restart re-derives it from the last human turn on disk.
      */
     private readonly agentProgressAtBySessionId: Map<string, number> = new Map()
+    /**
+     * Sessions whose turn the previous hub process left open. It continues if
+     * the agent reports thinking before the hub sees it idle or a new prompt
+     * arrives; see `recordTurn`.
+     */
+    private readonly interruptedTurnSessionIds: Set<string> = new Set()
     private readonly sessionIdleTimeoutMs: number = resolveSessionIdleTimeoutMs()
     /**
      * Runner-verified session liveness, carried on `machine-alive`. The runner
@@ -58,6 +90,20 @@ export class SessionCache {
             onSessionMergedAway?: (oldSessionId: string, newSessionId: string) => void
         } = {}
     ) {
+    }
+
+    /**
+     * Closes turns the previous hub process left open; `thinking` starts out
+     * false here, so nothing else would. Call once at startup.
+     */
+    closeTurnsLeftOpen(now: number = Date.now()): void {
+        try {
+            for (const sessionId of this.store.turns.closeDangling(now, TURN_RECOVERY_WINDOW_MS)) {
+                this.interruptedTurnSessionIds.add(sessionId)
+            }
+        } catch (error) {
+            console.warn('[SessionCache] Failed to close turns left open', { error })
+        }
     }
 
     getSessions(): Session[] {
@@ -93,6 +139,31 @@ export class SessionCache {
         }
 
         return { ok: false, reason: 'not-found' }
+    }
+
+    /**
+     * Boundary variant of `resolveSessionAccess` for ids supplied by clients
+     * (web/native routes, CLI REST): a merged-away id follows its durable
+     * redirect to the surviving row, so links, peer references and
+     * reopen-by-id keep working after a merge. Callers must continue with the
+     * returned `sessionId`. Internal paths (sockets, job ownership) keep the
+     * strict lookup so a stale process cannot write into the survivor.
+     * Redirect rows are namespace-scoped, so this never crosses namespaces.
+     */
+    resolveSessionAccessFollowingRedirects(
+        sessionId: string,
+        namespace: string
+    ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
+        const direct = this.resolveSessionAccess(sessionId, namespace)
+        if (direct.ok || direct.reason === 'access-denied') {
+            return direct
+        }
+        const redirectedId = this.store.sessionRedirects.resolve(sessionId, namespace)
+        if (!redirectedId || redirectedId === sessionId) {
+            return direct
+        }
+        const target = this.resolveSessionAccess(redirectedId, namespace)
+        return target.ok ? target : direct
     }
 
     getActiveSessions(): Session[] {
@@ -237,6 +308,9 @@ export class SessionCache {
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
+            contentRevision: stored.contentRevision,
+            readState: stored.readState,
+            lastUserMessageAt: stored.lastUserMessageAt,
             pinned: stored.pinned,
             globalPinned: stored.globalPinned,
             active: existing?.active ?? stored.active,
@@ -372,11 +446,17 @@ export class SessionCache {
         }
 
         const patch = parsed.data
+        const wasThinking = session.thinking
 
         if (patch.active !== undefined) session.active = patch.active
         if (patch.thinking !== undefined) session.thinking = patch.thinking
         if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
+        if (patch.contentRevision !== undefined) session.contentRevision = Math.max(session.contentRevision ?? 0, patch.contentRevision)
+        if (patch.readState) session.readState = mergeReadState(session.readState, patch.readState)
         if (patch.updatedAt !== undefined) session.updatedAt = Math.max(session.updatedAt, patch.updatedAt)
+        if (patch.lastUserMessageAt !== undefined) {
+            session.lastUserMessageAt = Math.max(session.lastUserMessageAt ?? 0, patch.lastUserMessageAt)
+        }
         if (patch.model !== undefined) session.model = patch.model
         if (patch.modelReasoningEffort !== undefined) session.modelReasoningEffort = patch.modelReasoningEffort
         if (patch.effort !== undefined) session.effort = patch.effort
@@ -404,6 +484,8 @@ export class SessionCache {
             session.agentState = patch.agentState.value
             session.agentStateVersion = patch.agentState.version
         }
+        if (patch.thinking === false) this.forgetInterruptedTurn(session.id)
+        this.recordTurn(session, wasThinking, Date.now(), 'patch', 'idle')
 
         return true
     }
@@ -456,6 +538,9 @@ export class SessionCache {
         if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
+        // The agent says it's idle: whatever it does next is a new turn.
+        if (!requestedThinking) this.forgetInterruptedTurn(session.id)
+        this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
         if (payload.permissionMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'permissionMode', t)) {
             session.permissionMode = payload.permissionMode
             this.persistPreferredPermissionMode(session, payload.permissionMode)
@@ -570,6 +655,7 @@ export class SessionCache {
         session.thinking = true
         session.thinkingAt = nextTime
         if (!wasThinking) session.activeTurnStartedAt = activeTurnStartedAt
+        this.recordTurn(session, wasThinking, session.activeTurnStartedAt ?? nextTime, 'hub_prompt', 'idle')
         session.updatedAt = Math.max(session.updatedAt, nextTime)
         this.pendingThinkingUntilBySessionId.set(session.id, nextTime + QUEUED_MESSAGE_THINKING_GRACE_MS)
         this.recordAgentProgress(session.id, nextTime)
@@ -585,6 +671,48 @@ export class SessionCache {
                     updatedAt: session.updatedAt
                 } satisfies SessionPatch
             })
+        }
+    }
+
+    /**
+     * Persists a change of `thinking` as the start or end of a turn, so how
+     * long agents worked survives a hub restart. Never throws: losing a turn
+     * row must not break the keepalive path.
+     */
+    private recordTurn(
+        session: Session,
+        wasThinking: boolean,
+        at: number,
+        trigger: SessionTurnTrigger,
+        reason: SessionTurnEndReason
+    ): void {
+        if (wasThinking === session.thinking) return
+        try {
+            if (session.thinking) {
+                // Only the agent itself carrying on continues an interrupted
+                // turn; a new prompt starts a new one.
+                const resumed = trigger === 'agent'
+                    && this.interruptedTurnSessionIds.has(session.id)
+                    && this.store.turns.resumeInterrupted(session.id, at)
+                this.forgetInterruptedTurn(session.id)
+                if (!resumed) {
+                    this.store.turns.open(session.id, session.namespace, at, trigger)
+                }
+            } else {
+                this.store.turns.close(session.id, at, reason)
+            }
+        } catch (error) {
+            console.warn('[SessionCache] Failed to record turn', { sessionId: session.id, error })
+        }
+    }
+
+    /** The turn a restart interrupted can no longer continue. */
+    private forgetInterruptedTurn(sessionId: string): void {
+        if (!this.interruptedTurnSessionIds.delete(sessionId)) return
+        try {
+            this.store.turns.abandonRecovery(sessionId)
+        } catch (error) {
+            console.warn('[SessionCache] Failed to drop turn recovery', { sessionId, error })
         }
     }
 
@@ -604,6 +732,36 @@ export class SessionCache {
             sessionId,
             data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
         })
+    }
+
+    refreshLastUserMessageAt(sessionId: string): void {
+        const stored = this.store.sessions.getSession(sessionId)
+        if (stored?.lastUserMessageAt === undefined) return
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            this.refreshSession(sessionId)
+            return
+        }
+        if (stored.lastUserMessageAt <= (session.lastUserMessageAt ?? -Infinity)) return
+        session.lastUserMessageAt = stored.lastUserMessageAt
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace: session.namespace,
+            data: { lastUserMessageAt: session.lastUserMessageAt } satisfies SessionPatch
+        })
+    }
+
+    syncReadState(sessionId: string): void {
+        const stored = this.store.sessions.getSession(sessionId)
+        const session = this.sessions.get(sessionId)
+        if (!stored || !session) return
+        if (session.contentRevision === stored.contentRevision
+            && session.readState?.version === stored.readState?.version) return
+        session.contentRevision = stored.contentRevision
+        session.readState = stored.readState
+        this.publisher.emit({ type: 'session-updated', sessionId, namespace: session.namespace,
+            data: { contentRevision: session.contentRevision, readState: session.readState } })
     }
 
     recordSessionActivity(sessionId: string, updatedAt: number): void {
@@ -776,21 +934,58 @@ export class SessionCache {
         })
     }
 
+    /**
+     * tiann/hapi#1404 — emit primary attached job (or null) so session-list
+     * caches update inline without a dedicated refetch.
+     */
+    /** Monotonic watermark per session — shared by REST list snapshots and SSE
+     *  emits so equal-ms terminal patches are not rejected after a refetch. */
+    private attachedJobEmitVersion = new Map<string, number>()
+
+    allocateAttachedJobVersion(sessionId: string): number {
+        const prev = this.attachedJobEmitVersion.get(sessionId) ?? 0
+        const version = Math.max(Date.now(), prev + 1)
+        this.attachedJobEmitVersion.set(sessionId, version)
+        return version
+    }
+
+    emitAttachedJobChanged(
+        sessionId: string,
+        attachedJob: import('@hapi/protocol').AttachedJob | null
+    ): void {
+        const cached = this.sessions.get(sessionId)
+        const namespace = cached?.namespace
+            ?? this.store.sessions.getSession(sessionId)?.namespace
+        if (!namespace) return
+        const version = this.allocateAttachedJobVersion(sessionId)
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace,
+            data: {
+                attachedJob: { version, value: attachedJob }
+            } satisfies SessionPatch
+        })
+    }
+
     handleSessionEnd(payload: { sid: string; time: number }): void {
         const t = clampAliveTime(payload.time) ?? Date.now()
 
         const session = this.sessions.get(payload.sid) ?? this.refreshSession(payload.sid)
         if (!session) return
+        this.forgetInterruptedTurn(session.id)
 
         if (!session.active && !session.thinking) {
             return
         }
 
+        const wasThinking = session.thinking
         session.active = false
         this.store.sessions.setSessionActive(session.id, false, t, session.namespace)
         session.thinking = false
         session.thinkingAt = t
         session.activeTurnStartedAt = null
+        this.recordTurn(session, wasThinking, t, 'agent', 'session_end')
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
         this.pendingThinkingUntilBySessionId.delete(session.id)
@@ -820,9 +1015,12 @@ export class SessionCache {
             // socket is down, not the agent. Keep it online; the TTL check in
             // isRunnerDeclaredAlive drops the vouch once the runner goes quiet.
             if (this.isRunnerDeclaredAlive(session.id, now)) continue
+            const wasThinking = session.thinking
             session.active = false
             this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
             session.thinking = false
+            // The last keepalive is the last time the agent was known to be working.
+            this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
             this.pendingThinkingUntilBySessionId.delete(session.id)
             expired.push(session.id)
             this.publisher.emit({
@@ -1311,6 +1509,198 @@ export class SessionCache {
     }
 
     /**
+     * Persist the first prompt as a display-only title while the session is
+     * untitled. It lives outside `summary`, so later title sources still apply.
+     */
+    updatePromptTitle(sessionId: string, text: string): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session?.metadata) return false
+
+            const metadata = session.metadata
+            if (metadata.name?.trim() || metadata.summary?.text?.trim() || metadata.promptTitle) {
+                return false
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...metadata, promptTitle: text },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                const parsed = MetadataSchema.safeParse(result.value)
+                if (!parsed.success) {
+                    this.refreshSession(sessionId)
+                    return true
+                }
+                // A metadata-only patch: this runs while a prompt is being
+                // accepted, so a full snapshot would race the thinking patch.
+                session.metadata = parsed.data
+                session.metadataVersion = result.version
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    namespace: session.namespace,
+                    data: { metadata: { version: result.version, value: parsed.data } } satisfies SessionPatch
+                })
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
+    async markModelErrorBridged(sessionId: string, eventId: string): Promise<void> {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = session.metadata ?? { path: '', host: '' }
+        const currentError = currentMetadata.lastModelError
+        if (!currentError || currentError.eventId !== eventId) {
+            return
+        }
+        if (currentError.bridgedForEventId === eventId) {
+            return
+        }
+
+        const newMetadata = {
+            ...currentMetadata,
+            lastModelError: {
+                ...currentError,
+                bridgedForEventId: eventId
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            newMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to update session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        // Bind dismiss to the error the client actually showed. If a newer
+        // lastModelError replaced it between render and click, refuse so we
+        // don't silently ack the unseen error (banner/dot would vanish).
+        // Identity is eventId (not wall-clock atTs). Retry version-mismatch
+        // (CLI metadata race) like markModelErrorNotified.
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                throw new Error('Session not found')
+            }
+
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const currentError = currentMetadata.lastModelError
+            if (!currentError) {
+                return
+            }
+            if (currentError.eventId !== eventId) {
+                throw new Error('Model error changed; refresh before acknowledging.')
+            }
+            if (typeof currentError.acknowledgedAt === 'number') {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                {
+                    ...currentMetadata,
+                    lastModelError: {
+                        ...currentError,
+                        acknowledgedAt: Date.now()
+                    }
+                },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to update session metadata')
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
+    /**
+     * Persist delivery watermark on lastModelError so hub restarts do not
+     * re-page the same unacknowledged eventId (in-memory Map alone is lost).
+     * No-ops when the error changed under us — a different eventId owns the page.
+     * Retries on version-mismatch (same pattern as renameSession / #919).
+     */
+    async markModelErrorNotified(sessionId: string, eventId: string): Promise<void> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                return
+            }
+
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const currentError = currentMetadata.lastModelError
+            if (!currentError || currentError.eventId !== eventId) {
+                return
+            }
+            if (typeof currentError.notifiedAt === 'number') {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                {
+                    ...currentMetadata,
+                    lastModelError: {
+                        ...currentError,
+                        notifiedAt: Date.now()
+                    }
+                },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to persist model-error notification')
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Model-error notification metadata stayed contended')
+    }
+
+    /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
      *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.
@@ -1465,6 +1855,12 @@ export class SessionCache {
             throw new Error('Cannot delete active session')
         }
 
+        if (this.store.sessionJobs.getPrimaryRunning(sessionId)) {
+            throw new Error(
+                'Cannot delete a session while an attached job is running. Complete or clear it first.'
+            )
+        }
+
         const scratchlistAttachments = this.store.scratchlist
             .list(sessionId)
             .flatMap((entry) => entry.attachments)
@@ -1473,12 +1869,16 @@ export class SessionCache {
         if (!deleted) {
             throw new Error('Failed to delete session')
         }
+        // Explicit delete ends the conversation; ids merged into it must not
+        // resolve to a different row later.
+        this.store.sessionRedirects.deleteTargeting(sessionId, session.namespace)
 
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
         this.pendingThinkingUntilBySessionId.delete(sessionId)
         this.agentProgressAtBySessionId.delete(sessionId)
+        this.attachedJobEmitVersion.delete(sessionId)
 
         void import('../scratchlistAttachments/storage').then(async ({
             deleteScratchlistAttachmentFiles,
@@ -1491,6 +1891,38 @@ export class SessionCache {
         })
 
         this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
+    }
+
+    /**
+     * Move outliving jobs + install owner/key redirects without deleting either
+     * session. Used by Codex duplicate consolidation before a hard delete.
+     */
+    transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
+        if (fromSessionId === toSessionId) return
+        // If the target previously transferred *to* the source (A→B then B→A),
+        // clear the target's stale outgoing pointer before installing the
+        // source→target redirect. Otherwise resolve(target) keeps hopping to
+        // the emptied/deleted donor.
+        const targetWasRedirectedToSource =
+            this.resolveAttachedJobSessionId(toSessionId, namespace) === fromSessionId
+        const movedJobs = this.persistAttachedJobRedirects(
+            fromSessionId,
+            toSessionId,
+            namespace,
+            targetWasRedirectedToSource
+        )
+        this.refreshSession(fromSessionId)
+        this.refreshSession(toSessionId)
+        if (movedJobs.moved > 0 || movedJobs.collided > 0) {
+            this.emitAttachedJobChanged(
+                toSessionId,
+                this.store.sessionJobs.getPrimaryRunning(toSessionId)
+            )
+            this.emitAttachedJobChanged(
+                fromSessionId,
+                this.store.sessionJobs.getPrimaryRunning(fromSessionId)
+            )
+        }
     }
 
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
@@ -1545,6 +1977,8 @@ export class SessionCache {
         if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        this.syncReadState(newSessionId)
+        if (!options.deleteOldSession) this.syncReadState(oldSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
         // with the original socket, so its notify chain must stay on that id.
         if (options.deleteOldSession) {
@@ -1566,6 +2000,39 @@ export class SessionCache {
         // the operator's per-session notes, contradicting the v2.0
         // promise that scratchlist survives reloads.
         const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
+        // Snapshot before transfer: if newSessionId previously redirected its
+        // jobs to oldSessionId (A→B history, then B→A reclaim), clear that
+        // stale outgoing pointer so the reclaimed owner resolves to itself.
+        const targetWasRedirectedToSource =
+            this.resolveAttachedJobSessionId(newSessionId, namespace) === oldSessionId
+        const movedJobs = this.persistAttachedJobRedirects(
+            oldSessionId,
+            newSessionId,
+            namespace,
+            targetWasRedirectedToSource
+        )
+        // Redirect metadata is in SQLite now, but resolveAttachedJobSessionId
+        // still reads the in-memory SessionCache. Refresh before any await
+        // (scratchlist attachment I/O) so a concurrent heartbeat/terminal
+        // PATCH via the pre-merge $HAPI_SESSION_ID follows the pointer instead
+        // of 404ing on the emptied source row.
+        this.refreshSession(oldSessionId)
+        this.refreshSession(newSessionId)
+        // Source transfer pointer + acceptor list landed in the same SQLite
+        // commit as the row move. Merge can still spend time on scratchlist
+        // attachment I/O; retained $HAPI_SESSION_ID follows the pointer.
+        if (movedJobs.moved > 0 || movedJobs.collided > 0) {
+            this.emitAttachedJobChanged(
+                newSessionId,
+                this.store.sessionJobs.getPrimaryRunning(newSessionId)
+            )
+            if (!options.deleteOldSession) {
+                this.emitAttachedJobChanged(
+                    oldSessionId,
+                    this.store.sessionJobs.getPrimaryRunning(oldSessionId)
+                )
+            }
+        }
         if (movedScratchlist.moved > 0) {
             // Attachment hub paths embed the old session id. Re-key files +
             // metadata so quota/resolve stay correct on the consolidated id.
@@ -1608,6 +2075,37 @@ export class SessionCache {
             // would 404 on edit/delete.
             this.emitScratchlistChanged(oldSessionId)
         }
+
+        // Merge from the *latest* target metadata (not the pre-transfer snapshot).
+        // recordJobKeyRedirects already wrote onto the target; rebuilding from
+        // stale newStored.metadata would drop jobKeyRedirects whenever the
+        // source contributes name/summary/path/etc. Recomputing per attempt also
+        // picks up a newer lastModelError that landed on newSessionId between the
+        // initial read and this write (version-mismatch retry).
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            if (!latest) break
+            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata)
+            if (mergedMetadata === null || mergedMetadata === latest.metadata) break
+            const result = this.store.sessions.updateSessionMetadata(
+                newSessionId,
+                mergedMetadata,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                break
+            }
+            if (result.result === 'error') {
+                break
+            }
+        }
+
+        // Acceptor list AFTER metadata merge (writing before clobbers when
+        // mergeSessionMetadata rebuilds from the stale pre-merge snapshot).
+        // Source transfer pointer was installed immediately after job transfer.
+        this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
 
         if (newStored.model === null && oldStored.model !== null) {
             const updated = this.store.sessions.setSessionModel(newSessionId, oldStored.model, namespace, {
@@ -1715,6 +2213,11 @@ export class SessionCache {
         }
 
         if (options.deleteOldSession) {
+            // Deleting the row cascades to its turns; they're the new row's history now.
+            this.store.turns.transferSession(oldSessionId, newSessionId)
+            // Write the redirect before the row disappears so a concurrent
+            // lookup of the old id never observes "neither row nor redirect".
+            this.store.sessionRedirects.record(oldSessionId, newSessionId, namespace)
             const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
             if (!deleted) {
                 throw new Error('Failed to delete old session during merge')
@@ -1733,6 +2236,7 @@ export class SessionCache {
                 this.recordAgentProgress(newSessionId, oldProgressAt)
             }
             this.agentProgressAtBySessionId.delete(oldSessionId)
+            this.attachedJobEmitVersion.delete(oldSessionId)
             this.hooks.onSessionMergedAway?.(oldSessionId, newSessionId)
         } else {
             this.refreshSession(oldSessionId)
@@ -1742,6 +2246,404 @@ export class SessionCache {
         if (refreshed) {
             this.publisher.emit({ type: 'session-updated', sessionId: newSessionId, data: refreshed })
         }
+    }
+
+    /**
+     * Move job rows and write owner/key redirects in one SQLite commit.
+     * A crash or failed metadata write after `sessionJobs.transfer()` used to
+     * leave the supervisor on the old `$HAPI_SESSION_ID` hitting an emptied
+     * source (404 / frozen meter). In-memory refresh happens after commit.
+     */
+    private persistAttachedJobRedirects(
+        fromSessionId: string,
+        toSessionId: string,
+        namespace: string,
+        targetWasRedirectedToSource: boolean
+    ): TransferSessionJobsResult {
+        return this.store.runInTransaction(() => {
+            const moved = this.store.sessionJobs.transfer(fromSessionId, toSessionId)
+            if (
+                targetWasRedirectedToSource
+                && !this.clearJobsTransferredToSession(toSessionId, namespace)
+            ) {
+                throw new Error('Failed to persist attached-job redirects')
+            }
+            if (
+                !this.recordJobsTransferredToSession(fromSessionId, toSessionId, namespace)
+                || !this.recordJobKeyRedirects(
+                    toSessionId,
+                    fromSessionId,
+                    moved.keyRedirects,
+                    namespace
+                )
+                || !this.recordJobsAcceptedFromSession(toSessionId, fromSessionId, namespace)
+            ) {
+                throw new Error('Failed to persist attached-job redirects')
+            }
+            return moved
+        })
+    }
+
+    /**
+     * Target session remembers it absorbed jobs from `fromSessionId` so job
+     * REST routes can follow `$HAPI_SESSION_ID` after the source row is deleted.
+     */
+    private recordJobsAcceptedFromSession(
+        toSessionId: string,
+        fromSessionId: string,
+        namespace: string
+    ): boolean {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
+            if (!latest) return false
+            const meta = (latest.metadata && typeof latest.metadata === 'object'
+                ? { ...(latest.metadata as Record<string, unknown>) }
+                : {}) as Record<string, unknown>
+            const prev = Array.isArray(meta.jobsAcceptedFromSessionIds)
+                ? meta.jobsAcceptedFromSessionIds.filter((id): id is string => typeof id === 'string')
+                : []
+            // Preserve A→B→C ancestry: when B already accepted jobs from A and
+            // now merges into C, clients still holding A's HAPI_SESSION_ID must
+            // resolve through C after B is deleted.
+            const fromMeta = this.store.sessions
+                .getSessionByNamespace(fromSessionId, namespace)
+                ?.metadata as Record<string, unknown> | null | undefined
+            const inheritedRaw = fromMeta?.jobsAcceptedFromSessionIds
+            const inherited = Array.isArray(inheritedRaw)
+                ? inheritedRaw.filter((id): id is string => typeof id === 'string')
+                : []
+            const next = [...new Set([...prev, ...inherited, fromSessionId])]
+            if (
+                next.length === prev.length
+                && next.every((id) => prev.includes(id))
+            ) {
+                return true
+            }
+            meta.jobsAcceptedFromSessionIds = next
+            const result = this.store.sessions.updateSessionMetadata(
+                toSessionId,
+                meta,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
+        }
+        return false
+    }
+
+    /** Source session (kept alive) points job APIs at the post-merge owner. */
+    private recordJobsTransferredToSession(
+        fromSessionId: string,
+        toSessionId: string,
+        namespace: string
+    ): boolean {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(fromSessionId, namespace)
+            if (!latest) return false
+            const meta = (latest.metadata && typeof latest.metadata === 'object'
+                ? { ...(latest.metadata as Record<string, unknown>) }
+                : {}) as Record<string, unknown>
+            if (meta.jobsTransferredToSessionId === toSessionId) return true
+            meta.jobsTransferredToSessionId = toSessionId
+            const result = this.store.sessions.updateSessionMetadata(
+                fromSessionId,
+                meta,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
+        }
+        return false
+    }
+
+    /** Drop a stale outgoing job-owner redirect when this session becomes canonical again. */
+    private clearJobsTransferredToSession(sessionId: string, namespace: string): boolean {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(sessionId, namespace)
+            if (!latest) return false
+            const meta = (latest.metadata && typeof latest.metadata === 'object'
+                ? { ...(latest.metadata as Record<string, unknown>) }
+                : {}) as Record<string, unknown>
+            if (typeof meta.jobsTransferredToSessionId !== 'string') return true
+            delete meta.jobsTransferredToSessionId
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                meta,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
+        }
+        return false
+    }
+
+    /**
+     * Persist key remaps from dual-running same-key merges, and inherit any
+     * redirects the source already held (A→B→C).
+     */
+    private recordJobKeyRedirects(
+        toSessionId: string,
+        fromSessionId: string,
+        redirects: Array<{ fromKey: string; toKey: string }>,
+        namespace: string,
+        inheritSourceRedirects = true
+    ): boolean {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
+            if (!latest) return false
+            const meta = (latest.metadata && typeof latest.metadata === 'object'
+                ? { ...(latest.metadata as Record<string, unknown>) }
+                : {}) as Record<string, unknown>
+            const prevRaw = meta.jobKeyRedirects
+            const next: Record<string, string> = {}
+            if (prevRaw && typeof prevRaw === 'object' && !Array.isArray(prevRaw)) {
+                for (const [k, v] of Object.entries(prevRaw as Record<string, unknown>)) {
+                    if (typeof v === 'string' && v.trim()) next[k] = v
+                }
+            }
+            // Compose inherited A→B redirects through this merge's remaps so an
+            // A→B→C chain where the intermediate remapped key collides again on
+            // C does not leave A pointing at C's unrelated live job.
+            // Late PUT registration must NOT inherit: fromSessionId is the
+            // requested id and may still hold stale pre-composition maps that
+            // would overwrite C's composed A/batch→batch.<B> entry.
+            // Same trap on a second B→C cleanup merge with empty currentRemaps:
+            // retained B still holds A/batch→batch; do not clobber C's composed
+            // mapping unless this merge actually remaps that intermediate key.
+            if (inheritSourceRedirects) {
+                const fromMeta = this.store.sessions
+                    .getSessionByNamespace(fromSessionId, namespace)
+                    ?.metadata as Record<string, unknown> | null | undefined
+                const currentRemaps = new Map(
+                    redirects.map(({ fromKey, toKey }) => [fromKey, toKey])
+                )
+                const inheritedRaw = fromMeta?.jobKeyRedirects
+                if (inheritedRaw && typeof inheritedRaw === 'object' && !Array.isArray(inheritedRaw)) {
+                    for (const [k, v] of Object.entries(inheritedRaw as Record<string, unknown>)) {
+                        if (typeof v !== 'string' || !v.trim()) continue
+                        const composed = currentRemaps.get(v)
+                        if (composed !== undefined) {
+                            next[k] = composed
+                        } else if (!(k in next)) {
+                            next[k] = v
+                        }
+                    }
+                }
+            }
+            for (const { fromKey, toKey } of redirects) {
+                next[`${fromSessionId}/${fromKey}`] = toKey
+            }
+            const prevKeys = Object.keys(
+                prevRaw && typeof prevRaw === 'object' && !Array.isArray(prevRaw)
+                    ? (prevRaw as Record<string, unknown>)
+                    : {}
+            )
+            const nextKeys = Object.keys(next)
+            const unchanged =
+                prevKeys.length === nextKeys.length
+                && nextKeys.every((k) => (prevRaw as Record<string, unknown> | undefined)?.[k] === next[k])
+            if (unchanged) return true
+            if (nextKeys.length === 0) {
+                delete meta.jobKeyRedirects
+            } else {
+                meta.jobKeyRedirects = next
+            }
+            const result = this.store.sessions.updateSessionMetadata(
+                toSessionId,
+                meta,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') return true
+            if (result.result !== 'version-mismatch') return false
+        }
+        return false
+    }
+
+    /**
+     * Follow job-owner redirects after session merge/dedup / OpenCode /clear so
+     * agents that still hold the pre-merge `$HAPI_SESSION_ID` can heartbeat.
+     * Cycle detection (not a hop cap): each /clear retains the archived source,
+     * so a long-lived supervisor can accumulate more than five replacements.
+     */
+    resolveAttachedJobSessionId(sessionId: string, namespace: string): string {
+        let current = sessionId
+        const visited = new Set<string>()
+        while (!visited.has(current)) {
+            visited.add(current)
+            const access = this.resolveSessionAccess(current, namespace)
+            if (access.ok) {
+                const meta = access.session.metadata as Record<string, unknown> | null | undefined
+                const next =
+                    (typeof meta?.jobsTransferredToSessionId === 'string'
+                        && meta.jobsTransferredToSessionId.trim())
+                    || (typeof meta?.supersededBySessionId === 'string'
+                        && meta.supersededBySessionId.trim())
+                    || ''
+                if (next && next !== current) {
+                    current = next
+                    continue
+                }
+                return current
+            }
+            // Source row may already be deleted — find who accepted its jobs.
+            const acceptor = this.findSessionThatAcceptedJobsFrom(current, namespace)
+            if (acceptor && acceptor !== current) {
+                current = acceptor
+                continue
+            }
+            return current
+        }
+        return current
+    }
+
+    private findSessionThatAcceptedJobsFrom(fromSessionId: string, namespace: string): string | null {
+        for (const session of this.getSessions()) {
+            if (session.namespace !== namespace) continue
+            const meta = session.metadata as Record<string, unknown> | null | undefined
+            const accepted = meta?.jobsAcceptedFromSessionIds
+            if (!Array.isArray(accepted)) continue
+            if (accepted.some((id) => id === fromSessionId)) {
+                return session.id
+            }
+        }
+        return null
+    }
+
+    /**
+     * Map a pre-merge job key onto the post-merge owner key when dual-running
+     * same-key merge remapped the source row.
+     */
+    resolveAttachedJobKey(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string
+    ): string {
+        return this.lookupExplicitJobKeyRedirect(
+            requestedSessionId,
+            ownerSessionId,
+            jobKey,
+            namespace
+        ) ?? jobKey
+    }
+
+    /**
+     * Explicit `jobKeyRedirects` entry for this requested session/key, including
+     * identity maps (`A/batch → batch`) from no-collision transfers. Distinguishes
+     * "mapped to itself" from "no mapping recorded".
+     */
+    private lookupExplicitJobKeyRedirect(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string
+    ): string | undefined {
+        const access = this.resolveSessionAccess(ownerSessionId, namespace)
+        if (!access.ok) return undefined
+        const meta = access.session.metadata as Record<string, unknown> | null | undefined
+        const redirects = meta?.jobKeyRedirects
+        if (!redirects || typeof redirects !== 'object' || Array.isArray(redirects)) {
+            return undefined
+        }
+        const mapped = (redirects as Record<string, unknown>)[`${requestedSessionId}/${jobKey}`]
+        return typeof mapped === 'string' && mapped.trim() ? mapped : undefined
+    }
+
+    /**
+     * Resolve the owner key for a PUT that may arrive via a merged-away session
+     * id. When merge recorded no key redirect (source had no row yet) but the
+     * owner already has a different running generation at that key, allocate a
+     * remap + persist jobKeyRedirects so the late registration cannot overwrite
+     * the target's live meter (HAPI Bot Major on #1424).
+     */
+    resolveAttachedJobKeyForUpsert(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string,
+        incomingRunId: string | undefined
+    ): string {
+        // Honor any explicit redirect — including identity maps from a
+        // collision-free transfer — before the late-registration remap path.
+        // Otherwise a corrective `job set` without runId reallocates a second key.
+        const explicit = this.lookupExplicitJobKeyRedirect(
+            requestedSessionId,
+            ownerSessionId,
+            jobKey,
+            namespace
+        )
+        if (explicit !== undefined) return explicit
+        if (requestedSessionId === ownerSessionId) return jobKey
+
+        const allocated = this.store.runInTransaction(() => {
+            // Re-read redirect inside the txn in case a concurrent merge wrote one.
+            const again = this.lookupExplicitJobKeyRedirect(
+                requestedSessionId,
+                ownerSessionId,
+                jobKey,
+                namespace
+            )
+            if (again !== undefined) return again
+
+            const existing = this.store.sessionJobs.get(ownerSessionId, jobKey)
+            const persistIdentity = (): string => {
+                // Free-key / same-generation returns still need an explicit
+                // A/batch→batch map so a later B→C collision remap can compose
+                // inherited redirects (empty A→B, late register, then B→C).
+                // inheritSourceRedirects=false: do not reimport the requested
+                // session's stale maps onto the owner after a chained merge.
+                if (
+                    !this.recordJobKeyRedirects(
+                        ownerSessionId,
+                        requestedSessionId,
+                        [{ fromKey: jobKey, toKey: jobKey }],
+                        namespace,
+                        false
+                    )
+                ) {
+                    throw new Error('Failed to persist late job-key redirect')
+                }
+                return jobKey
+            }
+            if (!existing || existing.status !== 'running') {
+                return persistIdentity()
+            }
+            // Same supervised generation may correct via redirected session id.
+            if (
+                incomingRunId !== undefined
+                && existing.runId === incomingRunId
+            ) {
+                return persistIdentity()
+            }
+
+            const toKey = this.store.sessionJobs.allocateRemappedKey(
+                ownerSessionId,
+                requestedSessionId,
+                jobKey
+            )
+            if (
+                !this.recordJobKeyRedirects(
+                    ownerSessionId,
+                    requestedSessionId,
+                    [{ fromKey: jobKey, toKey }],
+                    namespace,
+                    false
+                )
+            ) {
+                throw new Error('Failed to persist late job-key redirect')
+            }
+            return toKey
+        })
+        this.refreshSession(ownerSessionId)
+        return allocated
     }
 
     private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
@@ -1773,6 +2675,11 @@ export class SessionCache {
             changed = true
         }
 
+        if (typeof oldObj.promptTitle === 'string' && typeof newObj.promptTitle !== 'string') {
+            merged.promptTitle = oldObj.promptTitle
+            changed = true
+        }
+
         const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
         const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
         const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
@@ -1801,6 +2708,48 @@ export class SessionCache {
         }
         if (typeof oldObj.preferredCopilotAgentMode === 'string' && typeof newObj.preferredCopilotAgentMode !== 'string') {
             merged.preferredCopilotAgentMode = oldObj.preferredCopilotAgentMode
+            changed = true
+        }
+
+        const claudeHistory = mergeClaudeSessionIdHistory(oldObj, newObj)
+        if (claudeHistory) {
+            merged.claudeSessionIdHistory = claudeHistory
+            changed = true
+        }
+
+        // Preserve durable model-error alert state across resume/dedup row merges.
+        // Identity is eventId (wall-clock atTs is display-only and can go
+        // backwards after NTP/sleep). Carry old when new has none; when both
+        // share an eventId, merge hub watermarks.
+        type ModelErrorState = {
+            eventId?: string
+            atTs?: number
+            acknowledgedAt?: number
+            notifiedAt?: number
+            [key: string]: unknown
+        }
+        const oldError = oldObj.lastModelError as ModelErrorState | undefined
+        const newError = newObj.lastModelError as ModelErrorState | undefined
+        const oldId = typeof oldError?.eventId === 'string' ? oldError.eventId : null
+        const newId = typeof newError?.eventId === 'string' ? newError.eventId : null
+        if (oldError && oldId && !newError) {
+            merged.lastModelError = oldError
+            changed = true
+        } else if (oldError && newError && oldId && newId && oldId === newId) {
+            merged.lastModelError = {
+                ...oldError,
+                ...newError,
+                acknowledgedAt: newError.acknowledgedAt ?? oldError.acknowledgedAt,
+                notifiedAt: newError.notifiedAt ?? oldError.notifiedAt,
+                bridgedForEventId: newError.bridgedForEventId ?? oldError.bridgedForEventId,
+                retriedAndFailed: newError.retriedAndFailed === true || oldError.retriedAndFailed === true,
+                supersededByUserTurn: newError.supersededByUserTurn === true
+                    || oldError.supersededByUserTurn === true,
+                bridgeable: newError.bridgeable === false || oldError.bridgeable === false
+                    ? false
+                    : (newError.bridgeable ?? oldError.bridgeable),
+                lastUserMessage: newError.lastUserMessage ?? oldError.lastUserMessage
+            }
             changed = true
         }
 
@@ -1949,31 +2898,56 @@ export class SessionCache {
         // coalesce this trigger and run one more pass afterwards. This matters
         // for active duplicates: a session can become inactive while the first
         // pass is only allowed to move history, and the follow-up pass should
-        // then be allowed to delete the inactive duplicate record.
+        // then be allowed to delete the inactive duplicate record. The pass
+        // re-runs from each session that asked: Codex and Claude candidates
+        // are filtered by the triggering session's machine, so a trigger from
+        // another machine needs its own pass.
         if (this.deduplicateInProgress.has(agentId.dedupeKey)) {
-            this.deduplicatePending.add(agentId.dedupeKey)
+            const pending = this.deduplicatePending.get(agentId.dedupeKey) ?? new Set<string>()
+            pending.add(sessionId)
+            this.deduplicatePending.set(agentId.dedupeKey, pending)
             return
         }
         this.deduplicateInProgress.add(agentId.dedupeKey)
 
+        let passSessionId = sessionId
+        const queued: string[] = []
+        const takeNextPass = (): boolean => {
+            const pending = this.deduplicatePending.get(agentId.dedupeKey)
+            this.deduplicatePending.delete(agentId.dedupeKey)
+            for (const id of pending ?? []) {
+                if (!queued.includes(id)) queued.push(id)
+            }
+            while (queued.length > 0) {
+                const next = queued.shift()!
+                const nextSession = this.sessions.get(next)
+                if (nextSession?.metadata && this.extractAgentSessionId(nextSession.metadata)?.dedupeKey === agentId.dedupeKey) {
+                    passSessionId = next
+                    return true
+                }
+            }
+            return false
+        }
+
         try {
             do {
-                this.deduplicatePending.delete(agentId.dedupeKey)
-
-                const currentSession = this.sessions.get(sessionId)
+                const currentSession = this.sessions.get(passSessionId)
+                const passSession = currentSession ?? session
+                const passMetadata = currentSession?.metadata ?? session.metadata
                 const candidates: { id: string; session: Session }[] = []
                 const machineScoped = agentId.field === 'piSessionId' || agentId.field === 'opencodeSessionId'
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
                     if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
-                        candidates.push({ id: sessionId, session: currentSession })
+                        candidates.push({ id: passSessionId, session: currentSession })
                     }
                 }
                 for (const [existingId, existing] of this.sessions) {
-                    if (existingId === sessionId) continue
-                    if (existing.namespace !== session.namespace) continue
+                    if (existingId === passSessionId) continue
+                    if (existing.namespace !== passSession.namespace) continue
                     if (!existing.metadata) continue
                     if (existing.metadata[agentId.field] !== agentId.value) continue
                     if (machineScoped && existing.metadata.machineId !== agentId.machineId) continue
+                    if (isRecordedOnAnotherMachine(agentId.field, passMetadata, existing.metadata)) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 
@@ -1995,8 +2969,8 @@ export class SessionCache {
                     if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
                     const updatedDelta = b.session.updatedAt - a.session.updatedAt
                     if (updatedDelta !== 0) return updatedDelta
-                    if (a.id === sessionId) return -1
-                    if (b.id === sessionId) return 1
+                    if (a.id === passSessionId) return -1
+                    if (b.id === passSessionId) return 1
                     return b.session.activeAt - a.session.activeAt
                 })
                 const targetId = candidates[0].id
@@ -2021,7 +2995,7 @@ export class SessionCache {
                         // best-effort: duplicate remains if merge fails
                     }
                 }
-            } while (this.deduplicatePending.has(agentId.dedupeKey))
+            } while (takeNextPass())
         } finally {
             this.deduplicateInProgress.delete(agentId.dedupeKey)
             this.deduplicatePending.delete(agentId.dedupeKey)

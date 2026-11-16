@@ -6,10 +6,13 @@ import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.chat.composer.DraftRing
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.companion.feature.chat.composer.appendSharedText
+import app.hapi.companion.feature.share.ShareInbox
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -82,50 +85,29 @@ class DataStoreChatDrafts(
             if (prefs[key(toSessionId)].isNullOrEmpty()) {
                 prefs[key(toSessionId)] = draft
                 touchAndPrune(prefs, toSessionId)
+                val prefix = "draftShare:$hubKey:$fromSessionId:"
+                prefs.asMap().filter { it.key.name.startsWith(prefix) }.forEach { (receipt, timestamp) ->
+                    prefs[longPreferencesKey("draftShare:$hubKey:$toSessionId:${receipt.name.removePrefix(prefix)}")] = timestamp as Long
+                    prefs.remove(receipt)
+                }
             }
         }
     }
 
-    /**
-     * Read the ring index, adopting value rows the index does not know (a
-     * lost/corrupt index must not leave orphan rows outside the ring —
-     * otherwise the cap cannot bound the store).
-     */
-    private fun readIndex(prefs: Preferences): LinkedHashMap<String, Long> {
-        val index = decodeIndex(prefs[indexKey])
-        val known = index.keys
-        val adopted = prefs.asMap().keys
-            .filterIsInstance<Preferences.Key<String>>()
-            .filter { it.name.startsWith(keyPrefix) }
-            .map { it.name.removePrefix(keyPrefix) }
-            .filter { it.isNotEmpty() && it !in known }
-        adopted.forEach { index[it] = now() }
-        return index
-    }
-
-    private fun removeFromIndex(prefs: MutablePreferences, sessionId: String) {
-        val index = readIndex(prefs)
-        if (index.remove(sessionId) != null) prefs[indexKey] = encodeIndex(index)
-    }
-
-    private fun touchAndPrune(prefs: MutablePreferences, sessionId: String) {
-        val index = readIndex(prefs)
-        val evicted = DraftRing.touch(index, sessionId, now())
-        prefs[indexKey] = encodeIndex(index)
-        evicted.forEach { evictedId ->
-            if (evictedId != sessionId) prefs.remove(key(evictedId))
+    override suspend fun appendSharedText(sessionId: String, requestId: String, currentText: String, text: String): String {
+        var result = currentText
+        dataStore.edit { prefs ->
+            val now = System.currentTimeMillis()
+            prefs.asMap().filter {
+                it.key.name.startsWith("draftShare:$hubKey:") && (it.value as? Long ?: Long.MAX_VALUE) < now - ShareInbox.RETENTION_MS
+            }.keys.forEach { prefs.remove(it) }
+            val receipt = longPreferencesKey("draftShare:$hubKey:$sessionId:$requestId")
+            if (prefs[receipt] == null) {
+                result = appendSharedText(currentText, text)
+                prefs[key(sessionId)] = result
+                prefs[receipt] = now
+            }
         }
-    }
-
-    companion object {
-        internal fun encodeIndex(index: Map<String, Long>): String =
-            HapiJson.encodeToString(MapSerializer(String.serializer(), Long.serializer()), index)
-
-        internal fun decodeIndex(raw: String?): LinkedHashMap<String, Long> {
-            if (raw.isNullOrEmpty()) return LinkedHashMap()
-            return runCatching {
-                HapiJson.decodeFromString(MapSerializer(String.serializer(), Long.serializer()), raw)
-            }.getOrNull()?.let { LinkedHashMap(it) } ?: LinkedHashMap()
-        }
+        return result
     }
 }

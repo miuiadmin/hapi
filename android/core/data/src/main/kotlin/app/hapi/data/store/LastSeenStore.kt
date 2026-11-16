@@ -1,217 +1,209 @@
 package app.hapi.data.store
 
+import app.hapi.data.api.ApiError
+import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.SessionReadState
+import app.hapi.protocol.wire.SessionReadStateRequest
+import app.hapi.protocol.wire.SessionReadStateResponse
 import app.hapi.protocol.wire.SessionSummary
 import java.io.File
+import java.io.FileOutputStream
+import java.net.URLEncoder
+import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
-/** Snapshot payload: watermarks, explicit-unread marks, and baseline scopes. */
+@Serializable
+data class PendingRead(val id: String, val request: SessionReadStateRequest)
+
+/** Revisions and the durable outbox share one atomic file, scoped by hub/namespace. */
 @Serializable
 data class LastSeenState(
     val lastSeen: Map<String, Long> = emptyMap(),
-    val baselines: Set<String> = emptySet(),
-    /** `hapi.sessionManualUnread.v1` port: session id → the `updatedAt` marked unread. */
-    val manualUnread: Map<String, Long> = emptyMap(),
+    val server: Map<String, SessionReadState> = emptyMap(),
+    val pending: Map<String, PendingRead> = emptyMap(),
 )
 
-/**
- * Per-session last-seen watermarks — port of `web/src/lib/sessionLastSeen.ts`
- * (localStorage → per-hub JSON snapshot) plus the unread derivation from
- * `web/src/lib/sessionAttention.ts`.
- *
- * The watermark is the session `updatedAt` the operator last had on screen;
- * a session is **unread** when its current `updatedAt` moved past it
- * ([isUnread] — the reference compares `updatedAt` only; message `seq` never
- * reaches the summary). [initializeBaseline] seeds missing watermarks from
- * the first session list so a fresh install does not mark every historical
- * session unread — once per [LastSeenState.baselines] scope, exactly like the
- * web's per-scope baseline flag.
- */
 class LastSeenStore(
-    scope: CoroutineScope,
-    snapshotDir: File? = null,
+    private val scope: CoroutineScope,
+    private val snapshotDir: File? = null,
+    namespace: String? = "default",
 ) {
-    private val snapshot: JsonSnapshotStore<LastSeenState>? = snapshotDir?.let { dir ->
-        JsonSnapshotStore(
-            file = File(dir, "last-seen.json"),
-            serializer = LastSeenState.serializer(),
-            scope = scope,
-        )
+    @Volatile private var namespace: String? = namespace
+    private val mutex = Mutex()
+    private val syncLock = Any()
+    @Volatile private var send: (suspend (String, SessionReadStateRequest) -> SessionReadState)? = null
+    private var syncJob: Job? = null
+    @Volatile private var foreground = true
+    @Volatile private var closed = false
+    private val _state = MutableStateFlow(load(namespace))
+    val state: StateFlow<LastSeenState> = _state.asStateFlow()
+
+    private fun file(namespace: String?): File? = namespace?.let { ns -> snapshotDir?.let {
+        File(it, "read-state-${URLEncoder.encode(ns, "UTF-8")}.json")
+    } }
+
+    private fun load(namespace: String?): LastSeenState = runCatching {
+        file(namespace)?.takeIf { it.isFile }?.readText()?.let { HapiJson.decodeFromString(LastSeenState.serializer(), it) }
+    }.getOrNull() ?: LastSeenState()
+
+    suspend fun configure(namespace: String, sender: suspend (String, SessionReadStateRequest) -> SessionReadState) {
+        if (closed) return
+        mutex.withLock {
+            if (this.namespace != namespace) {
+                synchronized(syncLock) {
+                    val previous = syncJob
+                    syncJob = null
+                    this.namespace = namespace
+                    previous?.cancel()
+                }
+                _state.value = withContext(Dispatchers.IO) { load(namespace) }
+            }
+            send = sender
+        }
+        sync()
     }
 
-    private val _state = MutableStateFlow(snapshot?.load() ?: LastSeenState())
-    val state: StateFlow<LastSeenState> = _state.asStateFlow()
+    fun setForeground(value: Boolean) {
+        foreground = value
+        if (value) sync()
+    }
 
     fun lastSeenAt(sessionId: String): Long = _state.value.lastSeen[sessionId] ?: 0
 
-    /** Timestamp the operator explicitly marked unread ([markUnread]), if any. */
-    fun manualUnreadAt(sessionId: String): Long? = _state.value.manualUnread[sessionId]
-
-    /** Forces the debounced snapshot to disk (app background / tests). */
-    suspend fun flushPersistence() {
-        snapshot?.flush()
+    fun shutdown() = synchronized(syncLock) {
+        closed = true
+        foreground = false
+        syncJob?.cancel()
+        syncJob = null
     }
 
-    /**
-     * `markSessionSeen`: monotonic max — a stale screen never rewinds the
-     * watermark — and clears an explicit-unread mark once the screen has
-     * caught up to it (`nextSeenAt >= manualUnreadAt`, the reference rule).
-     */
-    fun markSeen(sessionId: String, seenAt: Long) {
-        if (sessionId.isEmpty()) return
-        updateState { state ->
-            val current = state.lastSeen[sessionId] ?: 0
-            val next = maxOf(current, seenAt)
-            val seenChanged = state.lastSeen[sessionId] != next
-            val manual = state.manualUnread[sessionId]
-            val manualChanged = manual != null && next >= manual
-            if (!seenChanged && !manualChanged) {
-                state
-            } else {
-                state.copy(
-                    lastSeen = if (seenChanged) state.lastSeen + (sessionId to next) else state.lastSeen,
-                    manualUnread = if (manualChanged) state.manualUnread - sessionId else state.manualUnread,
-                )
-            }
-        }
-    }
+    /** A successful mark is already durable; background/close waits for active writes. */
+    suspend fun flushPersistence() { mutex.withLock { } }
 
-    /**
-     * `initializeSessionLastSeen`: on the first list load for [scopeKey]
-     * (e.g. the hub id), seed every session without a watermark at its
-     * current `updatedAt`, then never again for that scope.
-     */
-    fun initializeBaseline(scopeKey: String, sessions: Iterable<SessionSummary>) {
-        updateState { state ->
-            if (scopeKey in state.baselines) return@updateState state
-            val seeded = state.lastSeen.toMutableMap()
-            for (session in sessions) {
-                seeded.getOrPut(session.id) { session.updatedAt }
-            }
-            state.copy(lastSeen = seeded, baselines = state.baselines + scopeKey)
-        }
-    }
-
-    /**
-     * `markSessionUnread`: move the watermark just behind the current activity
-     * (`updatedAt - 1`, only when it is not already behind) and remember the
-     * explicit action so the unread state survives the summary being the
-     * screen's own session.
-     */
-    fun markUnread(sessionId: String, updatedAt: Long) {
-        if (sessionId.isEmpty()) return
-        updateState { state ->
-            val unreadBefore = updatedAt - 1
-            val current = state.lastSeen[sessionId]
-            val seenChanged = !(current != null && current <= unreadBefore)
-            val manualChanged = state.manualUnread[sessionId] != updatedAt
-            if (!seenChanged && !manualChanged) {
-                state
-            } else {
-                state.copy(
-                    lastSeen = if (seenChanged) state.lastSeen + (sessionId to unreadBefore) else state.lastSeen,
-                    manualUnread = if (manualChanged) state.manualUnread + (sessionId to updatedAt) else state.manualUnread,
-                )
-            }
-        }
-    }
-
-    /**
-     * `markAllSessionsSeen`: stamp every supplied session with unread
-     * activity as seen (watermark at its latest `updatedAt`, explicit-unread
-     * mark dropped). Returns how many were unread — counted against the
-     * pre-call snapshot like the reference's read-then-write, so the CAS
-     * retry in [updateState] cannot double-count.
-     */
-    fun markAllSeen(sessions: Iterable<SessionSummary>): Int {
-        val latest = latestSessionUpdates(sessions)
-        if (latest.isEmpty()) return 0
-        val before = _state.value
-        var count = 0
-        for ((sessionId, updatedAt) in latest) {
-            if (hasUnreadActivity(updatedAt, before.lastSeen[sessionId] ?: 0, before.manualUnread[sessionId])) {
-                count += 1
-            }
-        }
-        if (count == 0) return 0
-        updateState { state ->
-            val nextSeen = state.lastSeen.toMutableMap()
-            val nextManual = state.manualUnread.toMutableMap()
-            var changed = false
-            for ((sessionId, updatedAt) in latest) {
-                if (!hasUnreadActivity(updatedAt, nextSeen[sessionId] ?: 0, nextManual[sessionId])) continue
-                val stamped = maxOf(nextSeen[sessionId] ?: 0, updatedAt)
-                if (nextSeen[sessionId] != stamped) {
-                    nextSeen[sessionId] = stamped
-                    changed = true
+    private suspend fun commit(identity: String? = namespace, transform: (LastSeenState) -> LastSeenState) {
+        mutex.withLock {
+            if (namespace != identity) return
+            val next = transform(_state.value)
+            if (next == _state.value) return
+            val target = file(namespace)
+            // Cancellation on hub switch cannot tear a write or publish an unpersisted mark.
+            withContext(NonCancellable + Dispatchers.IO) {
+                if (target != null) {
+                    target.parentFile?.mkdirs()
+                    val temporary = File(target.parentFile, target.name + ".tmp")
+                    FileOutputStream(temporary).use { output ->
+                        output.write(HapiJson.encodeToString(LastSeenState.serializer(), next).toByteArray(Charsets.UTF_8))
+                        output.fd.sync()
+                    }
+                    check(temporary.renameTo(target)) { "Cannot persist read state" }
                 }
-                if (nextManual.remove(sessionId) != null) changed = true
-            }
-            if (!changed) state else state.copy(lastSeen = nextSeen, manualUnread = nextManual)
-        }
-        return count
-    }
-
-    /** `latestSessionUpdates`: per-id max `updatedAt` (web dedups repeated ids). */
-    private fun latestSessionUpdates(sessions: Iterable<SessionSummary>): Map<String, Long> {
-        val latest = LinkedHashMap<String, Long>()
-        for (session in sessions) {
-            if (session.id.isEmpty()) continue
-            val current = latest[session.id]
-            if (current == null || session.updatedAt > current) latest[session.id] = session.updatedAt
-        }
-        return latest
-    }
-
-    private inline fun updateState(transform: (LastSeenState) -> LastSeenState) {
-        while (true) {
-            val previous = _state.value
-            val next = transform(previous)
-            if (next === previous) return
-            if (_state.compareAndSet(previous, next)) {
-                snapshot?.scheduleWrite(next)
-                return
+                _state.value = next
             }
         }
+    }
+
+    suspend fun markSeen(sessionId: String, revision: Long, serverState: SessionReadState? = null) {
+        if (closed || namespace == null || sessionId.isEmpty() || revision < 0) return
+        commit { current ->
+            val server = SessionReadState.merge(current.server[sessionId], serverState) ?: SessionReadState()
+            val seen = maxOf(current.lastSeen[sessionId] ?: 0, server.readRevision)
+            val pending = current.pending[sessionId]
+            val manualUnread = server.manualUnread && pending?.request?.expectedVersion != server.version
+            if (seen >= revision && !manualUnread) return@commit current
+            val request = SessionReadStateRequest(type = "read", readRevision = maxOf(seen, revision), expectedVersion = serverState?.version ?: server.version)
+            current.copy(
+                lastSeen = current.lastSeen + (sessionId to maxOf(seen, revision)),
+                server = current.server + (sessionId to server),
+                pending = current.pending + (sessionId to PendingRead(UUID.randomUUID().toString(), request)),
+            )
+        }
+        sync()
+    }
+
+    /**
+     * Manual unread mark (stack feature; the wire `type: 'unread'` request):
+     * parks the local watermark behind the current head so the row shows
+     * unread immediately, and queues the server write so every other client
+     * (web/native) sees the same manual-unread flag.
+     */
+    suspend fun markUnread(sessionId: String, serverState: SessionReadState? = null) {
+        if (closed || namespace == null || sessionId.isEmpty()) return
+        commit { current ->
+            val server = SessionReadState.merge(current.server[sessionId], serverState) ?: SessionReadState()
+            val request = SessionReadStateRequest(type = "unread", expectedVersion = server.version)
+            current.copy(
+                lastSeen = current.lastSeen + (sessionId to 0L),
+                server = current.server + (sessionId to server),
+                pending = current.pending + (sessionId to PendingRead(UUID.randomUUID().toString(), request)),
+            )
+        }
+        sync()
+    }
+
+    /** Marks every session read at its current head (mark-all-read action). */
+    suspend fun markAllSeen(sessions: List<SessionSummary>) {
+        for (summary in sessions) markSeen(summary.id, summary.contentRevision ?: 0, summary.readState)
+    }
+
+    private fun sync(): Unit = synchronized(syncLock) {
+        if (closed || !scope.isActive || !foreground || send == null || syncJob != null || state.value.pending.isEmpty()) return
+        val sender = send ?: return
+        val identity = namespace
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            while (isActive && foreground && namespace == identity) {
+                val (id, pending) = state.value.pending.entries.firstOrNull()?.let { it.key to it.value } ?: break
+                try {
+                    val response = sender(id, pending.request)
+                    commit(identity) { current ->
+                        current.copy(
+                            server = current.server + (id to (SessionReadState.merge(current.server[id], response) ?: response)),
+                            pending = if (current.pending[id]?.id == pending.id) current.pending - id else current.pending,
+                        )
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled
+                } catch (error: Exception) {
+                    if (error is ApiError && error.status in setOf(400, 403, 404, 409)) {
+                        val authoritative = runCatching { HapiJson.decodeFromString(SessionReadStateResponse.serializer(), error.body ?: "").readState }.getOrNull()
+                        try { commit(identity) { current -> current.copy(
+                            server = if (authoritative == null) current.server else current.server + (id to (SessionReadState.merge(current.server[id], authoritative) ?: authoritative)),
+                            lastSeen = if (current.pending[id]?.id == pending.id) current.lastSeen + (id to (authoritative?.readRevision ?: current.server[id]?.readRevision ?: 0)) else current.lastSeen,
+                            pending = if (current.pending[id]?.id == pending.id) current.pending - id else current.pending,
+                        ) } } catch (cancelled: CancellationException) { throw cancelled
+                        } catch (_: Exception) { delay(5_000) }
+                    } else delay(5_000)
+                }
+            }
+        }
+        syncJob = job
+        job.invokeOnCompletion {
+            synchronized(syncLock) {
+                if (syncJob === job) { syncJob = null; sync() }
+            }
+        }
+        job.start()
     }
 
     companion object {
-        /** `sessionIsUnread`: activity newer than the operator's watermark. */
-        fun isUnread(summary: SessionSummary, lastSeenAt: Long): Boolean =
-            summary.updatedAt > lastSeenAt
-
-        /**
-         * `hasUnreadActivity`: watermark comparison OR an explicit-unread
-         * mark pinned to this exact `updatedAt` (the reference's defensive
-         * OR — `markUnread` already parks the watermark behind the activity).
-         */
-        fun hasUnreadActivity(updatedAt: Long, lastSeenAt: Long, manualUnreadAt: Long?): Boolean =
-            updatedAt > lastSeenAt || manualUnreadAt == updatedAt
-
-        /**
-         * `getUnreadSessionCount`: unread sessions among [sessions], one
-         * snapshot of both maps (bulk lens/toolbar counting). Repeated ids
-         * collapse to their max `updatedAt`, like the reference.
-         */
-        fun unreadSessionCount(
-            sessions: Iterable<SessionSummary>,
-            lastSeen: Map<String, Long>,
-            manualUnread: Map<String, Long>,
-        ): Int {
-            val latest = LinkedHashMap<String, Long>()
-            for (session in sessions) {
-                if (session.id.isEmpty()) continue
-                val current = latest[session.id]
-                if (current == null || session.updatedAt > current) latest[session.id] = session.updatedAt
-            }
-            var count = 0
-            for ((sessionId, updatedAt) in latest) {
-                if (hasUnreadActivity(updatedAt, lastSeen[sessionId] ?: 0, manualUnread[sessionId])) count += 1
-            }
-            return count
+        fun isUnread(summary: SessionSummary, state: LastSeenState): Boolean {
+            val server = SessionReadState.merge(state.server[summary.id], summary.readState) ?: SessionReadState()
+            val pending = state.pending[summary.id]
+            val manual = server.manualUnread && pending?.request?.expectedVersion != server.version
+            return manual || (summary.contentRevision ?: 0) > maxOf(server.readRevision, state.lastSeen[summary.id] ?: 0)
         }
     }
 }

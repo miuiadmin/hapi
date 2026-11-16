@@ -246,6 +246,13 @@ export async function createConfiguration(): Promise<Configuration> {
  * Get the initialized configuration.
  * Throws if createConfiguration() has not been called yet.
  */
+/** Test-only: drop the cached singleton so a later suite can re-create it
+ *  under a different HAPI_HOME (without this, a hermetic suite that deletes
+ *  its temp home poisons every later suite that calls createConfiguration). */
+export function _resetConfigurationForTests(): void {
+    _configuration = null
+}
+
 export function getConfiguration(): Configuration {
     if (!_configuration) {
         throw new Error('Configuration not initialized. Call createConfiguration() first.')

@@ -28,13 +28,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.FullTextAction
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import dev.snipme.highlights.Highlights
 import dev.snipme.highlights.model.BoldHighlight
@@ -104,12 +104,9 @@ fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = (language ?: stringResource(R.string.code_plain_fallback)).uppercase(),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
-                letterSpacing = 0.8.sp,
-                color = colors.codeHeaderForeground,
+                text = (language ?: stringResource(R.string.code_plain_fallback)).lowercase(),
+                style = HapiTypography.caption.copy(fontFamily = HapiTypography.monoFamily),
+                color = colors.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 // Fill the remainder so short labels cannot pull the action
@@ -144,20 +141,18 @@ fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
                 )
             }
         } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-            ) {
-                Text(
-                    text = highlighted,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                    softWrap = false,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                )
-            }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            Text(
+                text = highlighted,
+                style = HapiTypography.code,
+                softWrap = false,
+                modifier = Modifier.padding(12.dp),
+            )
+        }
         }
     }
 }

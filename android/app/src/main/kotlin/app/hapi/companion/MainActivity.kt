@@ -28,7 +28,7 @@ import app.hapi.companion.feature.settings.ChatSettings
 import app.hapi.companion.feature.settings.DisplaySettings
 import app.hapi.companion.feature.settings.ThemeMode
 import app.hapi.companion.feature.settings.ThemeSettings
-import app.hapi.companion.feature.share.SystemShareReader
+import app.hapi.companion.feature.share.parseSharedIntent
 import app.hapi.companion.push.PushBinding
 import app.hapi.companion.ui.markdown.CodeWrapState
 import app.hapi.companion.ui.markdown.LocalCodeWrap
@@ -51,7 +51,7 @@ import kotlinx.coroutines.launch
  *    + session-id extra, B-M4a — explicit intent, deliberately no public URI)
  *    → [AppGraph.pendingOpenSessionId];
  *  - system shares (ACTION_SEND / ACTION_SEND_MULTIPLE) parsed by
- *    [SystemShareReader] → [AppGraph.pendingShare] → the share hand-off picker.
+ *    [parseSharedIntent] → [AppGraph.receiveShare] → the share inbox.
  */
 // AppCompatActivity (not ComponentActivity) since B-M5a: the appcompat base
 // class is what applies AppCompatDelegate.setApplicationLocales on API < 33
@@ -148,6 +148,19 @@ class MainActivity : AppCompatActivity() {
         handleShareIntent(intent)
     }
 
+    private fun handleShareIntent(intent: Intent?) {
+        val input = intent?.let(::parseSharedIntent) ?: return
+        appGraph.receiveShare(input)
+        // The inbox owns the handoff now. Do not replay external extras if
+        // Android later recreates this activity from its current Intent.
+        setIntent(Intent(intent).apply {
+            removeExtra(Intent.EXTRA_STREAM)
+            removeExtra(Intent.EXTRA_TEXT)
+            removeExtra(Intent.EXTRA_HTML_TEXT)
+            clipData = null
+        })
+    }
+
     private fun handleBindIntent(intent: Intent?) {
         if (intent?.action != Intent.ACTION_VIEW) return
         val data = intent.data ?: return
@@ -165,17 +178,6 @@ class MainActivity : AppCompatActivity() {
         if (intent?.action != PushNotifications.ACTION_OPEN_SESSION) return
         val sessionId = intent.getStringExtra(PushNotifications.EXTRA_SESSION_ID) ?: return
         appGraph.pendingOpenSessionId.value = sessionId
-    }
-
-    /**
-     * System share (ACTION_SEND / ACTION_SEND_MULTIPLE): stash the
-     * parsed hand-off for `HapiNavigation`, which opens the picker when a
-     * hub is paired. Parsing is delegated to the share feature's reader so
-     * this stays a two-line shell like the routes above.
-     */
-    private fun handleShareIntent(intent: Intent?) {
-        val share = SystemShareReader.read(intent) ?: return
-        appGraph.pendingShare.value = share
     }
 
     /**
