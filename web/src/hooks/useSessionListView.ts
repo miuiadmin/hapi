@@ -26,6 +26,11 @@ export type SessionListView = {
      *  the poll is a disconnection-recovery fallback that also refreshes
      *  anything SSE missed. */
     eagerLoading: boolean
+    /** Baseline mode: prefetch the detail of EVERY session in the list (not
+     *  just active + top N), so clicking any session renders from cache
+     *  instantly. Implies eagerLoading behavior. Designed for users who
+     *  switch between many sessions and want zero click-to-content latency. */
+    baselineMode: boolean
 }
 
 export const DEFAULT_SESSION_LIST_VIEW: SessionListView = {
@@ -35,7 +40,8 @@ export const DEFAULT_SESSION_LIST_VIEW: SessionListView = {
     unreadOnly: false,
     compactRows: false,
     showPresenceBadge: true,
-    eagerLoading: false
+    eagerLoading: false,
+    baselineMode: false
 }
 
 const SORT_KEY = 'hapi-session-list-sort'
@@ -45,6 +51,7 @@ const UNREAD_ONLY_KEY = 'hapi-session-list-unread-only'
 const COMPACT_ROWS_KEY = 'hapi-session-list-compact-rows'
 const SHOW_PRESENCE_BADGE_KEY = 'hapi-session-list-show-presence-badge'
 const EAGER_LOADING_KEY = 'hapi-session-list-eager-loading'
+const BASELINE_MODE_KEY = 'hapi-session-list-baseline-mode'
 // Pre-status "Show active sessions only" setting; read once as the default status.
 const LEGACY_ACTIVE_ONLY_KEY = 'hapi-show-active-sessions-only'
 
@@ -78,6 +85,7 @@ export function readSessionListView(): SessionListView {
     const compactRows = safeGetItem(COMPACT_ROWS_KEY)
     const showPresenceBadge = safeGetItem(SHOW_PRESENCE_BADGE_KEY)
     const eagerLoading = safeGetItem(EAGER_LOADING_KEY)
+    const baselineMode = safeGetItem(BASELINE_MODE_KEY)
     return {
         sort: SORTS.includes(sort as SessionListSort) ? sort as SessionListSort : DEFAULT_SESSION_LIST_VIEW.sort,
         status: STATUSES.includes(status as SessionListStatus)
@@ -87,7 +95,8 @@ export function readSessionListView(): SessionListView {
         unreadOnly: unreadOnly === null ? DEFAULT_SESSION_LIST_VIEW.unreadOnly : unreadOnly === 'true',
         compactRows: compactRows === null ? DEFAULT_SESSION_LIST_VIEW.compactRows : compactRows === 'true',
         showPresenceBadge: showPresenceBadge === null ? DEFAULT_SESSION_LIST_VIEW.showPresenceBadge : showPresenceBadge === 'true',
-        eagerLoading: eagerLoading === null ? DEFAULT_SESSION_LIST_VIEW.eagerLoading : eagerLoading === 'true'
+        eagerLoading: eagerLoading === null ? DEFAULT_SESSION_LIST_VIEW.eagerLoading : eagerLoading === 'true',
+        baselineMode: baselineMode === null ? DEFAULT_SESSION_LIST_VIEW.baselineMode : baselineMode === 'true'
     }
 }
 
@@ -101,7 +110,7 @@ const listeners = new Set<() => void>()
 
 function getSnapshot(): SessionListView {
     if (unsaved) return unsaved
-    const raw = [SORT_KEY, STATUS_KEY, ACTIVE_FIRST_KEY, UNREAD_ONLY_KEY, COMPACT_ROWS_KEY, SHOW_PRESENCE_BADGE_KEY, EAGER_LOADING_KEY, LEGACY_ACTIVE_ONLY_KEY].map(safeGetItem).join('\u0000')
+    const raw = [SORT_KEY, STATUS_KEY, ACTIVE_FIRST_KEY, UNREAD_ONLY_KEY, COMPACT_ROWS_KEY, SHOW_PRESENCE_BADGE_KEY, EAGER_LOADING_KEY, BASELINE_MODE_KEY, LEGACY_ACTIVE_ONLY_KEY].map(safeGetItem).join('\u0000')
     if (current?.raw !== raw) current = { raw, view: readSessionListView() }
     return current.view
 }
@@ -115,7 +124,7 @@ function subscribe(listener: () => void): () => void {
     const onStorage = (event: StorageEvent) => {
         if (event.key !== null && event.key !== SORT_KEY && event.key !== STATUS_KEY
             && event.key !== ACTIVE_FIRST_KEY && event.key !== UNREAD_ONLY_KEY && event.key !== COMPACT_ROWS_KEY
-            && event.key !== SHOW_PRESENCE_BADGE_KEY && event.key !== EAGER_LOADING_KEY && event.key !== LEGACY_ACTIVE_ONLY_KEY) return
+            && event.key !== SHOW_PRESENCE_BADGE_KEY && event.key !== EAGER_LOADING_KEY && event.key !== BASELINE_MODE_KEY && event.key !== LEGACY_ACTIVE_ONLY_KEY) return
         emit()
     }
     if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
@@ -151,6 +160,9 @@ export function updateSessionListView(patch: Partial<SessionListView>): void {
     if (patch.eagerLoading !== undefined) {
         saved = safeSetItem(EAGER_LOADING_KEY, next.eagerLoading === DEFAULT_SESSION_LIST_VIEW.eagerLoading ? null : String(next.eagerLoading)) && saved
     }
+    if (patch.baselineMode !== undefined) {
+        saved = safeSetItem(BASELINE_MODE_KEY, next.baselineMode === DEFAULT_SESSION_LIST_VIEW.baselineMode ? null : String(next.baselineMode)) && saved
+    }
     unsaved = saved ? null : next
     emit()
 }
@@ -163,6 +175,7 @@ export function isDefaultSessionListView(view: SessionListView): boolean {
         && view.compactRows === DEFAULT_SESSION_LIST_VIEW.compactRows
         && view.showPresenceBadge === DEFAULT_SESSION_LIST_VIEW.showPresenceBadge
         && view.eagerLoading === DEFAULT_SESSION_LIST_VIEW.eagerLoading
+        && view.baselineMode === DEFAULT_SESSION_LIST_VIEW.baselineMode
 }
 
 export function useSessionListView(): {

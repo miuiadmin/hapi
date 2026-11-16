@@ -154,9 +154,9 @@ function SessionsPage() {
     const { t } = useTranslation()
     const { addToast } = useToast()
     const { view: sessionListView } = useSessionListView()
-    const eagerLoading = sessionListView.eagerLoading
+    const eagerLoading = sessionListView.eagerLoading || sessionListView.baselineMode
     const { sessions, isLoading, error, refetch } = useSessions(api, { eagerInterval: eagerLoading })
-    useEagerSessionPrefetch(api, sessions, eagerLoading)
+    useEagerSessionPrefetch(api, sessions, eagerLoading, sessionListView.baselineMode)
     const [initializedHub, setInitializedHub] = useState<string | null>(null)
     const { machines } = useMachines(api, true)
     const handleRefresh = useCallback(() => {

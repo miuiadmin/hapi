@@ -253,6 +253,12 @@ function SessionListViewToggles() {
                 checked={view.eagerLoading}
                 onChange={(checked) => setView({ eagerLoading: checked })}
             />
+            <SettingsSwitch
+                label={t('sessions.view.baselineMode')}
+                description={t('settings.display.baselineMode.desc')}
+                checked={view.baselineMode}
+                onChange={(checked) => setView({ baselineMode: checked })}
+            />
         </>
     )
 }

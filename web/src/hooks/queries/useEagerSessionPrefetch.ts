@@ -31,22 +31,32 @@ const PREFETCH_STAGGER_MS = 200
 export function useEagerSessionPrefetch(
     api: ApiClient | null,
     sessions: SessionSummary[],
-    eager: boolean
+    eager: boolean,
+    baseline: boolean = false
 ): void {
     const queryClient = useQueryClient()
     const inFlightRef = useRef(false)
 
     useEffect(() => {
-        if (!eager || !api || sessions.length === 0 || inFlightRef.current) return
+        if ((!eager && !baseline) || !api || sessions.length === 0 || inFlightRef.current) return
 
         const targets = new Map<string, void>()
-        for (const session of sessions) {
-            if (session.active) {
+        if (baseline) {
+            // Baseline mode: every session in the list gets its detail
+            // prefetched. The 200ms stagger and 30s staleTime keep the hub
+            // load bounded even with a large list.
+            for (const session of sessions) {
                 targets.set(session.id)
             }
-        }
-        for (const session of sessions.slice(0, EAGER_PREFETCH_TOP_N)) {
-            targets.set(session.id)
+        } else {
+            for (const session of sessions) {
+                if (session.active) {
+                    targets.set(session.id)
+                }
+            }
+            for (const session of sessions.slice(0, EAGER_PREFETCH_TOP_N)) {
+                targets.set(session.id)
+            }
         }
         const ids = [...targets.keys()]
         if (ids.length === 0) return
@@ -86,5 +96,5 @@ export function useEagerSessionPrefetch(
             for (const timer of timers) clearTimeout(timer)
             inFlightRef.current = false
         }
-    }, [eager, api, sessions, queryClient])
+    }, [eager, baseline, api, sessions, queryClient])
 }
