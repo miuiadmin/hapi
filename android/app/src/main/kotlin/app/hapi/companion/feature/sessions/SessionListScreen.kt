@@ -579,6 +579,16 @@ private fun DirectoryGroupHeader(
 }
 
 @Composable
+private fun SectionHeader(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+    )
+}
+
 /**
  * Swipe start→end toggles the project pin; end→start archives a live
  * session or asks to delete an inactive one (the hub archives live sessions
@@ -614,6 +624,7 @@ private fun SwipeableSessionRow(
     }
 }
 
+@Composable
 private fun SwipeBackground(row: SessionRowUi, direction: SwipeToDismissBoxValue) {
     val summary = row.summary
     val pinned = summary.pinned == true || summary.globalPinned == true

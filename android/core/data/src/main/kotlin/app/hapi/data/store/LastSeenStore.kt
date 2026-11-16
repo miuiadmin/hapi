@@ -36,6 +36,8 @@ data class LastSeenState(
     val lastSeen: Map<String, Long> = emptyMap(),
     val server: Map<String, SessionReadState> = emptyMap(),
     val pending: Map<String, PendingRead> = emptyMap(),
+    /** Scope keys whose unread baseline was already seeded (once-per-hub). */
+    val baselines: Set<String> = emptySet(),
 )
 
 class LastSeenStore(
@@ -141,6 +143,22 @@ class LastSeenStore(
      * unread immediately, and queues the server write so every other client
      * (web/native) sees the same manual-unread flag.
      */
+    /**
+     * Stack semantic (once per scope key): seed every watermark at its
+     * session's current head so a fresh install doesn't light up every row's
+     * unread dot. Idempotent — repeated calls are no-ops.
+     */
+    suspend fun initializeBaseline(scopeKey: String, sessions: Iterable<SessionSummary>) {
+        commit {
+            if (scopeKey in it.baselines) return@commit it
+            val seeded = it.lastSeen.toMutableMap()
+            for (session in sessions) {
+                seeded.getOrPut(session.id) { session.contentRevision ?: 0L }
+            }
+            it.copy(lastSeen = seeded, baselines = it.baselines + scopeKey)
+        }
+    }
+
     suspend fun markUnread(sessionId: String, serverState: SessionReadState? = null) {
         if (closed || namespace == null || sessionId.isEmpty()) return
         commit { current ->

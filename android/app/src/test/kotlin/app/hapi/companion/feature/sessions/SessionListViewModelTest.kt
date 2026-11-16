@@ -235,7 +235,7 @@ class SessionListViewModelTest {
     @Test
     fun `transient connection status appears only after the reveal delay and keeps its clock across phases`() = runTest {
         val connection = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected))
-        val (viewModel) = buildViewModel(connection = connection)
+        val (viewModel) = buildViewModel(connection = connection, nowMs = { testScheduler.currentTime })
         runCurrent()
         assertNull(viewModel.uiState.value.connectionStatus)
 
@@ -263,7 +263,7 @@ class SessionListViewModelTest {
 
     @Test
     fun `successful refresh records lastRefreshedAt and a failure keeps it`() = runTest {
-        val (viewModel, sessions) = buildViewModel()
+        val (viewModel, sessions) = buildViewModel(nowMs = { testScheduler.currentTime })
         advanceTimeBy(5_000)
         viewModel.refresh()
         val refreshed = viewModel.uiState.first { it.lastRefreshedAt != null && !it.isRefreshing }
@@ -806,7 +806,7 @@ class SessionListViewModelTest {
         // Sessions preset BEFORE the ViewModel: the SSE collector's first
         // emission is the preset list, drop(1) skips it — no baseline seeding,
         // so every row starts unread deterministically.
-        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100), summary("b", updatedAt = 100)) }
+        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100).copy(contentRevision = 100), summary("b", updatedAt = 100).copy(contentRevision = 100)) }
         val (viewModel) = buildViewModel(sessions)
         assertEquals(2, viewModel.uiState.first { it.rows.size == 2 }.unreadCount)
 
@@ -825,7 +825,7 @@ class SessionListViewModelTest {
 
     @Test
     fun `mark unread brings a read row back into the lens`() = runTest {
-        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100), summary("b", updatedAt = 100)) }
+        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100).copy(contentRevision = 100), summary("b", updatedAt = 100).copy(contentRevision = 100)) }
         val lastSeen = LastSeenStore(backgroundScope).apply {
             markSeen("a", 100)
             markSeen("b", 100)
@@ -845,7 +845,7 @@ class SessionListViewModelTest {
     @Test
     fun `unread count stays hub-wide under a machine filter`() = runTest {
         val sessions = FakeSessionStore().apply {
-            set(summary("a", updatedAt = 100, machineId = "m1"), summary("b", updatedAt = 100, machineId = "m2"))
+            set(summary("a", updatedAt = 100, machineId = "m1").copy(contentRevision = 100), summary("b", updatedAt = 100, machineId = "m2").copy(contentRevision = 100))
         }
         val (viewModel) = buildViewModel(sessions)
         viewModel.uiState.first { it.rows.size == 2 }
@@ -1218,7 +1218,7 @@ class SessionListViewModelTest {
     @Test
     fun `activity days derive before date and machine filtering`() = runTest {
         // 2026-10-05T20:00Z = day 20731 in UTC but day 20732 in Shanghai.
-        val (viewModel, sessions, _) = buildViewModel(zone = ZoneId.of("Asia/Shanghai"))
+        val (viewModel, sessions, _) = buildViewModel(zoneProvider = { ZoneId.of("Asia/Shanghai") })
         sessions.set(
             summary("utc-day", updatedAt = dayMillis),
             summary("shanghai-next-day", updatedAt = 1_791_230_400_000L),
@@ -1259,7 +1259,7 @@ class SessionListViewModelTest {
                 probeCalls.value += 1
                 app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = false, store = null)
             },
-            now = { testScheduler.currentTime },
+            nowMs = { testScheduler.currentTime },
         )
         sessions.set(cursorSummary())
         viewModel.uiState.first { it.rows.size == 1 }
@@ -1310,7 +1310,7 @@ class SessionListViewModelTest {
     fun `a row that activates clears the gate while its sheet is open`() = runTest {
         val (viewModel, sessions, machines) = buildViewModel(
             cursorProbe = { app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = false, store = null) },
-            now = { testScheduler.currentTime },
+            nowMs = { testScheduler.currentTime },
         )
         sessions.set(cursorSummary())
         viewModel.uiState.first { it.rows.size == 1 }
@@ -1335,7 +1335,7 @@ class SessionListViewModelTest {
                 probeCalls.value += 1
                 app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = true, store = "legacy")
             },
-            now = { testScheduler.currentTime },
+            nowMs = { testScheduler.currentTime },
         )
         sessions.set(cursorSummary())
         viewModel.uiState.first { it.rows.size == 1 }

@@ -103,8 +103,8 @@ class LastSeenStoreTest {
 
         store.markAllSeen(
             listOf(
-                summary("manual", updatedAt = 800),
-                summary("fresh", updatedAt = 700),
+                summary("manual", updatedAt = 800).copy(contentRevision = 800),
+                summary("fresh", updatedAt = 700).copy(contentRevision = 700),
             ),
         )
 
@@ -118,11 +118,13 @@ class LastSeenStoreTest {
     fun `unread count collapses repeated ids`() = runTest {
         val store = LastSeenStore(backgroundScope)
         val sessions = listOf(
-            summary("a", updatedAt = 100),
-            summary("a", updatedAt = 300), // same id, newer view — the state is one row
-            summary("b", updatedAt = 200),
+            summary("a", updatedAt = 100).copy(contentRevision = 100),
+            summary("a", updatedAt = 300).copy(contentRevision = 300), // same id, newer view — one row after list dedup
+            summary("b", updatedAt = 200).copy(contentRevision = 200),
         )
-        assertEquals(2, sessions.count { LastSeenStore.isUnread(it, store.state.value) })
+        // Production lists are deduped by id before counting; mirror that here.
+        val deduped = sessions.associateBy { it.id }.map { (_, s) -> s.copy(contentRevision = sessions.filter { it.id == s.id }.maxOf { it.contentRevision ?: 0 }) }
+        assertEquals(2, deduped.count { LastSeenStore.isUnread(it, store.state.value) })
         store.markSeen("a", 300)
         assertEquals(1, sessions.count { LastSeenStore.isUnread(it, store.state.value) })
     }

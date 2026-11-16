@@ -166,6 +166,7 @@ private class LeanApi : ChatSessionApi {
     override suspend fun getSlashCommands(sessionId: String): SlashCommandsResponse =
         SlashCommandsResponse(success = false)
 
+    override suspend fun getMessageContext(sessionId: String, messageId: String): app.hapi.protocol.wire.MessageContextResponse? = null
     override suspend fun searchSessionFiles(
         sessionId: String,
         query: String,
@@ -258,6 +259,12 @@ private class FakeTextDrafts : ChatDrafts {
         val moved = map.remove(fromSessionId) ?: return
         if (map[toSessionId].isNullOrEmpty()) map[toSessionId] = moved
     }
+
+    override suspend fun appendSharedText(sessionId: String, requestId: String, currentText: String, text: String): String {
+        val appended = app.hapi.companion.feature.chat.composer.appendSharedText(currentText, text)
+        map[sessionId] = appended
+        return appended
+    }
 }
 
 /** In-memory [AttachmentDrafts]; [version] bumps on every write for awaits. */
@@ -285,6 +292,7 @@ private class FakeAttachmentDrafts : AttachmentDrafts {
         if (map[toSessionId].isNullOrEmpty()) map[toSessionId] = moved
         version.value += 1
     }
+
 }
 
 private fun okTransport(): SseTransport = object : SseTransport {

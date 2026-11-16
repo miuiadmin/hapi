@@ -21,6 +21,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
@@ -562,6 +563,24 @@ private fun ColorThemeDialog(
     )
 }
 
+@Composable
+private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+    }
+}
+
 /** Transcription provider picker — the hub's standard-capable entries only. */
 @Composable
 private fun DictationProviderDialog(
@@ -627,34 +646,6 @@ private fun DictationLanguageDialog(
 private fun dictationLanguageValue(code: String?): String =
     findDictationLanguage(code)?.label ?: stringResource(R.string.settings_dictation_language_auto)
 
-
-/**
- * Expressive color-theme picker: each card carries the preset's light/dark
- * canvas split plus its accent strip, so the options are recognizable at a
- * glance. Proper nouns stay untranslated on every locale (web parity); only
- * the default entry localizes.
- */
-@Composable
-private fun ColorThemeDialog(
-    selected: ColorThemePreset,
-    onSelect: (ColorThemePreset) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    ChoiceDialog(
-        title = stringResource(R.string.settings_color_theme),
-        options = ColorThemePreset.entries.map { preset ->
-            ChoiceOption(
-                value = preset,
-                label = stringResource(colorThemePresetLabelRes(preset)),
-                swatch = colorThemePresetSwatch(preset),
-            )
-        },
-        selected = selected,
-        onSelect = onSelect,
-        onDismiss = onDismiss,
-        dismissLabel = stringResource(R.string.settings_cancel),
-    )
-}
 
 private fun themeModeLabelRes(mode: ThemeMode): Int = when (mode) {
     ThemeMode.SYSTEM -> R.string.settings_theme_system

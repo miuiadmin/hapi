@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -844,6 +845,7 @@ private fun ComposerActionButton(
     }
 }
 
+@Composable
 private fun ScratchlistToggleButton(
     active: Boolean,
     count: Int,
@@ -1088,11 +1090,6 @@ private fun MentionDropdown(
 
 /** Elapsed-time recording strip with a cancel affordance (discards the take). */
 @Composable
-
-// ------------------------------------------------------------- dictation --
-
-/** Elapsed-time recording strip with a cancel affordance (discards the take). */
-@Composable
 private fun RecordingChip(
     startedAtMs: Long,
     onCancel: () -> Unit,
@@ -1260,12 +1257,6 @@ private fun PrimaryActionButton(
             }
         }
     }
-}
-
-private enum class ComposerPrimaryAction {
-    Sending,
-    Stop,
-    Send,
 }
 
 // -------------------------------------------------------------- previews --

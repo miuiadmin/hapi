@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -152,7 +153,7 @@ fun DiffView(
                         .background(row.background),
                 ) {
                     Text(
-                        text = row.text,
+                        text = row.gutter + row.body,
                         fontFamily = HapiTypography.monoFamily,
                         fontSize = 14.sp,
                         lineHeight = 20.sp,

@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.sessions
 
+import app.hapi.data.store.LastSeenState
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SummaryText
@@ -153,11 +154,11 @@ class SessionListFiltersTest {
     @Test
     fun `unread lens drops seen rows and keeps the selected session`() {
         val sessions = listOf(
-            summary("seen", updatedAt = 100),
-            summary("unread", updatedAt = 200),
-            summary("stale", updatedAt = 50),
+            summary("seen", updatedAt = 100).copy(contentRevision = 100),
+            summary("unread", updatedAt = 200).copy(contentRevision = 200),
+            summary("stale", updatedAt = 50).copy(contentRevision = 50),
         )
-        val lastSeen = mapOf("seen" to 100L, "unread" to 150L, "stale" to 900L)
+        val lastSeen = LastSeenState(lastSeen = mapOf("seen" to 100L, "unread" to 150L, "stale" to 900L))
         // Order-preserving filter: the selected row keeps its input position.
         assertEquals(
             listOf("seen", "unread"),
@@ -169,14 +170,14 @@ class SessionListFiltersTest {
     fun `unread lens shows a manually marked row via the parked watermark`() {
         // markUnread parks the watermark one tick behind the activity, so the
         // plain comparison in the lens is enough — no manual map consulted.
-        val sessions = listOf(summary("marked", updatedAt = 300))
+        val sessions = listOf(summary("marked", updatedAt = 300).copy(contentRevision = 300))
         assertEquals(
             listOf("marked"),
-            SessionListFilters.filterUnreadSessionsOnly(sessions, null, mapOf("marked" to 299L)).map { it.id },
+            SessionListFilters.filterUnreadSessionsOnly(sessions, null, LastSeenState(lastSeen = mapOf("marked" to 299L))).map { it.id },
         )
         assertEquals(
             emptyList(),
-            SessionListFilters.filterUnreadSessionsOnly(sessions, null, mapOf("marked" to 300L)).map { it.id },
+            SessionListFilters.filterUnreadSessionsOnly(sessions, null, LastSeenState(lastSeen = mapOf("marked" to 300L))).map { it.id },
         )
     }
 

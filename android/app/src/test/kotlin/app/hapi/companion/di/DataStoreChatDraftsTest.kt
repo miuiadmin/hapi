@@ -53,10 +53,13 @@ class DataStoreChatDraftsTest {
             assertEquals("refreshed", drafts.load("s0"))
             assertNull(drafts.load("s1"), "next-oldest must be evicted")
             assertEquals("newest", drafts.load("s50"))
-class DataStoreChatDraftsTest {
-    @get:Rule val tmp = TemporaryFolder()
+        } finally {
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
 
-    @Test fun `share append and receipt persist together across holder recreation and later edits`() = runTest {
+    @Test
+    fun `share append and receipt persist together across holder recreation and later edits`() = runTest {
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         try {
             val store = PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "drafts.preferences_pb") }
@@ -151,7 +154,13 @@ class DataStoreChatDraftsTest {
             drafts.save("s4", "target keeps its own")
             drafts.move("s3", "s4")
             assertEquals("target keeps its own", drafts.load("s4"))
-    @Test fun `superseding session migration carries receipts with its draft without replacing a target draft`() = runTest {
+        } finally {
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `superseding session migration carries receipts with its draft without replacing a target draft`() = runTest {
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         try {
             val store = PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "drafts.preferences_pb") }

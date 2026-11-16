@@ -187,8 +187,6 @@ data class SessionListUiState(
      * active).
      */
     val dateActivityEpochDays: Set<Long> = emptySet(),
-    /** Live search-box text; blank = no filtering/ranking. */
-    val searchQuery: String = "",
     /** Last successful sessions fetch (epoch ms), for "Offline · updated …". */
     val lastRefreshedAt: Long? = null,
     /**
@@ -442,7 +440,13 @@ class SessionListViewModel(
         scope.launch {
             sessionStore.sessions.drop(1).collect { sessions ->
                 if (isOffline.value) isOffline.value = false
-
+                // Seed the unread baseline from SSE data too — when REST
+                // refresh fails but the stream works, unseeded watermarks
+                // would light every row's unread dot (once-per-scope inside
+                // the store, so repeated calls are no-ops).
+                if (sessions.isNotEmpty()) {
+                    runCatching { lastSeenStore.initializeBaseline(hubKey, sessions) }
+                }
             }
         }
         // Health capability once per scope (store caches across calls); the
@@ -498,8 +502,8 @@ class SessionListViewModel(
             filter = selection.machineFilter,
             searchQuery = selection.searchQuery,
             selectedSessionId = selection.selectedSessionId,
-            collapseOverrides = selection.collapseOverrides,
-            showActiveSessionsOnly = selection.showActiveSessionsOnly,
+            collapseOverrides = selection.overrides,
+            showActiveSessionsOnly = selection.activeSessionsOnly,
             isRefreshing = chrome.refreshing,
             isOffline = chrome.offline,
             hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
@@ -721,6 +725,18 @@ class SessionListViewModel(
     /** Keep the selected row visible under list filters; reading is acknowledged by the transcript. */
     fun onSessionOpened(sessionId: String) {
         selectedSessionId.value = sessionId
+        // Stack semantic: opening a session stamps its read watermark (web
+        // marks the observed head on chat open) so the unread lens drops it.
+        val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
+        scope.launch {
+            try {
+                lastSeenStore.markSeen(sessionId, summary.contentRevision ?: 0, summary.readState)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                // Advisory only: the unread lens reverts on the next sync.
+            }
+        }
     }
 
     /** Swipe action: mark the observed head of one session as read (iOS `markRead`). */

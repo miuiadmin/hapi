@@ -380,11 +380,6 @@ private class RecordingChatApi : ChatSessionApi {
 
     var fileSearchResult: FileSearchResponse = FileSearchResponse(success = false, error = "not scripted")
     var fileSearchFailure: Exception? = null
-    val fileSearchCalls = MutableStateFlow<List<Triple<String, String, Int?>>>(emptyList())
-    override suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int?): FileSearchResponse {
-        fileSearchCalls.value = fileSearchCalls.value + Triple(sessionId, query, limit)
-    var fileSearchResult: FileSearchResponse = FileSearchResponse(success = false, error = "not scripted")
-    var fileSearchFailure: Exception? = null
     /** Non-null ⇒ the file RPC records its call then parks until completed. */
     var fileSearchGate: CompletableDeferred<Unit>? = null
     val fileSearchCalls = MutableStateFlow<List<Triple<String, String, Int?>>>(emptyList())

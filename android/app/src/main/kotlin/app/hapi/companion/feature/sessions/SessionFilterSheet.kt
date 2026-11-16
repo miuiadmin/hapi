@@ -268,10 +268,10 @@ private fun MenuChoice(
     label: String,
     selected: Boolean,
     trailing: String? = null,
-    onClick: () -> Unit,
     // Web keeps CPU/RAM in a desktop-only hover tooltip; the sheet row
     // carries it as a secondary line, tone-colored (stack feature).
     health: MachineHealthUi.Presentation? = null,
+    onClick: () -> Unit,
 ) {
     DropdownMenuItem(
         text = {

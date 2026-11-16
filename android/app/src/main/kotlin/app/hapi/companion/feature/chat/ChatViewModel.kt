@@ -950,21 +950,22 @@ class ChatViewModel(
 
     /** Composer bar state (text is VM-owned so drafts and edit-prefill flow through it). */
     val composer: StateFlow<ComposerUiState> = combine(
-        combine(composerDraft, sendInFlight, sessionStateFlow()) { draft, sending, session ->
-            Triple(draft, sending, session)
-        },
+        composerDraft,
+        sendInFlight,
+        sessionStateFlow(),
         composerFocusRequest,
         scratchlistMode,
         importingShare,
-    ) { (draft, sending, session), focusRequest, scratchlistMode, importing ->
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
         ComposerUiState(
-            text = draft.text,
-            isSending = sending,
-            canSteer = session.thinking && session.active,
-            focusRequest = focusRequest,
-            routesToScratchlist = scratchlistSendRouting(scratchlistMode, schedulePending = false),
-            isImportingShare = importing,
-            caretPosition = draft.selectionEnd,
+            text = (values[0] as ComposerDraft).text,
+            isSending = values[1] as Boolean,
+            canSteer = (values[2] as SessionLiveState?)?.let { it.thinking && it.active } == true,
+            focusRequest = values[3] as Long,
+            routesToScratchlist = scratchlistSendRouting(values[4] as Boolean, schedulePending = false),
+            isImportingShare = values[5] as Boolean,
+            caretPosition = (values[0] as ComposerDraft).selectionEnd,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -1220,6 +1221,16 @@ class ChatViewModel(
             }
             withContext(workerContext) { loadDetail() }
             launch(workerContext) { observeAttachmentDrafts() }
+        }
+
+        // Cursor reopen gate: (re)probe on every rising edge of applicability
+        // (web mounts the query per chat open, staleTime 5s). Re-entering an
+        // applicable session after stop() restarts this collector, so a fresh
+        // open re-probes rather than trusting a stale onDisk verdict.
+        cursorProbeJob = scope.launch {
+            cursorProbeApplicability()
+                .distinctUntilChanged()
+                .collect { applicable -> if (applicable) runCursorChatStoreProbe() }
         }
 
         // Badge count + SSE-triggered refetches while this chat is on screen.
