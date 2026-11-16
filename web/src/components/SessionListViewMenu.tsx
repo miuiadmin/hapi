@@ -253,31 +253,8 @@ export function SessionListViewMenu(props: {
                             />
                         </div>
                         <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
-                        <div role="group" aria-label={t('sessions.view.density')}>
-                            <SectionLabel>{t('sessions.view.density')}</SectionLabel>
-                            <MenuRow
-                                role="menuitemcheckbox"
-                                label={t('sessions.view.compactRows')}
-                                checked={props.view.compactRows}
-                                onSelect={() => props.onChange({ compactRows: !props.view.compactRows })}
-                            />
-                            <MenuRow
-                                role="menuitemcheckbox"
-                                label={t('sessions.view.showPresenceBadge')}
-                                checked={props.view.showPresenceBadge}
-                                onSelect={() => props.onChange({ showPresenceBadge: !props.view.showPresenceBadge })}
-                            />
-                        </div>
-                        <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
-                        <div role="group" aria-label={t('sessions.view.eagerLoadingGroup')}>
-                            <SectionLabel>{t('sessions.view.eagerLoadingGroup')}</SectionLabel>
-                            <MenuRow
-                                role="menuitemcheckbox"
-                                label={t('sessions.view.eagerLoading')}
-                                checked={props.view.eagerLoading}
-                                onSelect={() => props.onChange({ eagerLoading: !props.view.eagerLoading })}
-                            />
-                        </div>
+
+
                         {customized ? (
                             <>
                                 <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />

@@ -14,6 +14,7 @@ import { useSessionHeaderMetadata, type SessionHeaderMetadataKey } from '@/hooks
 import { useAppBadgePreference } from '@/hooks/useAppBadgePreference'
 import { useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
 import { SettingsChoiceGroup, SettingsFieldLabel, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
+import { useSessionListView } from '@/hooks/useSessionListView'
 
 function MinusIcon() {
     return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path d="M5 12h14" /></svg>
@@ -195,6 +196,7 @@ export default function SettingsDisplayPage() {
                 />
                 <SettingsSwitch label={t('settings.display.keepUnreadSessionsVisible')} description={t('settings.display.keepUnreadSessionsVisible.desc')} checked={keepUnreadSessionsVisible} onChange={setKeepUnreadSessionsVisible} />
                 <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
+                <SessionListViewToggles />
                 <SettingsChoiceGroup
                     label={t('settings.display.sessionListStatus')}
                     description={t('settings.display.sessionListStatus.detailedDescription')}
@@ -224,5 +226,33 @@ export default function SettingsDisplayPage() {
                 />
             </SettingsSection>
         </SettingsPageContent>
+    )
+}
+
+
+function SessionListViewToggles() {
+    const { view, setView } = useSessionListView()
+    const { t } = useTranslation()
+    return (
+        <>
+            <SettingsSwitch
+                label={t('sessions.view.compactRows')}
+                description={t('settings.display.compactRows.desc')}
+                checked={view.compactRows}
+                onChange={(checked) => setView({ compactRows: checked })}
+            />
+            <SettingsSwitch
+                label={t('sessions.view.showPresenceBadge')}
+                description={t('settings.display.showPresenceBadge.desc')}
+                checked={view.showPresenceBadge}
+                onChange={(checked) => setView({ showPresenceBadge: checked })}
+            />
+            <SettingsSwitch
+                label={t('sessions.view.eagerLoading')}
+                description={t('settings.display.eagerLoading.desc')}
+                checked={view.eagerLoading}
+                onChange={(checked) => setView({ eagerLoading: checked })}
+            />
+        </>
     )
 }
