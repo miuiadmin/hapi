@@ -259,15 +259,24 @@ class SummaryPatchingTest {
         assertEquals("zcode-1", zcode?.agentSessionId)
 
         // The legacy fallback chain (missing/unknown flavor) never reads the
-        // dsh/hermes/berry/zcode fields — replicated from the shared source.
+        // hermes/berry/zcode fields. dsh is an upstream-known flavor now, so
+        // its id DOES participate in the legacy fallback chain.
         val unknown = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(
                 path = "/p", host = "h", flavor = "newagent",
-                dshSessionId = "dsh-1", hermesSessionId = "hermes-1", berrySessionId = "berry-1",
+                hermesSessionId = "hermes-1", berrySessionId = "berry-1",
                 zcodeSessionId = "zcode-1",
             )
         )
         assertNull(unknown?.agentSessionId)
+
+        val unknownDsh = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path = "/p", host = "h", flavor = "newagent",
+                dshSessionId = "dsh-1",
+            )
+        )
+        assertEquals("dsh-1", unknownDsh?.agentSessionId)
     }
 
     // ------------------------------------------------- patch application --

@@ -287,6 +287,13 @@ data class ComposerUiState(
      * send button, web `scratchlistMode`).
      */
     val routesToScratchlist: Boolean = false,
+    val isImportingShare: Boolean = false,
+    /**
+     * Where the caret rests after a VM-driven text change (mention insert,
+     * draft prefill, send-clear) — consumed by the composer when it adopts
+     * external text. `-1` ⇒ the text tail; tracks the live caret otherwise.
+     */
+    val caretPosition: Int = -1,
 )
 
 /**
@@ -299,14 +306,6 @@ data class ComposerUiState(
  */
 fun scratchlistSendRouting(scratchlistMode: Boolean, schedulePending: Boolean): Boolean =
     scratchlistMode && !schedulePending
-    val isImportingShare: Boolean = false,
-    /**
-     * Where the caret rests after a VM-driven text change (mention insert,
-     * draft prefill, send-clear) — consumed by the composer when it adopts
-     * external text. `-1` ⇒ the text tail; tracks the live caret otherwise.
-     */
-    val caretPosition: Int = -1,
-)
 
 data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
 
