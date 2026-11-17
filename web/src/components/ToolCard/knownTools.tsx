@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { SessionMetadataSummary } from '@/types/api'
 import { isObject } from '@hapi/protocol'
-import { AlertTriangleIcon, BulbIcon, ClipboardIcon, EyeIcon, FileDiffIcon, GlobeIcon, MessageSquareIcon, PuzzleIcon, QuestionIcon, RocketIcon, SearchIcon, TerminalIcon, UsersIcon, WrenchIcon } from '@/components/ToolCard/icons'
+import { AlertTriangleIcon, BulbIcon, ClipboardIcon, CodeIcon, EyeIcon, FileDiffIcon, GlobeIcon, MessageSquareIcon, PackageIcon, PuzzleIcon, QuestionIcon, RocketIcon, SearchIcon, TerminalIcon, UsersIcon, WrenchIcon } from '@/components/ToolCard/icons'
 import type { ChecklistItem } from '@/components/ToolCard/checklist'
 import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
@@ -97,6 +97,16 @@ export type ToolPresentation = {
 
 function countLines(text: string): number {
     return text.split('\n').length
+}
+
+/** First non-empty line of a program, as a one-line summary of what it does. */
+function firstCodeLine(code: string | null): string | null {
+    if (!code) return null
+    for (const line of code.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed.length > 0) return trimmed
+    }
+    return null
 }
 
 function formatChecklistCount(items: ChecklistItem[], noun: string): string | null {
@@ -644,6 +654,77 @@ export const knownTools: Record<string, {
         subtitle: (opts) => parseWorkflowInput(opts.input)?.name ?? null,
         minimal: false
     },
+    // DSH run_code (PTC): the model writes a TypeScript program that calls
+    // tools through a generated SDK. The tool's own UI contract makes
+    // input.description the label; the program's first line summarizes it
+    // when the model skipped the description.
+    run_code: {
+        icon: () => <CodeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const description = getInputStringAny(opts.input, ['description'])
+            if (description) return truncate(description, 120)
+            const summary = firstCodeLine(getInputStringAny(opts.input, ['code']))
+            if (summary) return truncate(summary, 80)
+            return opts.t?.('tool.semanticTitle.runCode') ?? 'Run code'
+        },
+        subtitle: (opts) => {
+            // The description titled the card, so the program's first line
+            // previews what actually runs.
+            if (!getInputStringAny(opts.input, ['description'])) return null
+            const summary = firstCodeLine(getInputStringAny(opts.input, ['code']))
+            return summary ? truncate(summary, 80) : null
+        },
+        minimal: false
+    },
+    // DSH plugin_manager: one tool, eight actions (list_*/set_*/install_/
+    // remove_bundle/…). The raw action verb keeps the card greppable against
+    // DSH's vocabulary; the dedicated view parses the result's nextStep hint.
+    plugin_manager: {
+        icon: () => <PuzzleIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const action = getInputStringAny(opts.input, ['action'])
+            const target = getInputStringAny(opts.input, ['target'])
+            if (action && target) return `${action} ${truncate(target, 60)}`
+            if (action) return action
+            return opts.t?.('tool.pluginManager.manage') ?? 'Manage plugins'
+        },
+        subtitle: (opts) => {
+            const registry = getInputStringAny(opts.input, ['registry'])
+            return registry ?? null
+        },
+        minimal: false
+    },
+    // DSH plugin_market: read-only listing of market indexes and bundles
+    // (list_indexes/list_plugins/list_versions).
+    plugin_market: {
+        icon: () => <PackageIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const action = getInputStringAny(opts.input, ['action'])
+            const focus = getInputStringAny(opts.input, ['target', 'name', 'query'])
+            if (action && focus) return `${action} ${truncate(focus, 60)}`
+            if (action) return action
+            return opts.t?.('tool.pluginMarket.browse') ?? 'Browse plugin market'
+        },
+        subtitle: (opts) => {
+            // The query only reaches the header when no index target did.
+            if (getInputStringAny(opts.input, ['target', 'name'])) {
+                return getInputStringAny(opts.input, ['query'])
+            }
+            return null
+        },
+        minimal: true
+    },
+    // DSH job_output: reads a background job's incremental output/result.
+    // The rendered result already carries the delta + [status: …] line, so
+    // the card stays a thin chip naming the job.
+    job_output: {
+        icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const jobId = getInputStringAny(opts.input, ['job_id'])
+            return jobId ? `Job: ${truncate(jobId, 48)}` : (opts.t?.('tool.jobOutput.read') ?? 'Read job output')
+        },
+        minimal: true
+    },
     todo_write: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Todo list',
@@ -668,6 +749,16 @@ export const knownTools: Record<string, {
         title: (opts) => {
             const skill = getInputStringAny(opts.input, ['skill'])
             return skill ? `Skill: ${skill}` : 'Skill'
+        },
+        minimal: true
+    },
+    // DSH's lowercase skill tool sends {name} where Claude's Skill sends
+    // {skill}; read both so either flavor titles the card by its skill.
+    skill: {
+        icon: () => <PuzzleIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const skillName = getInputStringAny(opts.input, ['skill', 'name'])
+            return skillName ? `Skill: ${skillName}` : 'Skill'
         },
         minimal: true
     },
@@ -927,8 +1018,12 @@ export function getToolPresentation(
     const url = getInputStringAny(opts.input, ['url'])
     const query = getInputStringAny(opts.input, ['query'])
     const name = getInputStringAny(opts.input, ['name'])
+    // DSH job/plugin tools key their subject job_id/target; unknown kin of
+    // those families (job_kill, future plugin actions) still get a subtitle.
+    const jobId = getInputStringAny(opts.input, ['job_id'])
+    const target = getInputStringAny(opts.input, ['target'])
 
-    const subtitle = filePath ?? command ?? pattern ?? url ?? query ?? name
+    const subtitle = filePath ?? command ?? pattern ?? url ?? query ?? name ?? jobId ?? target
 
     // Some ACP agents emit `tool_call.title` as a verbatim argument (the shell
     // command or the file path itself). When it equals the input field,
