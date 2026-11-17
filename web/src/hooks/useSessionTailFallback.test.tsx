@@ -35,6 +35,7 @@ function windowState(overrides: Partial<MessageWindowState> = {}): MessageWindow
         newestSeq: null,
         epoch: 1,
         isSyncingTail: false,
+        preferLatestOnActivation: false,
         isLoadingMore: false,
         warning: null,
         viewMode: 'tail',
