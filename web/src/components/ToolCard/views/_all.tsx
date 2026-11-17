@@ -14,6 +14,8 @@ import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import { WorkflowView } from '@/components/ToolCard/views/WorkflowView'
+import { RunCodeView } from '@/components/ToolCard/views/RunCodeView'
+import { PluginManagerView } from '@/components/ToolCard/views/PluginManagerView'
 import { canShowGoalPreview, isGoalToolName } from '@/components/ToolCard/goalTools'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import {
@@ -31,7 +33,9 @@ export type ToolViewProps = {
 export type ToolViewComponent = ComponentType<ToolViewProps>
 
 const SkillFullView: ToolViewComponent = ({ block }: ToolViewProps) => {
-    const skillName = getInputStringAny(block.tool.input, ['skill'])
+    // Capitalized Skill sends {skill}; DSH lowercase skill sends {name} —
+    // read both so either flavor resolves the name.
+    const skillName = getInputStringAny(block.tool.input, ['skill', 'name'])
     return (
         <div className="text-sm text-[var(--app-fg)]">
             {skillName ?? 'Unknown skill'}
@@ -110,7 +114,11 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     todo_write: TodoWriteView,
     // DSH workflow orchestration: dedicated phase-checklist card (the generic
     // fallback would dump the whole script + return-value JSON).
-    workflow: WorkflowView
+    workflow: WorkflowView,
+    // DSH run_code (PTC program): collapsed TypeScript program + logs/result.
+    run_code: RunCodeView,
+    // DSH plugin_manager: action chips + application badge with nextStep hint.
+    plugin_manager: PluginManagerView
 }
 
 export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
@@ -140,8 +148,13 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     // DSH lowercase snake aliases (see toolViewRegistry).
     edit: EditView,
     write: WriteView,
+    // DSH lowercase skill sends {name} (see SkillFullView).
+    skill: SkillFullView,
     // DSH workflow orchestration (see toolViewRegistry).
-    workflow: WorkflowView
+    workflow: WorkflowView,
+    // DSH run_code / plugin_manager (see toolViewRegistry).
+    run_code: RunCodeView,
+    plugin_manager: PluginManagerView
 }
 
 export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {

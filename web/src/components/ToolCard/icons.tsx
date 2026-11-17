@@ -180,3 +180,26 @@ export function AlertTriangleIcon(props: IconProps) {
         props
     )
 }
+
+// DSH run_code (PTC program) — angle brackets, the "code" glyph.
+export function CodeIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="m8 6-6 6 6 6" />
+            <path d="m16 6 6 6-6 6" />
+        </>,
+        props
+    )
+}
+
+// DSH plugin_market — a store-box for installable bundles.
+export function PackageIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M21 8 12 3 3 8v8l9 5 9-5V8z" />
+            <path d="M3 8l9 5 9-5" />
+            <path d="M12 13v8" />
+        </>,
+        props
+    )
+}

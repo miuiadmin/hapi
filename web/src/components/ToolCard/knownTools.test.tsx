@@ -893,6 +893,101 @@ describe('getToolPresentation — dsh lowercase snake aliases', () => {
     })
 })
 
+describe('getToolPresentation — dsh creation tools', () => {
+    // DSH 创造模式 (plugin self-service): run_code (PTC program),
+    // plugin_manager/plugin_market, skill {name}, job kin, and the
+    // cordis_inspect_* pair all cross the bridge as kind 'other' with the
+    // raw tool name as title — the card derives everything from rawInput.
+    const present = (toolName: string, input: Record<string, unknown>) => getToolPresentation({
+        toolName,
+        input,
+        result: null,
+        childrenCount: 0,
+        description: null,
+        metadata: null,
+    })
+
+    it('titles run_code from its description with the first code line as subtitle', () => {
+        const presentation = present('run_code', {
+            description: 'List installed plugin bundles',
+            code: "const bundles = await sdk.pluginManager.listBundles()\nconsole.log(bundles)",
+        })
+
+        expect(presentation.title).toBe('List installed plugin bundles')
+        expect(presentation.subtitle).toBe('const bundles = await sdk.pluginManager.listBundles()')
+    })
+
+    it('falls back to the first code line when run_code has no description', () => {
+        const presentation = present('run_code', {
+            code: "await sdk.jobs.spawn('pnpm build')",
+        })
+
+        expect(presentation.title).toBe('await sdk.jobs.spawn(\'pnpm build\')')
+    })
+
+    it('titles plugin_manager as "action target" with the registry as subtitle', () => {
+        const presentation = present('plugin_manager', {
+            action: 'install_bundle',
+            target: '@deepseek-ai/dsh-tool-cordis',
+            registry: 'npm',
+        })
+
+        expect(presentation.title).toBe('install_bundle @deepseek-ai/dsh-tool-cordis')
+        expect(presentation.subtitle).toBe('npm')
+    })
+
+    it('titles plugin_market from the action and index focus', () => {
+        const presentation = present('plugin_market', {
+            action: 'list_plugins',
+            target: 'official',
+        })
+
+        expect(presentation.title).toBe('list_plugins official')
+        expect(presentation.minimal).toBe(true)
+    })
+
+    it('names job_output and job_list cards after their job semantics', () => {
+        const output = present('job_output', { job_id: 'job-7f3a' })
+        expect(output.title).toBe('Job: job-7f3a')
+
+        const list = present('job_list', {})
+        expect(list.title).toBe('List jobs')
+        expect(list.minimal).toBe(true)
+    })
+
+    it('titles the lowercase skill tool from its {name} input', () => {
+        const presentation = present('skill', { name: 'cordis-plugin-development' })
+
+        expect(presentation.title).toBe('Skill: cordis-plugin-development')
+    })
+
+    it('titles cordis_inspect_query as provider.method with the platform as subtitle', () => {
+        const presentation = present('cordis_inspect_query', {
+            platform: 'host',
+            provider: 'dsh/plugin-manifest',
+            method: 'readPluginConfig',
+            input: { plugin: 'tool-cordis' },
+        })
+
+        expect(presentation.title).toBe('dsh/plugin-manifest.readPluginConfig')
+        expect(presentation.subtitle).toBe('host')
+        expect(presentation.minimal).toBe(true)
+    })
+
+    it('falls back to the semantic title when cordis_inspect_query input is missing', () => {
+        const presentation = present('cordis_inspect_query', {})
+
+        expect(presentation.title).toBe('Inspect runtime')
+    })
+
+    it('gives the input-less cordis_inspect_list a semantic title', () => {
+        const presentation = present('cordis_inspect_list', {})
+
+        expect(presentation.title).toBe('Inspect providers')
+        expect(presentation.minimal).toBe(true)
+    })
+})
+
 describe('getToolPresentation — hermes lowercase snake aliases', () => {
     // Hermes tool_call updates carry the raw lowercase snake names below
     // (titles arrive as "<name>: <preview>" and are stripped to the bare
