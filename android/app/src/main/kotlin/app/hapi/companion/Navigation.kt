@@ -81,6 +81,9 @@ import app.hapi.companion.feature.newsession.NewSessionViewModel
 import app.hapi.companion.feature.newsession.PiImportStrings
 import app.hapi.companion.feature.pairing.ManualEntryScreen
 import app.hapi.companion.feature.pairing.PairingScreen
+import app.hapi.companion.feature.pairing.PasskeySignInScreen
+import app.hapi.companion.feature.passkey.CredentialManagerPasskeyPlatform
+import app.hapi.companion.feature.passkey.findActivity
 import app.hapi.companion.feature.pairing.PairingUiState
 import app.hapi.companion.feature.pairing.PairingViewModel
 import app.hapi.companion.feature.pairing.QrScanScreen
@@ -108,6 +111,9 @@ import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.settings.PasskeysGateway
+import app.hapi.companion.feature.settings.PasskeysScreen
+import app.hapi.companion.feature.settings.PasskeysViewModel
 import app.hapi.companion.feature.settings.SettingsGeneralScreen
 import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
@@ -123,7 +129,9 @@ import app.hapi.companion.feature.terminal.TerminalViewModel
 import app.hapi.companion.feature.toasts.HubToasts
 import app.hapi.data.auth.AuthTerminalReason
 import app.hapi.data.sse.SseSubscriptionKey
+import app.hapi.protocol.wire.PasskeySummary
 import app.hapi.protocol.wire.SessionListOrder
+import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
@@ -206,6 +214,7 @@ object Routes {
     const val PAIRING_LANDING = "pairing/landing"
     const val PAIRING_SCAN = "pairing/scan"
     const val PAIRING_MANUAL = "pairing/manual"
+    const val PAIRING_PASSKEY = "pairing/passkey"
 
     /**
      * Settings hub (category directory) + flat subpage routes (B-M4e → P2
@@ -223,6 +232,9 @@ object Routes {
 
     /** Machines management (rename) under settings (web `/settings/machines`). */
     const val SETTINGS_MACHINES = "settings/machines"
+
+    /** Passkey management under settings (web `/settings/passkeys`). */
+    const val SETTINGS_PASSKEYS = "settings/passkeys"
 }
 
 /**
@@ -546,6 +558,18 @@ fun HapiNavigation() {
                 factory = viewModelFactory { ChatSettingsViewModelHolder(graph) },
             )
             SettingsChatScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_PASSKEYS) {
+            val hubGraph = activeHubGraph ?: return@composable
+            val holder = viewModel<PasskeysViewModelHolder>(
+                key = "settingsPasskeys:${hubGraph.hubUrl}",
+                factory = viewModelFactory { PasskeysViewModelHolder(hubGraph) },
+            )
+            PasskeysScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
@@ -931,6 +955,7 @@ fun HapiNavigation() {
                     },
                     onScanQr = { navController.navigate(Routes.PAIRING_SCAN) },
                     onManualEntry = { navController.navigate(Routes.PAIRING_MANUAL) },
+                    onPasskeySignIn = { navController.navigate(Routes.PAIRING_PASSKEY) },
                     onPairPrefill = viewModel::pairFromPrefill,
                     onSwitchToPrefilledHub = viewModel::switchToPrefilledHub,
                     onDismissPrefill = viewModel::dismissPrefill,
@@ -960,6 +985,27 @@ fun HapiNavigation() {
                 ManualEntryScreen(
                     state = state,
                     onPair = viewModel::pair,
+                    onBack = { navController.popBackStack() },
+                    onDismissError = viewModel::dismissError,
+                )
+            }
+
+            composable(Routes.PAIRING_PASSKEY) { entry ->
+                val viewModel = pairingViewModel(navController, entry)
+                val state by viewModel.state.collectAsState()
+                val prefill by viewModel.prefill.collectAsState()
+                val context = LocalContext.current
+                NavigateHomeOnSuccess(navController, state)
+
+                PasskeySignInScreen(
+                    state = state,
+                    initialHubUrl = prefill?.hubUrl.orEmpty(),
+                    onSignIn = { hubUrl ->
+                        // The system sheet needs the hosting Activity.
+                        context.findActivity()?.let { activity ->
+                            viewModel.signInWithPasskey(hubUrl, CredentialManagerPasskeyPlatform(activity))
+                        }
+                    },
                     onBack = { navController.popBackStack() },
                     onDismissError = viewModel::dismissError,
                 )
@@ -1329,6 +1375,27 @@ private class MachinesViewModelHolder(hubGraph: HubGraph) : ViewModel() {
     }
 }
 
+private class PasskeysViewModelHolder(hubGraph: HubGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val viewModel = PasskeysViewModel(
+        gateway = object : PasskeysGateway {
+            override val hubUrl: String = hubGraph.hubUrl
+            private val api = hubGraph.session.api
+            override suspend fun list(): List<PasskeySummary> = api.getPasskeys().passkeys
+            override suspend fun registerOptions(): String = api.passkeyRegisterOptions()
+            override suspend fun registerVerify(response: JsonObject, name: String?) =
+                api.passkeyRegisterVerify(response, name)
+            override suspend fun delete(id: String) = api.deletePasskey(id)
+        },
+        scope = scope,
+    )
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
 private class UsageViewModelHolder(hubGraph: HubGraph) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -1491,6 +1558,7 @@ private fun NavHostController.navigateClearingBackStack(route: String) {
 /** Why the app fell back to pairing (resolved with a Context at the emit site). */
 private fun terminalNoticeRes(reason: AuthTerminalReason): Int = when (reason) {
     AuthTerminalReason.ACCESS_TOKEN_REJECTED -> R.string.pairing_notice_token_revoked
+    AuthTerminalReason.PASSKEY_SESSION_INVALID -> R.string.pairing_notice_passkey_session_invalid
     AuthTerminalReason.RETRY_EXHAUSTED -> R.string.pairing_notice_retry_exhausted
     AuthTerminalReason.MISSING_CREDENTIALS -> R.string.pairing_notice_missing_credentials
 }
