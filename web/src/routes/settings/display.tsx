@@ -6,6 +6,7 @@ import { getFontScaleOptions, useFontScale } from '@/hooks/useFontScale'
 import { getTerminalFontSizeOptions, useTerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
+import { isIndicatorSmoothingEnabled, setIndicatorSmoothing } from '@/hooks/useLowRateAnimation'
 import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
 import { MAX_SESSION_PREVIEW_LIMIT, MIN_SESSION_PREVIEW_LIMIT, normalizeSessionPreviewLimit, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
@@ -247,6 +248,7 @@ function SessionListViewToggles() {
                 checked={view.showPresenceBadge}
                 onChange={(checked) => setView({ showPresenceBadge: checked })}
             />
+            <SmoothIndicatorsControl />
             <SettingsSwitch
                 label={t('sessions.view.eagerLoading')}
                 description={t('settings.display.eagerLoading.desc')}
@@ -260,5 +262,22 @@ function SessionListViewToggles() {
                 onChange={(checked) => setView({ baselineMode: checked })}
             />
         </>
+    )
+}
+
+
+function SmoothIndicatorsControl() {
+    const { t } = useTranslation()
+    const [smooth, setSmooth] = useState(() => isIndicatorSmoothingEnabled())
+    return (
+        <SettingsSwitch
+            label={t('settings.display.smoothIndicators')}
+            description={t('settings.display.smoothIndicators.desc')}
+            checked={smooth}
+            onChange={(checked) => {
+                setIndicatorSmoothing(checked)
+                setSmooth(checked)
+            }}
+        />
     )
 }

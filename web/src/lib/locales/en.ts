@@ -1119,6 +1119,8 @@ export default {
   'settings.display.appBadge.desc': 'Show the number of sessions with new activity on an installed Edge or Chrome PWA. The host browser controls its appearance; this has no effect in a normal browser tab.',
   'settings.display.compactRows.desc': 'Smaller icons and tighter row spacing, no project subtitle line',
   'settings.display.showPresenceBadge.desc': 'Presence badge on the session icon corner (working/waiting/stopped)',
+  'settings.display.smoothIndicators': 'Smooth list animations',
+  'settings.display.smoothIndicators.desc': 'Interpolate activity spinner and breathing dots between ticker steps (GPU-composited; turn off for the strictest power saving)',
   'settings.display.eagerLoading.desc': 'Auto-refresh session list (5s active / 15s idle) + prefetch top sessions for instant open',
   'settings.display.baselineMode.desc': 'Prefetch detail for every session in the list — any click opens instantly, at the cost of more background requests',
   'settings.display.sessionListStatus': 'Session list status hints',

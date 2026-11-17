@@ -1117,6 +1117,8 @@ export default {
   'settings.display.appBadge.desc': '在已安装的 Edge 或 Chrome PWA 图标上显示有新活动的会话数。角标样式由宿主浏览器控制；普通浏览器标签页不受影响。',
   'settings.display.compactRows.desc': '更小的图标和更紧凑的行间距,隐藏项目副标题行',
   'settings.display.showPresenceBadge.desc': '在会话图标的角落显示在线状态徽章(运行中/等待/已停止)',
+  'settings.display.smoothIndicators': '列表动画平滑',
+  'settings.display.smoothIndicators.desc': '在低频心跳步进之间补帧,让加载菊花和呼吸灯更流畅(GPU 合成;追求极致省电可关闭)',
   'settings.display.eagerLoading.desc': '列表页自动刷新会话状态(活跃时5秒/空闲时15秒)+ 预取常用会话详情,点进去秒开',
   'settings.display.baselineMode.desc': '给列表中每个会话都预取详情——点进任何会话都秒开,代价是更多后台请求',
   'settings.display.sessionListStatus': '会话列表状态提示',

@@ -2,6 +2,7 @@ import { render } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LOW_RATE_TICK_MS, subscribeLowRateTicker } from '@/lib/lowRateTicker'
+import { setIndicatorSmoothing } from '@/hooks/useLowRateAnimation'
 import { PING_TOTAL_FRAMES, useLowRateAnimation, type LowRateAnimationKind } from './useLowRateAnimation'
 
 function Indicator({ kind, enabled = true }: { kind: LowRateAnimationKind; enabled?: boolean }) {
@@ -68,6 +69,37 @@ describe('useLowRateAnimation', () => {
         expect(element.style.opacity).toBe('1')
         // Compositor transition smooths between ticks.
         expect(element.style.transition).toContain('opacity 125ms')
+    })
+
+    it('falls back to the square-wave cadence when smoothing is off', () => {
+        setIndicatorSmoothing(false)
+        try {
+            const { getByTestId } = render(<Indicator kind="pulse" />)
+            const element = getByTestId('indicator')
+
+            // Frames 1-8 stay high, 9-16 drop low — the original #2447 shape.
+            vi.advanceTimersByTime(LOW_RATE_TICK_MS * 8)
+            expect(element.style.opacity).toBe('1')
+            expect(element.style.transition).toBe('')
+            vi.advanceTimersByTime(LOW_RATE_TICK_MS)
+            expect(element.style.opacity).toBe('0.5')
+        } finally {
+            setIndicatorSmoothing(true)
+        }
+    })
+
+    it('steps the spinner without a transition when smoothing is off', () => {
+        setIndicatorSmoothing(false)
+        try {
+            const { getByTestId } = render(<Indicator kind="spin" />)
+            const element = getByTestId('indicator')
+
+            vi.advanceTimersByTime(LOW_RATE_TICK_MS)
+            expect(element.style.transform).toBe('rotate(22.5deg)')
+            expect(element.style.transition).toBe('')
+        } finally {
+            setIndicatorSmoothing(true)
+        }
     })
 
     it('drifts stripes by tile/40 per tick, one 8px tile per 5 s', () => {
