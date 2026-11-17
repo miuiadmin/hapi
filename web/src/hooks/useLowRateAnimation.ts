@@ -42,13 +42,24 @@ const PING_FULL_SCALE = 2
 export const LOW_RATE_STRIPES_CLASS = 'attached-job-stripes'
 
 function writeSpin(element: AnimatableElement, frame: number): void {
+    // The transition lets the compositor interpolate between 125 ms ticker
+    // steps at native smoothness (transform/opacity are compositor-only
+    // properties; no main-thread style recalc, so the low-rate ticker keeps
+    // its perf win while the motion reads as 60 fps).
+    element.style.transition = 'transform 125ms linear'
     element.style.transform = `rotate(${frame * SPIN_STEP_DEGREES}deg)`
 }
 
 function writePulse(element: AnimatableElement, frame: number): void {
-    // Frames are 1-based, so this makes ticks 1-8 high and 9-16 low.
-    const high = (frame - 1) % PULSE_TOTAL_FRAMES < PULSE_HIGH_FRAMES
-    element.style.opacity = high ? '1' : String(PULSE_LOW_OPACITY)
+    // Triangle wave: opacity glides 1.0 -> 0.5 -> 1.0 across the cycle
+    // instead of hard-switching between the two levels. The original CSS
+    // `animate-pulse` interpolated smoothly; a binary flip at 8 Hz reads as
+    // harsh blinking, a triangle reads as breathing at the same cadence.
+    const phase = ((frame - 1) % PULSE_TOTAL_FRAMES) / PULSE_TOTAL_FRAMES
+    const triangle = phase < 0.5 ? 1 - phase * 2 : (phase - 0.5) * 2
+    const opacity = PULSE_LOW_OPACITY + (1 - PULSE_LOW_OPACITY) * triangle
+    element.style.transition = 'opacity 125ms linear'
+    element.style.opacity = opacity.toFixed(3)
 }
 
 /** The Tailwind `ping` cue, stepped by the ticker: scale 1 -> 2 while fading out. */
@@ -79,8 +90,10 @@ const WRITERS: Record<LowRateAnimationKind, (element: AnimatableElement, frame: 
 /** Reset to the resting state so a disabled/reduced-motion indicator is static. */
 function writeStatic(element: AnimatableElement, kind: LowRateAnimationKind): void {
     if (kind === 'pulse') {
+        element.style.transition = ''
         element.style.opacity = '1'
     } else if (kind === 'spin') {
+        element.style.transition = ''
         element.style.transform = ''
     } else if (kind === 'ping') {
         // Unscaled and fully opaque: the halo at rest, not frozen mid-expansion.
