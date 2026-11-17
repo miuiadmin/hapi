@@ -80,3 +80,4 @@ android/captures/
 # android/app/google-services.json.example.
 android/app/google-services.json
 .test-home/
+*.bun-build
