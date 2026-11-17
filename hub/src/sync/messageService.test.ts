@@ -2381,7 +2381,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
-    it('returns unavailable without emitting when the CLI reports the row is mid-dispatch (in-flight)', async () => {
+    it('returns unavailable after only the cancel probe when the CLI reports the row is mid-dispatch (in-flight)', async () => {
         const store = makeStore()
         const session = makeSession(store, 'deliver-inflight')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'busy row' } }, 'inflight-q')
@@ -2410,6 +2410,22 @@ describe('MessageService deliverQueuedMessageNow', () => {
             .toEqual({ status: 'unavailable', localId: 'timeout-q' })
         expect(calls).toBe(1)
         expect(store.messages.lookupQueuedMessage(session.id, 'timeout-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('returns unavailable when the CLI reports an indeterminate cancel outcome', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-unknown')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'unknown cancel' } }, 'unknown-cancel-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, indeterminate: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'unknown-cancel-q'))
+            .toEqual({ status: 'unavailable', localId: 'unknown-cancel-q' })
+        expect(calls).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, 'unknown-cancel-q').status).toBe('queued')
         store.close()
     })
 

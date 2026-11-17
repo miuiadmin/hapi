@@ -209,27 +209,52 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     return { distDir, indexHtmlPath: join(distDir, 'index.html') }
 }
 
+/**
+ * Single source of truth for static-asset cache policy, shared by the
+ * embedded-asset branch (compiled binaries) and the dist-dir serveStatic
+ * branch (source runs). Returns null for "no explicit policy".
+ */
+export function cacheControlForRequestPath(path: string): string | null {
+    if (path === '/sw.js') {
+        return 'no-store, no-cache, must-revalidate'
+    }
+    if (path.startsWith('/assets/fonts/')) {
+        // KaTeX fonts are copied into assets/fonts/ under their original
+        // (non-content-hashed) names by the copyKaTeXFonts vite plugin — the
+        // one /assets/ family whose bytes can change under a stable URL (a
+        // katex upgrade may revise a same-named font). Bound their caching
+        // instead of promising immutability; keep in sync with that plugin.
+        return 'public, max-age=86400'
+    }
+    if (path.startsWith('/assets/')) {
+        // Everything else under /assets/ is content-hashed by Vite: the bytes
+        // behind a given name never change across releases, so clients may
+        // cache them immutably and only fetch the names a fresh index.html
+        // points at. Without this, every navigation re-downloads the full
+        // (multi-MB) chunk set because the response carries no validator.
+        return 'public, max-age=31536000, immutable'
+    }
+    if (path === '/' || path === '/index.html' || path === '/404.html') {
+        // The HTML shell must always be revalidated: it is the only pointer
+        // to the current hashed asset set, and a stale copy would pin a
+        // client to a retired bundle (including an old service worker URL).
+        return 'no-cache'
+    }
+    return null
+}
+
 export function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
     const headers: Record<string, string> = {
         'Content-Type': asset.mimeType
     }
 
+    const cacheControl = cacheControlForRequestPath(asset.path)
+    if (cacheControl !== null) {
+        headers['Cache-Control'] = cacheControl
+    }
     if (asset.path === '/sw.js') {
-        headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         headers['CDN-Cache-Control'] = 'no-store'
         headers['Cloudflare-CDN-Cache-Control'] = 'no-store'
-    } else if (asset.path.startsWith('/assets/')) {
-        // Vite emits content-hashed filenames under /assets/: the bytes behind
-        // a given name never change across releases, so clients may cache them
-        // immutably and only fetch the names a fresh index.html points at.
-        // Without this, every navigation re-downloads the full (multi-MB)
-        // chunk set because the response carries no validator at all.
-        headers['Cache-Control'] = 'public, max-age=31536000, immutable'
-    } else if (asset.mimeType.startsWith('text/html')) {
-        // The HTML shell must always be revalidated: it is the only pointer
-        // to the current hashed asset set, and a stale copy would pin a
-        // client to a retired bundle (including an old service worker URL).
-        headers['Cache-Control'] = 'no-cache'
     }
 
     return new Response(Bun.file(asset.sourcePath), {
@@ -425,7 +450,23 @@ from GitHub Pages instead of through the relay tunnel.
         return app
     }
 
-    app.use('/assets/*', serveStatic({ root: distDir }))
+    // Source-run fallback (no embedded assets): mirror the embedded branch's
+    // cache policy via serveStatic's onFound hook so both serving shapes
+    // behave identically (see cacheControlForRequestPath).
+    type FoundContext = { req: { path: string }, header: (name: string, value: string) => void }
+    const applyAssetCacheHeaders = (_foundPath: string, c: FoundContext) => {
+        const value = cacheControlForRequestPath(c.req.path === '' ? '/' : c.req.path)
+        if (value !== null) {
+            c.header('Cache-Control', value)
+        }
+    }
+    // The SPA fallback always serves the index shell regardless of the
+    // request path, so it always gets the HTML no-cache policy.
+    const applyHtmlShellCacheHeaders = (_foundPath: string, c: { header: (name: string, value: string) => void }) => {
+        c.header('Cache-Control', 'no-cache')
+    }
+
+    app.use('/assets/*', serveStatic({ root: distDir, onFound: applyAssetCacheHeaders }))
 
     app.use('*', async (c, next) => {
         if (c.req.path.startsWith('/api')) {
@@ -433,7 +474,7 @@ from GitHub Pages instead of through the relay tunnel.
             return
         }
 
-        return await serveStatic({ root: distDir })(c, next)
+        return await serveStatic({ root: distDir, onFound: applyAssetCacheHeaders })(c, next)
     })
 
     app.get('*', async (c, next) => {
@@ -442,7 +483,7 @@ from GitHub Pages instead of through the relay tunnel.
             return
         }
 
-        return await serveStatic({ root: distDir, path: 'index.html' })(c, next)
+        return await serveStatic({ root: distDir, path: 'index.html', onFound: applyHtmlShellCacheHeaders })(c, next)
     })
 
     return app

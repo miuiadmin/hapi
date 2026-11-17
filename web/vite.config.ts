@@ -74,6 +74,13 @@ function copyKaTeXFonts(): Plugin {
             const fontsDir = resolve(__dirname, 'node_modules/katex/dist/fonts')
             for (const fileName of readdirSync(fontsDir)) {
                 if (!/\.(?:ttf|woff|woff2)$/i.test(fileName)) continue
+                // NOTE: emitted under the ORIGINAL (non-content-hashed) names.
+                // These are the only non-hashed files under assets/, so the
+                // hub's cache policy (hub/src/web/server.ts
+                // cacheControlForRequestPath) must keep bounding
+                // assets/fonts/ instead of the immutable rule applied to the
+                // rest of /assets/. Hash these names here if that ever needs
+                // to change.
                 this.emitFile({
                     type: 'asset',
                     fileName: `assets/fonts/${fileName}`,
