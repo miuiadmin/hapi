@@ -1496,11 +1496,6 @@ export class Store {
         `)
     }
 
-    /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */
-    private migrateFromV35ToV36(): void {
-        this.db.exec(PASSKEY_CREDENTIALS_TABLE_SQL)
-    }
-
     private ensureUsageScanParserVersion(): void {
         const columns = this.db.prepare('PRAGMA table_info(usage_scan_state)').all() as Array<{ name: string }>
         if (columns.length === 0) return

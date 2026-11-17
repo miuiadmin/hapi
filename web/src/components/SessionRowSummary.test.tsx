@@ -294,7 +294,9 @@ describe('SessionRowSummary background status', () => {
 
         const badge = container.querySelector('[data-testid="session-presence"]')
         expect(badge).toHaveAttribute('data-presence', 'working')
-        expect(badge).toHaveClass('animate-pulse')
+        // #2447: pulse is driven by the shared low-rate ticker (opacity), not CSS
+        expect(badge).toHaveAttribute('data-presence', 'working')
+        expect(badge).toHaveClass('bg-[var(--app-badge-success-text)]')
         expect(screen.getByTestId('session-activity')).toBeInTheDocument()
         // Not the background-only dot: this is foreground-style work.
         expect(screen.queryByTestId('session-background')).toBeNull()
