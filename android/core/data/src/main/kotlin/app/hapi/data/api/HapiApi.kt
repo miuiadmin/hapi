@@ -56,7 +56,8 @@ import app.hapi.protocol.wire.PasskeyListResponse
 import app.hapi.protocol.wire.PasskeyLoginResponse
 import app.hapi.protocol.wire.PasskeyLoginVerifyRequest
 import app.hapi.protocol.wire.PasskeyOptionsRequest
-import app.hapi.protocol.wire.PasskeyRegisterVerifyRequestimport app.hapi.protocol.wire.QueuedStateRequest
+import app.hapi.protocol.wire.PasskeyRegisterVerifyRequest
+import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
 import app.hapi.protocol.wire.RenameMachineRequest
