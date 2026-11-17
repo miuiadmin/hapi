@@ -725,6 +725,40 @@ export const knownTools: Record<string, {
         },
         minimal: true
     },
+    // DSH job_list: enumerates background jobs; the rendered result carries
+    // the table, so the card is a semantic chip (no job_id to key on).
+    job_list: {
+        icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => opts.t?.('tool.jobList.list') ?? 'List jobs',
+        minimal: true
+    },
+    // DSH cordis_inspect_list (creation mode): reads the runtime's read-only
+    // Inspect Provider directory before any plugin is written. Takes no
+    // input, so the title is purely semantic; the JSON dump lives in the
+    // dialog's Result section.
+    cordis_inspect_list: {
+        icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => opts.t?.('tool.cordisInspect.list') ?? 'Inspect providers',
+        minimal: true
+    },
+    // DSH cordis_inspect_query (creation mode): runs one read-only Inspect
+    // query. platform/provider/method must come from cordis_inspect_list, so
+    // "provider.method" is the greppable subject and platform the qualifier.
+    cordis_inspect_query: {
+        icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const provider = getInputStringAny(opts.input, ['provider'])
+            const method = getInputStringAny(opts.input, ['method'])
+            if (provider && method) return `${truncate(provider, 48)}.${truncate(method, 48)}`
+            if (provider) return truncate(provider, 48)
+            return opts.t?.('tool.cordisInspect.query') ?? 'Inspect runtime'
+        },
+        subtitle: (opts) => {
+            const platform = getInputStringAny(opts.input, ['platform'])
+            return platform ?? null
+        },
+        minimal: true
+    },
     todo_write: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Todo list',
