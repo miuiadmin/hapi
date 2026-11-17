@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Store } from './index'
+import { SCHEMA_VERSION, Store } from './index'
 
 const tempDirs: string[] = []
 
@@ -41,7 +41,7 @@ describe('schema migration v25 to v26', () => {
             ORDER BY seq ASC
         `).all('session-id') as Array<{ detail: string }>
 
-        expect(version.user_version).toBe(37)
+        expect(version.user_version).toBe(SCHEMA_VERSION)
         expect(plan.some((row) => row.detail.includes('idx_messages_immediate_queued'))).toBe(true)
         migrated.close()
     })

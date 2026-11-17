@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Store } from './index'
+import { SCHEMA_VERSION, Store } from './index'
 
 const tempDirs: string[] = []
 
@@ -32,7 +32,7 @@ describe('schema migration v29 to v30', () => {
         const migrated = new Store(dbPath)
         const internalDb = (migrated as unknown as { db: Database }).db
         const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-        expect(version.user_version).toBe(37)
+        expect(version.user_version).toBe(SCHEMA_VERSION)
 
         expect(migrated.turns.open(session.id, 'default', 1_000, 'agent')).toBe(true)
         expect(migrated.turns.open(session.id, 'default', 2_000, 'agent')).toBe(false)

@@ -198,9 +198,10 @@ export function addMessage(
     const invokedAt = localId ? null : stampedAt
 
     // Fresh rows close what the tool-call upsert cache considers live: a
-    // tool-call-result with this callId settles the call, and a user message
-    // row starts a new turn that closes every live call of the session. Drop
-    // the affected memo entries so a later tick never merges into a dead row.
+    // tool-call-result with this callId settles the call (advancing its row's
+    // status before the result lands), and a user message row starts a new
+    // turn that closes every live call of the session. Drop the affected memo
+    // entries so a later tick never merges into a dead row.
     const settledCallId = toolCallResultCallId(content)
     if (settledCallId !== null) {
         dropCachedToolCallRow(db, sessionId, settledCallId)
@@ -209,6 +210,12 @@ export function addMessage(
     }
 
     return db.transaction(() => {
+        // Settle before this result row is stored: the liveness scan must not
+        // see it (a stored result closes its own call), and the settlement and
+        // the insert commit as one.
+        if (settledCallId !== null) {
+            settleToolCallRow(db, sessionId, settledCallId, content)
+        }
         const previousHead = getNewestMessagePosition(db, sessionId)
         prepareCached(db, `
             INSERT INTO messages (
@@ -292,6 +299,20 @@ function mergeToolCallStatus(stored: unknown, incoming: unknown): unknown {
     return incomingRank >= storedRank ? incoming : stored
 }
 
+/** Rewrite a stored tool-call row's status to the terminal state a result
+ *  reports, merging through the same progression rank the tick merge uses —
+ *  settlement can only advance, never regress. Returns the input reference
+ *  when nothing changed so the caller can skip the write. */
+function withTerminalToolCallStatus(stored: unknown, status: 'completed' | 'failed'): unknown {
+    const envelope = unwrapRoleWrappedRecordEnvelope(stored)
+    if (!envelope || !isRecord(envelope.content) || !isRecord(envelope.content.data)) return stored
+    const data = envelope.content.data
+    const merged = mergeToolCallStatus(data.status, status)
+    return merged === data.status
+        ? stored
+        : { ...envelope, content: { ...envelope.content, data: { ...data, status: merged } } }
+}
+
 export type UpsertToolCallResult = {
     message: StoredMessage
     /** True when an existing tool-call row was updated in place. */
@@ -312,6 +333,20 @@ function toolCallResultCallId(value: unknown): string | null {
     if (!data || data.type !== 'tool-call-result') return null
     const callId = data.callId
     return typeof callId === 'string' && callId.trim().length > 0 ? callId : null
+}
+
+/** Whether a stored `tool-call-result` payload reports a failed call. The CLI
+ *  wire declares `is_error` (convertAgentMessage maps an agent's terminal
+ *  `failed` status onto it); `isError` is read as the camelCase alias the
+ *  codex launchers also accept. A result carrying neither signal settles as
+ *  completed — a missed failure is cheaper than a false one. */
+function isFailedToolCallResult(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call-result') return false
+    return data.is_error === true || data.isError === true
 }
 
 function isUserMessageRow(value: unknown): boolean {
@@ -370,6 +405,35 @@ function findLiveToolCallRow(db: Database, sessionId: string, callId: string): D
         if (isUserMessageRow(decoded)) return null
     }
     return null
+}
+
+/** Settle the live tool-call row a result closes: advance its status to the
+ *  terminal state the result reports.
+ *
+ *  Flavors that never re-emit a call after it finishes (DSH workflow tools)
+ *  left the stored row on its last pre-result tick forever — the result was
+ *  stored as its own row but never folded back, so history pages kept reading
+ *  the call as open work (the 58/58 stuck workflow rows). The scan runs
+ *  before the result row itself is inserted and shares findLiveToolCallRow's
+ *  liveness contract: a call already closed by a newer result or by a user
+ *  turn stays untouched, and the rank merge keeps the permission-round
+ *  pending guard — settlement only ever advances. */
+function settleToolCallRow(db: Database, sessionId: string, callId: string, resultContent: unknown): void {
+    const existing = findLiveToolCallRow(db, sessionId, callId)
+    if (!existing) return
+    const storedContent = decodeMessageContent(existing.content)
+    const settledContent = truncateOversizedMessageContent(withTerminalToolCallStatus(
+        storedContent,
+        isFailedToolCallResult(resultContent) ? 'failed' : 'completed'
+    ))
+    if (isDeepStrictEqual(settledContent, storedContent)) return
+    // Same in-place content swap as the tick merge (mergeIntoToolCallRow): no
+    // new seq, no content_revision bump — the row's identity never moves, so
+    // live clients keep merging by id and stored ordering stays stable.
+    prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(
+        encodeMessageContent(settledContent),
+        existing.id
+    )
 }
 
 /** The `data` record of a Claude-SDK passthrough row

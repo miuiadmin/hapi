@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { Store } from './index'
+import { SCHEMA_VERSION, Store } from './index'
 
 describe('Store V18->V19 migration: usage scan state', () => {
     it('adds the usage_scan_state table to a V18 database', () => {
@@ -38,7 +38,7 @@ describe('Store V18->V19 migration: usage scan state', () => {
             const usageRows = internalDb.prepare('SELECT COUNT(*) AS count FROM usage_events').get() as { count: number }
 
             expect(table?.name).toBe('usage_scan_state')
-            expect(version.user_version).toBe(37)
+            expect(version.user_version).toBe(SCHEMA_VERSION)
             expect(usageRows.count).toBe(0)
         } finally {
             store?.close()

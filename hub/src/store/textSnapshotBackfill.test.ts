@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
-import { Store } from './index'
+import { SCHEMA_VERSION, Store } from './index'
 import { isTextSnapshotBackfillDone, runTextSnapshotBackfill } from './textSnapshotBackfill'
 
 const tempDirs: string[] = []
@@ -36,7 +36,7 @@ describe('schema migration v28 to v29', () => {
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'store_maintenance'"
         ).all() as Array<{ name: string }>
 
-        expect(version.user_version).toBe(37)
+        expect(version.user_version).toBe(SCHEMA_VERSION)
         expect(tables).toHaveLength(1)
         expect(isTextSnapshotBackfillDone(internalDb)).toBe(false)
         migrated.close()
