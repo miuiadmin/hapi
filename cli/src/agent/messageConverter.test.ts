@@ -83,6 +83,42 @@ describe('convertAgentMessage', () => {
         });
     });
 
+    it('passes the agent-native tool name and args through to the wire payload', () => {
+        const nativeArgs = { action: 'install_bundle', bundle: 'demo' };
+        const converted = convertAgentMessage({
+            type: 'tool_call',
+            id: 'call-native-name',
+            name: 'Tool',
+            input: {},
+            status: 'in_progress',
+            nativeName: 'plugin_manager',
+            nativeArgs
+        });
+
+        expect(converted).toEqual({
+            type: 'tool-call',
+            callId: 'call-native-name',
+            name: 'Tool',
+            input: {},
+            status: 'in_progress',
+            nativeName: 'plugin_manager',
+            nativeArgs
+        });
+    });
+
+    it('keeps the native identity fields off tool calls that do not carry them', () => {
+        const converted = convertAgentMessage({
+            type: 'tool_call',
+            id: 'call-plain',
+            name: 'Bash',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+
+        expect(converted).not.toHaveProperty('nativeName');
+        expect(converted).not.toHaveProperty('nativeArgs');
+    });
+
     it('preserves running tool progress without changing the tool input', () => {
         const converted = convertAgentMessage({
             type: 'tool_call',

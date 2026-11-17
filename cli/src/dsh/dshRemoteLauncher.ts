@@ -16,6 +16,7 @@ import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools'
 import { createDshBackend } from './utils/dshBackend'
 import { buildDshPromptContent } from './utils/dshPromptContent'
+import { DshPluginReloadCoordinator } from './utils/dshPluginReload'
 import type { DshSession } from './session'
 
 /**
@@ -78,6 +79,12 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private happyServer: { stop: () => void } | null = null
     /** ACP form of the hapi MCP bridge servers (name/command/args/env). */
     private acpMcpServers: McpServerStdio[] = []
+    /** Deferred plugin reload (profile-dir watcher + plugin_manager results);
+     * see utils/dshPluginReload. Null until the first establishment. */
+    private pluginReload: DshPluginReloadCoordinator | null = null
+    /** True while a prompt batch is on the wire — plugin reloads wait for the
+     * turn to settle instead of killing it. */
+    private promptActive = false
 
     constructor(
         private readonly session: DshSession,
@@ -189,6 +196,21 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.acpMcpServers = toAcpMcpServers(mcpServers)
 
         await this.establishBackend({ respawn: false })
+
+        // Install-and-use for plugins: dsh reads its profile only at spawn,
+        // so a changed plugin set reloads the child between turns (resuming
+        // the same durable session id). Gates read the launcher's live state.
+        this.pluginReload = new DshPluginReloadCoordinator({
+            respawn: () => this.respawnBackend(),
+            notify: (message) => {
+                this.session.sendSessionEvent({ type: 'message', message })
+                this.messageBuffer.addMessage(message, 'status')
+            },
+            isPromptActive: () => this.promptActive,
+            isRespawning: () => this.respawnInProgress,
+            isAlive: () => !this.shouldExit && this.backend !== null && this.acpSessionId !== null
+        })
+        this.pluginReload.start()
 
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -478,6 +500,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 continue
             }
             let failureMessage: string | null = null
+            // Plugin reloads are deferred while a batch runs (mid-turn
+            // installs only mark the reload pending; settle runs below).
+            this.promptActive = true
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
             } catch (error) {
@@ -543,12 +568,16 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     failureMessage = `DSH prompt failed: ${message}`
                 }
             }
+            this.promptActive = false
             if (failureMessage !== null) {
                 this.session.sendSessionEvent({ type: 'message', message: failureMessage })
                 this.messageBuffer.addMessage(failureMessage, 'status')
             }
             this.session.onThinkingChange(false)
             await this.permissionHandler?.cancelAll('Prompt finished')
+            // A plugin install that landed mid-turn reloads the dsh child
+            // now, before the ready event declares the session idle.
+            await this.pluginReload?.settle()
             if (this.session.queue.size() === 0 && !this.shouldExit) {
                 this.session.sendSessionEvent({ type: 'ready' })
             }
@@ -842,6 +871,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager)
+        this.pluginReload?.stop()
+        this.pluginReload = null
         await this.permissionHandler?.cancelAll('Session ended')
         this.permissionHandler = null
         await this.backend?.disconnect()
@@ -855,6 +886,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private handleAgentMessage(message: AgentMessage): void {
         const converted = convertAgentMessage(message)
         if (converted) this.session.sendAgentMessage(converted)
+        // plugin_manager success semantics feed the deferred plugin reload;
+        // every other shape is a no-op inside the tracker.
+        this.pluginReload?.observeAgentMessage(message)
 
         switch (message.type) {
             case 'text':

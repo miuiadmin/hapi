@@ -69,10 +69,16 @@ describe('dshPermissionModeEnvOverlay', () => {
         expect(dshPermissionModeEnvOverlay('yolo', {})).toEqual({ DSH_PERMISSION_MODE: 'danger-full-access' })
     })
 
+    it('pins danger-full-access when no permission mode was specified', () => {
+        // Product default for DSH sessions (user decision 2026-11-17): the
+        // unspecified case rides yolo so plugin installs and other model-side
+        // setup run without permission cards.
+        expect(dshPermissionModeEnvOverlay(undefined, {})).toEqual({ DSH_PERMISSION_MODE: 'danger-full-access' })
+    })
+
     it('leaves the variable unset for default and safe-yolo (server default workspace-write)', () => {
         expect(dshPermissionModeEnvOverlay('default', {})).toEqual({})
         expect(dshPermissionModeEnvOverlay('safe-yolo', {})).toEqual({})
-        expect(dshPermissionModeEnvOverlay(undefined, {})).toEqual({})
     })
 
     it('keeps a machine-level DSH_PERMISSION_MODE authoritative', () => {
@@ -97,12 +103,18 @@ describe('createDshBackend spawn configuration', () => {
         expect(options.flavor).toBe('dsh')
     })
 
-    it('does not set DSH_PERMISSION_MODE without an explicit mode mapping', () => {
-        for (const permissionMode of ['default', 'safe-yolo', undefined]) {
+    it('does not set DSH_PERMISSION_MODE for default and safe-yolo', () => {
+        for (const permissionMode of ['default', 'safe-yolo']) {
             const backend = createDshBackend({ PATH: '/usr/bin' }, { permissionMode })
             const options = (backend as unknown as { options: { env: Record<string, string | undefined> } }).options
             expect(options.env.DSH_PERMISSION_MODE).toBeUndefined()
         }
+    })
+
+    it('maps an unspecified permission mode onto danger-full-access in the child env', () => {
+        const backend = createDshBackend({ PATH: '/usr/bin' }, {})
+        const options = (backend as unknown as { options: { env: Record<string, string | undefined> } }).options
+        expect(options.env.DSH_PERMISSION_MODE).toBe('danger-full-access')
     })
 
     it('maps yolo onto danger-full-access in the child env', () => {
