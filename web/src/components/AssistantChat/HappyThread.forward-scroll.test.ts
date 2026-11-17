@@ -61,3 +61,16 @@ describe('forward history load scroll anchoring', () => {
         expect(restoreEffect).toContain('pendingForwardAnchorRef.current = null')
     })
 })
+
+describe('older-page load residual momentum kill', () => {
+    const source = readFileSync(resolve(__dirname, 'HappyThread.tsx'), 'utf8')
+
+    it('kills the in-flight fling only for user-intent older pages', () => {
+        const apply = source.slice(
+            source.indexOf('const restoredByAnchor = pending.anchor'),
+            source.indexOf('settlePendingLoad(\'loaded\')')
+        )
+        expect(apply).toContain('loaderState.source === \'user\'')
+        expect(apply).toContain('cancelResidualScrollMomentum(viewport)')
+    })
+})
