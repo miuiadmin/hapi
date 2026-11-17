@@ -32,6 +32,10 @@ export type CodexMessage =
         status?: 'pending' | 'in_progress' | 'completed' | 'failed';
         nativeTitle?: string;
         nativeKind?: string;
+        /** The agent's own tool name/args next to the normalized fields (the
+         * hub merges these onto the live tool-call row newest-wins). */
+        nativeName?: string;
+        nativeArgs?: unknown;
         progress?: unknown;
     }
     | {
@@ -125,6 +129,8 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 status: message.status,
                 ...(message.title ? { nativeTitle: message.title } : {}),
                 ...(message.kind ? { nativeKind: message.kind } : {}),
+                ...(message.nativeName !== undefined ? { nativeName: message.nativeName } : {}),
+                ...(message.nativeArgs !== undefined ? { nativeArgs: message.nativeArgs } : {}),
                 ...(message.progress !== undefined ? { progress: message.progress } : {})
             };
         case 'tool_result':

@@ -57,11 +57,15 @@ export function resolveDshAcpCommand(env: DshAcpEnvironment = process.env): {
  * Mapping (verified against the DSH 0.2.2-rc.1 source): `read-only` pins the
  * read-only preset, `yolo` pins danger-full-access, and `default` /
  * `safe-yolo` stay UNSET so the server applies its own default
- * (workspace-write). The preset is read at process spawn only — DSH has no
- * runtime mode RPC, so mid-session mode switches remain HAPI-side
- * auto-approval decisions over request_permission and never reach this
- * overlay. A machine-level `DSH_PERMISSION_MODE` already present in the env
- * stays authoritative, mirroring the peer-tools overlay.
+ * (workspace-write). A session that never specified a mode (undefined) now
+ * also pins danger-full-access: HAPI-side auto-approval is the product
+ * default for DSH (user decision 2026-11-17) — the model must be able to
+ * install/enable its own plugins without every step hitting a permission
+ * card. The preset is read at process spawn only — DSH has no runtime mode
+ * RPC, so mid-session mode switches remain HAPI-side auto-approval decisions
+ * over request_permission and never reach this overlay. A machine-level
+ * `DSH_PERMISSION_MODE` already present in the env stays authoritative,
+ * mirroring the peer-tools overlay.
  */
 export function dshPermissionModeEnvOverlay(
     permissionMode: string | undefined,
@@ -70,7 +74,9 @@ export function dshPermissionModeEnvOverlay(
     const raw = env.DSH_PERMISSION_MODE
     if (raw !== undefined && raw !== '') return {}
     if (permissionMode === 'read-only') return { DSH_PERMISSION_MODE: 'read-only' }
-    if (permissionMode === 'yolo') return { DSH_PERMISSION_MODE: 'danger-full-access' }
+    if (permissionMode === undefined || permissionMode === 'yolo') {
+        return { DSH_PERMISSION_MODE: 'danger-full-access' }
+    }
     return {}
 }
 
