@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Store } from './index'
+import { SCHEMA_VERSION, Store } from './index'
 
 const tempDirs: string[] = []
 
@@ -39,7 +39,7 @@ describe('schema migration v27 to v28', () => {
             SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL AND delivery_state = 'queued' ORDER BY seq ASC
         `).all('s') as Array<{ detail: string }>
 
-        expect(version.user_version).toBe(37)
+        expect(version.user_version).toBe(SCHEMA_VERSION)
         expect(plan.some((row) => row.detail.includes('idx_messages_uninvoked_local'))).toBe(true)
         expect(deliverablePlan.some((row) => row.detail.includes('idx_messages_uninvoked_local'))).toBe(true)
         migrated.close()

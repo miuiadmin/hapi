@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { getUsageSummary } from '../sync/usageService'
-import { Store } from './index'
+import { SCHEMA_VERSION, Store } from './index'
 
 describe('Store V20->V21 migration: usage semantics re-index', () => {
     it('clears both derived tables, preserves messages, and lazily rebuilds idempotently', () => {
@@ -43,7 +43,7 @@ describe('Store V20->V21 migration: usage semantics re-index', () => {
             store = new Store(dbPath)
             const internalDb = (store as unknown as { db: Database }).db
             const count = (table: string): number => (internalDb.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count
-            expect((internalDb.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(37)
+            expect((internalDb.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
             expect(count('usage_events')).toBe(0)
             expect(count('usage_scan_state')).toBe(0)
             expect(store.messages.getMessages(session.id)).toHaveLength(1)

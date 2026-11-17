@@ -61,7 +61,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 38
+export const SCHEMA_VERSION: number = 38
 const REQUIRED_TABLES = [
     'sessions',
     'machines',

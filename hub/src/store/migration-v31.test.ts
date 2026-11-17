@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Store } from '.'
+import { SCHEMA_VERSION, Store } from '.'
 
 it('upgrades timestamp-era history to a read baseline exactly once', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hapi-read-migration-'))
@@ -52,7 +52,7 @@ it('creates and backfills search tables when upgrading a base v32 database', () 
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(37)
+            expect(version.user_version).toBe(SCHEMA_VERSION)
             expect(migrated.messages.searchContent('searchable', 'default')[0]?.sessionId).toBe(session.id)
         } finally { migrated.close() }
     } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
@@ -84,7 +84,7 @@ it('upgrades a genuine v26 schema without read-state or search table shortcuts',
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(37)
+            expect(version.user_version).toBe(SCHEMA_VERSION)
             expect(migrated.sessions.getSession(session.id)?.readState).toEqual({ readRevision: 0, manualUnread: false, version: 0 })
             migrated.messages.addMessage(session.id, {
                 role: 'user', content: { type: 'text', text: 'genuine v26 searchable text' }

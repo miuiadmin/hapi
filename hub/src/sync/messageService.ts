@@ -1232,7 +1232,9 @@ export class MessageService {
      * replays immediate queued messages.
      */
     private emitSessionWakeIfDisconnected(sessionId: string): void {
-        const room = this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)
+        // Optional chain: tests stub io without an adapter; without one there
+        // is no session room to inspect, so the wake emit is simply skipped.
+        const room = this.io.of('/cli').adapter?.rooms.get(`session:${sessionId}`)
         if (room && room.size > 0) {
             return
         }
