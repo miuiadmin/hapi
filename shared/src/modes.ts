@@ -265,6 +265,8 @@ type SteeringCapability = {
  * Steer = soft mid-turn delivery (same idea as Cursor GUI default "Send"):
  * - Pi: native steer over the Pi runtime (first-class since #1466)
  * - Codex: app-server `turn/steer` (true mid-turn inject)
+ * - DSH: concurrent ACP `session/prompt` soft-send into the running turn
+ *   (no cancel; the agent folds it in after the current step).
  * - OpenCode v1: concurrent ACP `session/prompt`; v2: durable REST inbox
  *   steering at a native step boundary. Both require live steeringActive.
  * - Cursor ACP: concurrent `session/prompt` soft-send (no cancel). Legacy
@@ -278,7 +280,7 @@ type SteeringCapability = {
  *
  * Others: not supported — UI hides Steer.
  */
-export const STEERING_SUPPORTED_FLAVORS = ['agy', 'claude', 'codex', 'cursor', 'opencode', 'pi'] as const
+export const STEERING_SUPPORTED_FLAVORS = ['agy', 'claude', 'codex', 'cursor', 'dsh', 'opencode', 'pi'] as const
 
 type SteeringFlavor = typeof STEERING_SUPPORTED_FLAVORS[number]
 
@@ -297,6 +299,9 @@ const STEERING_CAPABILITIES = {
             metadata.cursorSessionProtocol !== 'stream-json'
             && (Boolean(metadata.cursorSessionProtocol) || !metadata.cursorSessionId)
     },
+    // DSH only ever runs over ACP (no legacy transport fork), so the flavor
+    // alone admits it — no session-protocol restriction like Cursor's.
+    dsh: { activeTurnState: 'steeringActive' },
     opencode: { activeTurnState: 'steeringActive' },
     pi: { activeTurnState: 'thinking' }
 } satisfies Record<SteeringFlavor, SteeringCapability>

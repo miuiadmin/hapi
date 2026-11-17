@@ -2129,10 +2129,10 @@ export class SyncEngine {
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Claude, Pi, Codex, OpenCode, Antigravity,
-     * and Cursor ACP sessions; the CLI's handler is registered per flavor. Legacy
-     * stream-json Cursor sessions and other flavors are rejected by the
-     * capability gate.
+     * (native steer). Supported for Claude, Pi, Codex, DSH, OpenCode,
+     * Antigravity, and Cursor ACP sessions; the CLI's handler is registered
+     * per flavor. Legacy stream-json Cursor sessions and other flavors are
+     * rejected by the capability gate.
      */
     async steerQueuedMessage(
         sessionId: string,
@@ -2148,7 +2148,7 @@ export class SyncEngine {
             // the transport, a few seconds after spawn.
             const error = session.metadata?.flavor === 'agy'
                 ? 'Antigravity is not running on agy acp (yet); Steer is not available'
-                : 'Steering is only supported for Claude, Pi, Codex, OpenCode, Antigravity, and Cursor ACP sessions'
+                : 'Steering is only supported for Claude, Pi, Codex, DSH, OpenCode, Antigravity, and Cursor ACP sessions'
             return { status: 'failed', error, localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {

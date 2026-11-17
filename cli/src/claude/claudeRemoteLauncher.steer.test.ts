@@ -11,7 +11,18 @@ const harness = vi.hoisted(() => ({
     deliveries: [] as Array<(delivered: boolean) => void>,
     endTurn: null as (() => void) | null,
     signal: null as AbortSignal | null,
-    denyPendingForSteer: vi.fn()
+    denyPendingForSteer: vi.fn(),
+    // Scripted setSteerDeliveryState outcomes; each call shifts one, and an
+    // empty list answers true (the default success the happy path expects).
+    steerStateResults: [] as boolean[],
+    // When set, the next setSteerDeliveryState call awaits this promise first,
+    // exposing the window between persisting 'dispatching' and the write.
+    steerStateGate: null as Promise<void> | null,
+    // Make the steer target refuse the next write (target closed under it).
+    failNextSteer: false,
+    // Close the steer target without ending the turn, mirroring the real
+    // setSteerable(false) that fires at a result boundary mid-attempt.
+    pauseSteerTarget: null as (() => void) | null
 }))
 
 vi.mock('./claudeRemote', () => ({
@@ -20,19 +31,33 @@ vi.mock('./claudeRemote', () => ({
         if (!initial) return
         harness.signal = opts.signal
         let open = true
+        const closeTarget = () => {
+            if (!open) return
+            open = false
+            opts.onSteerTargetChange(null)
+        }
+        harness.pauseSteerTarget = closeTarget
         opts.onSteerTargetChange({
             steer: (message: string) => {
                 if (!open) return null
+                if (harness.failNextSteer) {
+                    harness.failNextSteer = false
+                    return null
+                }
                 harness.steered.push(message)
                 return { delivered: new Promise<boolean>((resolve) => harness.deliveries.push(resolve)) }
             }
         })
         await new Promise<void>((resolve) => {
-            harness.endTurn = resolve
-            opts.signal.addEventListener('abort', () => resolve(), { once: true })
+            harness.endTurn = () => {
+                closeTarget()
+                resolve()
+            }
+            opts.signal.addEventListener('abort', () => {
+                closeTarget()
+                resolve()
+            }, { once: true })
         })
-        open = false
-        opts.onSteerTargetChange(null)
         for (const resolve of harness.deliveries.splice(0)) resolve(false)
     }
 }))
@@ -92,7 +117,14 @@ function createClientStub() {
         updateAgentState: (mutator: (state: any) => any) => { agentState = mutator(agentState) },
         emitMessagesConsumed: vi.fn(),
         emitSteerIndeterminate: vi.fn(),
-        setSteerDeliveryState: vi.fn(async () => true),
+        setSteerDeliveryState: vi.fn(async () => {
+            if (harness.steerStateGate) {
+                const gate = harness.steerStateGate
+                harness.steerStateGate = null
+                await gate
+            }
+            return harness.steerStateResults.length > 0 ? harness.steerStateResults.shift()! : true
+        }),
         sendClaudeSessionMessage: () => {},
         sendSessionEvent: (_event: unknown) => {},
         sendAgentMessage: vi.fn(),
@@ -144,6 +176,10 @@ describe('claudeRemoteLauncher steer', () => {
         harness.endTurn = null
         harness.signal = null
         harness.denyPendingForSteer.mockClear()
+        harness.steerStateResults = []
+        harness.steerStateGate = null
+        harness.failNextSteer = false
+        harness.pauseSteerTarget = null
     })
 
     it('writes the queued row into the running turn and acks it once Claude picks it up', async () => {
@@ -227,6 +263,80 @@ describe('claudeRemoteLauncher steer', () => {
             await client.rpcHandlers.get(RPC_METHODS.Abort)!()
             await vi.waitFor(() => expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']))
             expect(queue.pendingLocalIds()).not.toContain('steer-1')
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-1'], { steered: true })
+        } finally {
+            await stop()
+        }
+    })
+
+    it('rejects a steer without a localId', async () => {
+        const { client, steer, stop } = await startTurn()
+        try {
+            await expect(client.rpcHandlers.get(RPC_METHODS.SteerQueuedMessage)!(undefined))
+                .resolves.toEqual({ steered: false, error: 'Missing localId' })
+            expect(harness.steered).toEqual([])
+        } finally {
+            await stop()
+        }
+    })
+
+    it('holds the row indeterminate when the dispatch state cannot be persisted', async () => {
+        const { client, queue, steer, stop } = await startTurn()
+        try {
+            queue.push('Also run lint', DEFAULT_MODE, 'steer-1')
+            harness.steerStateResults = [false]
+
+            await expect(steer('steer-1')).resolves.toEqual({ steered: false, error: 'Steer state is indeterminate' })
+            expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1'])
+            // The hub never learned about the dispatch, so the row must not
+            // replay on its own: it stays in the reservation map (outside the
+            // queue), awaiting explicit retry/cancel.
+            expect(queue.pendingLocalIds()).not.toContain('steer-1')
+            expect(client.setSteerDeliveryState).toHaveBeenCalledTimes(1)
+            expect(harness.steered).toEqual([])
+            expect(harness.denyPendingForSteer).not.toHaveBeenCalled()
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-1'], { steered: true })
+        } finally {
+            await stop()
+        }
+    })
+
+    it('restores the row when the turn stops being steerable while the dispatch state is in flight', async () => {
+        const { client, queue, steer, stop } = await startTurn()
+        try {
+            queue.push('Also run lint', DEFAULT_MODE, 'steer-1')
+            let releaseState!: () => void
+            harness.steerStateGate = new Promise<void>((resolve) => { releaseState = resolve })
+
+            const pending = steer('steer-1')
+            await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalled())
+            // The turn hits a result boundary while 'dispatching' is still
+            // being persisted: the target closes but the attempt lives on.
+            harness.pauseSteerTarget!()
+            await vi.waitFor(() => expect(client.agentState().steeringActive).toBe(false))
+            releaseState()
+
+            await expect(pending).resolves.toEqual({ steered: false, error: 'Active turn changed' })
+            expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued')
+            expect(queue.pendingLocalIds()).toContain('steer-1')
+            expect(harness.steered).toEqual([])
+            expect(harness.denyPendingForSteer).not.toHaveBeenCalled()
+        } finally {
+            await stop()
+        }
+    })
+
+    it('requeues the row and drops its echo note when the target refuses the write', async () => {
+        const { client, queue, steer, stop } = await startTurn()
+        try {
+            queue.push('Also run lint', DEFAULT_MODE, 'steer-1')
+            harness.failNextSteer = true
+
+            await expect(steer('steer-1')).resolves.toEqual({ steered: false, error: 'Active turn changed' })
+            expect(client.discardPendingHubPromptEcho).toHaveBeenCalledWith('steer-1')
+            expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued')
+            expect(queue.pendingLocalIds()).toContain('steer-1')
+            expect(harness.denyPendingForSteer).not.toHaveBeenCalled()
             expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-1'], { steered: true })
         } finally {
             await stop()

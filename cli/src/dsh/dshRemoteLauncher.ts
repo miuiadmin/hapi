@@ -44,6 +44,10 @@ type DshModelsReadiness = {
     settled: boolean
 }
 
+/** Bounded wait for in-flight soft steers to settle during an abort (same
+ * budget as the Cursor ACP abort drain). */
+const DSH_ABORT_DRAIN_TIMEOUT_MS = 5_000
+
 export class DshRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createDshBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
@@ -78,6 +82,24 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private happyServer: { stop: () => void } | null = null
     /** ACP form of the hapi MCP bridge servers (name/command/args/env). */
     private acpMcpServers: McpServerStdio[] = []
+    /** True while the main loop's backend.prompt is dispatching/running — the
+     * steer RPC's gate for "an active turn exists to inject into". Cleared by
+     * the turn's finally, handleAbort, and cleanup, so every exit path
+     * (including thrown ones) turns the Steer button off. */
+    private promptInFlight = false
+    /** Mode hash of the batch driving the in-flight turn. A soft steer must
+     * carry the same hash: image-carrying rows and rows queued under another
+     * model/effort preference hash differently and are refused instead of
+     * being injected into a differently-configured turn. */
+    private activePromptModeHash: string | null = null
+    /** Settled-ness of every in-flight soft steer. The turn's finally drains
+     * them (racing the steer-abort signal) so ready and the next prompt never
+     * cross an inject that is still running on the shared ACP session. */
+    private softSteerWaiters: Promise<void>[] = []
+    /** Aborted and replaced alongside the main controller in handleAbort:
+     * releases the turn finally's soft-steer wait, which must not outrun the
+     * force-settled waiters an abort drops. */
+    private steerWaitAbort = new AbortController()
 
     constructor(
         private readonly session: DshSession,
@@ -187,6 +209,167 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         })
         this.happyServer = happyServer
         this.acpMcpServers = toAcpMcpServers(mcpServers)
+
+        // Soft steer = fire a concurrent session/prompt without canceling the
+        // in-flight turn (mirror of the Cursor ACP steer). The row leaves the
+        // queue through the reservation protocol; dispatch only proves stdin
+        // accepted the inject, so the RPC acks early (the hub Steer RPC has a
+        // 30s timeout the completion would blow through) and the row commits
+        // when the concurrent prompt settles. Abort stays the hard stop path.
+        this.session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => {
+                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+                    ? (payload as { localId: string }).localId
+                    : ''
+                if (!localId) {
+                    return { steered: false, error: 'Missing localId' }
+                }
+                const backend = this.backend
+                const acpSessionId = this.acpSessionId
+                // Covers every non-busy shape: turn idle, bridge
+                // (re)building, the respawn window (backend nulled), and the
+                // post-abort session-ended window before the resume branch
+                // recreates the session.
+                if (!this.promptInFlight || !acpSessionId || !backend || this.acpSessionEnded) {
+                    return { steered: false, error: 'No active steerable turn' }
+                }
+                const targetPromptGeneration = backend.getPromptGeneration()
+                const taken = this.session.queue.takeByLocalId(localId)
+                if (!taken) {
+                    return { steered: false, error: 'Message not in queue' }
+                }
+                // Steer is text-only (same semantics as Cursor): a queued row
+                // with images, or one carrying a different model/effort
+                // preference than the running turn, hashes differently and is
+                // restored instead of being folded into the wrong turn.
+                if (this.activePromptModeHash !== taken.item.modeHash) {
+                    this.session.queue.restoreReservation(taken)
+                    return { steered: false, error: 'Queued message mode differs from the active turn' }
+                }
+
+                if (!this.session.queue.beginReservationDispatch(taken)) {
+                    return { steered: false, error: 'Steer cancelled' }
+                }
+                const dispatchStatePersisted = await this.session.client.setSteerDeliveryState([localId], 'dispatching')
+                if (!dispatchStatePersisted) {
+                    this.session.queue.markReservationIndeterminate(taken)
+                    this.session.client.emitSteerIndeterminate([localId])
+                    return { steered: false, error: 'Steer state is indeterminate' }
+                }
+                const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (!taken.originIndeterminate) {
+                        const persisted = await this.session.client.setSteerDeliveryState([localId], 'queued')
+                        if (!persisted) {
+                            this.session.queue.markReservationIndeterminate(taken)
+                            this.session.client.emitSteerIndeterminate([localId])
+                            return false
+                        }
+                    }
+                    if (taken.state !== 'dispatching' || !this.session.queue.restoreReservation(taken)) {
+                        this.session.client.emitSteerIndeterminate([localId])
+                        return false
+                    }
+                    return true
+                }
+                if (taken.state !== 'dispatching') {
+                    this.session.client.emitSteerIndeterminate([localId])
+                    return { steered: false, error: 'Steer cancelled' }
+                }
+                // Re-check after the persist await: a respawn (backend and
+                // session id swap) or a turn change (generation bump) must
+                // not steer into a replaced turn.
+                if (!this.promptInFlight
+                    || this.backend !== backend
+                    || this.acpSessionId !== acpSessionId
+                    || backend.getPromptGeneration() !== targetPromptGeneration) {
+                    await restoreQueuedReservation()
+                    return { steered: false, error: 'Active turn changed' }
+                }
+                let steer: { dispatched: Promise<void>; completed: Promise<string | null> }
+                try {
+                    steer = backend.beginSoftSteerPrompt(acpSessionId, [{
+                        type: 'text',
+                        text: taken.item.message
+                    }])
+                } catch (error) {
+                    if (isAcpIndeterminateError(error)) {
+                        if (this.session.queue.markReservationIndeterminate(taken)) {
+                            this.session.client.emitSteerIndeterminate([localId])
+                        }
+                        logger.debug('[dsh-acp] soft-steer dispatch outcome unknown', error)
+                        return { steered: false, error: 'Steer outcome is being reconciled' }
+                    }
+                    logger.debug('[dsh-acp] soft-steer failed to start', error)
+                    await restoreQueuedReservation()
+                    return { steered: false, error: 'Failed to soft-steer into active turn' }
+                }
+                // Completion gates the next prompt (handler swap safety):
+                // register the waiter before awaiting dispatch so the main
+                // loop's finally cannot slip a prompt in between.
+                const steerDone = Promise.all([steer.dispatched, steer.completed]).then(() => {}, (error) => {
+                    logger.debug('[dsh-acp] soft-steer completion failed after dispatch', error)
+                })
+                this.softSteerWaiters.push(steerDone)
+                const removeWaiter = () => {
+                    this.softSteerWaiters = this.softSteerWaiters.filter((p) => p !== steerDone)
+                }
+                void steerDone.then(removeWaiter)
+                try {
+                    await steer.dispatched
+                } catch (error) {
+                    if (isAcpIndeterminateError(error)) {
+                        if (this.session.queue.markReservationIndeterminate(taken)) {
+                            this.session.client.emitSteerIndeterminate([localId])
+                        }
+                        logger.debug('[dsh-acp] soft-steer dispatch outcome unknown', error)
+                        return { steered: false, error: 'Steer outcome is being reconciled' }
+                    }
+                    await restoreQueuedReservation()
+                    logger.debug('[dsh-acp] soft-steer failed to start', error)
+                    return { steered: false, error: 'Failed to soft-steer into active turn' }
+                }
+                // The RPC acks once stdin accepted the inject. The queue row
+                // commits only when the concurrent prompt settles: an abort
+                // answers an unfinished soft steer with `cancelled` (hold the
+                // row for explicit Retry/Cancel), an explicit JSON-RPC
+                // rejection means ACP never accepted the instruction (restore
+                // it for the next prompt), and a transport failure keeps the
+                // row reserved — never re-delivered.
+                void steer.completed.then((stopReason) => {
+                    if (stopReason === 'cancelled') {
+                        if (this.session.queue.markReservationIndeterminate(taken)) {
+                            this.session.client.emitSteerIndeterminate([localId])
+                        }
+                        return
+                    }
+                    // Completion means ACP accepted the inject: the ACK must
+                    // reach the hub even when an abort reset the queue and
+                    // cancelled the reservation in between.
+                    this.session.queue.commitReservation(taken)
+                    this.messageBuffer.addMessage(taken.item.message, 'user')
+                    this.session.client.emitMessagesConsumed([localId], { steered: true })
+                }, (error) => {
+                    if (isAcpIndeterminateError(error)) {
+                        // Do not leave the reservation dispatching forever.
+                        // Hold it outside automatic replay and persist the
+                        // ambiguous outcome; a later explicit Steer retries
+                        // this same row.
+                        if (this.session.queue.markReservationIndeterminate(taken)) {
+                            this.session.client.emitSteerIndeterminate([localId])
+                        }
+                        logger.debug('[dsh-acp] soft-steer outcome unknown after dispatch; row held for explicit resolution', error)
+                        return
+                    }
+                    void restoreQueuedReservation().then((restored) => {
+                        if (restored) {
+                            logger.debug('[dsh-acp] soft-steer rejected by ACP; row restored', error)
+                        }
+                    })
+                })
+                return { steered: true }
+            }
+        )
 
         await this.establishBackend({ respawn: false })
 
@@ -440,117 +623,169 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             }
 
             this.session.onThinkingChange(true)
-            this.messageBuffer.addMessage(batch.message, 'user')
-            // Image attachments are read once here (authorized per session)
-            // and the built content is reused verbatim by the respawn retry,
-            // so a reconnect never re-reads or re-orders the batch's images.
-            // Per-image failures are handled inside (status notice + skip);
-            // this guard only catches unexpected preparation errors so they
-            // degrade to a text-only turn instead of killing the loop.
-            let prompt: PromptContent[]
+            // Captured per turn: handleAbort aborts and REPLACES
+            // steerWaitAbort, so reading the live field in the finally
+            // below would see the (never-aborted) replacement — the same
+            // stale-signal trap the loop's queue signal documents.
+            const turnSteerWaitSignal = this.steerWaitAbort.signal
+            // The steer window opens with the turn: the hub Steer button
+            // (non-pi flavors) keys off steeringActive, and the queued-row
+            // mode guard needs the driving batch's hash.
+            this.promptInFlight = true
+            this.session.client.updateAgentState((state) => ({ ...state, steeringActive: true }))
+            this.activePromptModeHash = batch.hash
             try {
-                prompt = await buildDshPromptContent(
-                    backend,
-                    batch.message,
-                    batch.mode.imageAttachments,
-                    {
-                        sessionId: this.session.client.sessionId,
-                        onNotice: (message) => this.session.sendSessionEvent({ type: 'message', message })
+                this.messageBuffer.addMessage(batch.message, 'user')
+                // Image attachments are read once here (authorized per session)
+                // and the built content is reused verbatim by the respawn retry,
+                // so a reconnect never re-reads or re-orders the batch's images.
+                // Per-image failures are handled inside (status notice + skip);
+                // this guard only catches unexpected preparation errors so they
+                // degrade to a text-only turn instead of killing the loop.
+                let prompt: PromptContent[]
+                try {
+                    prompt = await buildDshPromptContent(
+                        backend,
+                        batch.message,
+                        batch.mode.imageAttachments,
+                        {
+                            sessionId: this.session.client.sessionId,
+                            onNotice: (message) => this.session.sendSessionEvent({ type: 'message', message })
+                        }
+                    )
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[dsh-acp] prompt preparation failed', { message })
+                    prompt = [{ type: 'text', text: batch.message }]
+                }
+                if (generationAtDequeue !== this.abortGeneration) {
+                    // A user stop landed while the prompt content was being
+                    // prepared (image reads await): the user already saw
+                    // 'Session aborted' and the queue was reset, so the
+                    // already-dequeued batch must not run (same contract as the
+                    // reconnect windows). The finally below performs the
+                    // thinking-off / permission / ready cleanup.
+                    this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
+                    continue
+                }
+                let failureMessage: string | null = null
+                try {
+                    await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[dsh-acp] prompt failed', { message })
+                    // isAcpIndeterminateError is the transport's own typed marker
+                    // for failures whose request never reached a JSON-RPC outcome
+                    // (child exited, transport closed, stdin write failed). For
+                    // session/prompt — which carries an infinite timeout — that
+                    // marker means exactly one thing: the dsh child process died
+                    // and the closed transport would fail every later request the
+                    // same way. Regular JSON-RPC rejections (unknown session,
+                    // etc.) do not carry it and keep the surface-and-continue
+                    // behavior.
+                    if (isAcpIndeterminateError(error) && !this.shouldExit) {
+                        // A soft steer dispatched on this dying backend must
+                        // settle before the respawn swaps handlers: its
+                        // completion rejects on the closed transport and the
+                        // row is held or restored — draining here is bounded
+                        // because every steer waiter settles on rejection.
+                        if (this.softSteerWaiters.length > 0) {
+                            await Promise.allSettled([...this.softSteerWaiters])
+                            this.softSteerWaiters = []
+                        }
+                        // Rebuild the backend, resume the pinned dshSessionId on a
+                        // fresh child, re-apply the live model, and retry THIS
+                        // batch exactly once; a failure here surfaces and falls
+                        // through — the loop stays alive and the next message
+                        // attempts a fresh respawn.
+                        let revived = false
+                        try {
+                            await this.respawnBackend()
+                            revived = true
+                        } catch (respawnError) {
+                            const reconnectMessage = respawnError instanceof Error ? respawnError.message : String(respawnError)
+                            logger.warn('[dsh-acp] reconnect failed', { message: reconnectMessage })
+                            failureMessage = `DSH reconnect failed: ${reconnectMessage}`
+                        }
+                        if (revived) {
+                            if (generationAtDequeue !== this.abortGeneration) {
+                                // A user stop landed while the replacement backend
+                                // was being established: the user already saw
+                                // 'Session aborted' and the queue was reset, so
+                                // the retried batch must not run.
+                                this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
+                            } else {
+                                try {
+                                    await this.backend!.prompt(this.acpSessionId!, prompt, (message) => this.handleAgentMessage(message))
+                                } catch (retryError) {
+                                    const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
+                                    logger.warn('[dsh-acp] prompt failed after reconnect', { message: retryMessage })
+                                    failureMessage = `DSH prompt failed after reconnect: ${retryMessage}`
+                                }
+                            }
+                        }
+                    } else if (this.cancelSinceEstablishment && isSessionGoneRejection(message)) {
+                        // Implicit session-end detection. The official dsh server
+                        // keeps the session alive across session/cancel, but
+                        // custom wrappers (HAPI_DSH_ACP_COMMAND) may CLOSE the
+                        // session on the notification without exiting — and in
+                        // standard cancel mode there is no event for that (the
+                        // close-path listener below never fires), so every later
+                        // prompt would fail forever on the dead session. The
+                        // terminal unknown/expired-session rejection IS the
+                        // observable signal: mark the session ended so the next
+                        // loop iteration re-enters the resume branch (resume the
+                        // stored id, or start fresh when it no longer resumes).
+                        this.acpSessionEnded = true
+                        this.messageBuffer.addMessage('DSH session ended by the earlier cancel; it will be restarted for the next message', 'status')
+                        failureMessage = `DSH prompt failed (session closed by the earlier cancel; restarting it for the next message): ${message}`
+                    } else {
+                        failureMessage = `DSH prompt failed: ${message}`
                     }
-                )
-            } catch (error) {
-                const message = error instanceof Error ? error.message : String(error)
-                logger.warn('[dsh-acp] prompt preparation failed', { message })
-                prompt = [{ type: 'text', text: batch.message }]
-            }
-            if (generationAtDequeue !== this.abortGeneration) {
-                // A user stop landed while the prompt content was being
-                // prepared (image reads await): the user already saw
-                // 'Session aborted' and the queue was reset, so the
-                // already-dequeued batch must not run (same contract as the
-                // reconnect windows).
-                this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
+                }
+                if (failureMessage !== null) {
+                    this.session.sendSessionEvent({ type: 'message', message: failureMessage })
+                    this.messageBuffer.addMessage(failureMessage, 'status')
+                }
+            } finally {
+                // Every exit path (normal completion, surfaced failure,
+                // aborted-during-prep continue, thrown error) closes the
+                // steer window and runs the standard turn teardown.
+                this.promptInFlight = false
+                this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }))
+                // Soft steers share the ACP session; wait for them before
+                // ready / the next prompt so message handlers are not swapped
+                // mid-inject. handleAbort force-settles and drops the
+                // waiters, so this wait races the steer-abort signal: turn
+                // teardown must never block on a completion an abort already
+                // cancelled (and may never answer).
+                if (this.softSteerWaiters.length > 0 && !this.shouldExit) {
+                    const waitSignal = turnSteerWaitSignal
+                    // An abort that fired before this wait started already
+                    // force-settled (and dropped) the waiters — a late turn
+                    // finally must not then block on a completion the abort
+                    // cut off (and that may never answer).
+                    if (!waitSignal.aborted) {
+                        let releaseWait!: () => void
+                        const abortListener = () => releaseWait()
+                        waitSignal.addEventListener('abort', abortListener, { once: true })
+                        try {
+                            await Promise.race([
+                                Promise.allSettled([...this.softSteerWaiters]),
+                                new Promise<void>((resolve) => { releaseWait = resolve })
+                            ])
+                        } finally {
+                            waitSignal.removeEventListener('abort', abortListener)
+                        }
+                    }
+                    this.softSteerWaiters = []
+                }
+                this.activePromptModeHash = null
                 this.session.onThinkingChange(false)
                 await this.permissionHandler?.cancelAll('Prompt finished')
                 if (this.session.queue.size() === 0 && !this.shouldExit) {
                     this.session.sendSessionEvent({ type: 'ready' })
                 }
-                continue
-            }
-            let failureMessage: string | null = null
-            try {
-                await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
-            } catch (error) {
-                const message = error instanceof Error ? error.message : String(error)
-                logger.warn('[dsh-acp] prompt failed', { message })
-                // isAcpIndeterminateError is the transport's own typed marker
-                // for failures whose request never reached a JSON-RPC outcome
-                // (child exited, transport closed, stdin write failed). For
-                // session/prompt — which carries an infinite timeout — that
-                // marker means exactly one thing: the dsh child process died
-                // and the closed transport would fail every later request the
-                // same way. Regular JSON-RPC rejections (unknown session,
-                // etc.) do not carry it and keep the surface-and-continue
-                // behavior.
-                if (isAcpIndeterminateError(error) && !this.shouldExit) {
-                    // Rebuild the backend, resume the pinned dshSessionId on a
-                    // fresh child, re-apply the live model, and retry THIS
-                    // batch exactly once; a failure here surfaces and falls
-                    // through — the loop stays alive and the next message
-                    // attempts a fresh respawn.
-                    let revived = false
-                    try {
-                        await this.respawnBackend()
-                        revived = true
-                    } catch (respawnError) {
-                        const reconnectMessage = respawnError instanceof Error ? respawnError.message : String(respawnError)
-                        logger.warn('[dsh-acp] reconnect failed', { message: reconnectMessage })
-                        failureMessage = `DSH reconnect failed: ${reconnectMessage}`
-                    }
-                    if (revived) {
-                        if (generationAtDequeue !== this.abortGeneration) {
-                            // A user stop landed while the replacement backend
-                            // was being established: the user already saw
-                            // 'Session aborted' and the queue was reset, so
-                            // the retried batch must not run.
-                            this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
-                        } else {
-                            try {
-                                await this.backend!.prompt(this.acpSessionId!, prompt, (message) => this.handleAgentMessage(message))
-                            } catch (retryError) {
-                                const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
-                                logger.warn('[dsh-acp] prompt failed after reconnect', { message: retryMessage })
-                                failureMessage = `DSH prompt failed after reconnect: ${retryMessage}`
-                            }
-                        }
-                    }
-                } else if (this.cancelSinceEstablishment && isSessionGoneRejection(message)) {
-                    // Implicit session-end detection. The official dsh server
-                    // keeps the session alive across session/cancel, but
-                    // custom wrappers (HAPI_DSH_ACP_COMMAND) may CLOSE the
-                    // session on the notification without exiting — and in
-                    // standard cancel mode there is no event for that (the
-                    // close-path listener below never fires), so every later
-                    // prompt would fail forever on the dead session. The
-                    // terminal unknown/expired-session rejection IS the
-                    // observable signal: mark the session ended so the next
-                    // loop iteration re-enters the resume branch (resume the
-                    // stored id, or start fresh when it no longer resumes).
-                    this.acpSessionEnded = true
-                    this.messageBuffer.addMessage('DSH session ended by the earlier cancel; it will be restarted for the next message', 'status')
-                    failureMessage = `DSH prompt failed (session closed by the earlier cancel; restarting it for the next message): ${message}`
-                } else {
-                    failureMessage = `DSH prompt failed: ${message}`
-                }
-            }
-            if (failureMessage !== null) {
-                this.session.sendSessionEvent({ type: 'message', message: failureMessage })
-                this.messageBuffer.addMessage(failureMessage, 'status')
-            }
-            this.session.onThinkingChange(false)
-            await this.permissionHandler?.cancelAll('Prompt finished')
-            if (this.session.queue.size() === 0 && !this.shouldExit) {
-                this.session.sendSessionEvent({ type: 'ready' })
             }
         }
     }
@@ -842,6 +1077,16 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager)
+        // clearAbortHandlers re-registers no-op Abort/Switch stubs; Steer
+        // needs the same treatment so a late hub Steer fails fast instead of
+        // hitting an unregistered-method error (or worse, a stale closure).
+        this.session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async () => ({ steered: false, error: 'Session ending' })
+        )
+        this.promptInFlight = false
+        this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }))
+        this.softSteerWaiters = []
         await this.permissionHandler?.cancelAll('Session ended')
         this.permissionHandler = null
         await this.backend?.disconnect()
@@ -1022,7 +1267,15 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         // aborted one.
         this.abortController.abort()
         this.abortController = new AbortController()
-        this.session.queue.reset()
+        // Release the turn finally's soft-steer wait alongside the main
+        // controller swap: teardown must not wait on completions the abort
+        // below force-settles (or that may never answer).
+        this.steerWaitAbort.abort()
+        this.steerWaitAbort = new AbortController()
+        // Preserve dispatching reservations: a soft steer may still settle
+        // after the abort (its completion commits or holds the row), so only
+        // plain queued rows are cancelled here.
+        this.session.queue.reset({ preserveDispatchingReservations: true })
         // Record the abort synchronously: the main loop awaits
         // abortCompletion before dequeuing the next message. Also arm the
         // implicit-end detector: this cancel may (on a custom wrapper) close
@@ -1035,6 +1288,12 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
         this.session.onThinkingChange(false)
         this.messageBuffer.addMessage('Turn aborted', 'status')
+        // Abort is the hard stop for the steer window too: close the button
+        // and drop the waiters even if the turn's finally has not run yet —
+        // they were drained (bounded) inside the close above.
+        this.promptInFlight = false
+        this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }))
+        this.softSteerWaiters = []
     }
 
     private async closeSessionForAbort(): Promise<void> {
@@ -1042,7 +1301,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         // replacement; mid-respawn it is null and the skip is correct (the
         // dead transport cannot accept a cancel anyway).
         if (this.backend && this.session.sessionId) {
-            await this.backend.cancelPrompt(this.session.sessionId)
+            const backend = this.backend
+            const pendingSoftSteers = [...this.softSteerWaiters]
+            await backend.cancelPrompt(this.session.sessionId)
             // On the close-fallback path the onSessionClosedByCancel listener
             // owns acpSessionEnded. On the standard session/cancel path the
             // official server keeps the session alive (verified against dsh
@@ -1050,6 +1311,33 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // only through the next prompt's terminal session-gone rejection,
             // which the prompt catch in runMainLoop detects (the
             // cancelSinceEstablishment flag armed by the caller).
+            // Soft steers share the cancelled session: force-settle their
+            // backend bookkeeping so the transport can serve the next turn,
+            // then wait a bounded window for their completions (their
+            // callbacks commit or hold the reserved rows). A cancelled
+            // concurrent prompt answers stopReason 'cancelled' — that row
+            // goes indeterminate for explicit Retry/Cancel; a server that
+            // never answers is cut off at the timeout and the launcher ends
+            // rather than letting late ACP updates cross the turn boundary.
+            backend.abortSoftSteers()
+            if (pendingSoftSteers.length > 0 && !this.shouldExit) {
+                let timeout: ReturnType<typeof setTimeout> | null = null
+                const drained = await Promise.race([
+                    Promise.all([
+                        backend.waitForResponseComplete(),
+                        Promise.allSettled(pendingSoftSteers)
+                    ]).then(() => true),
+                    new Promise<boolean>((resolve) => {
+                        timeout = setTimeout(() => resolve(false), DSH_ABORT_DRAIN_TIMEOUT_MS)
+                        timeout.unref?.()
+                    })
+                ])
+                if (timeout) clearTimeout(timeout)
+                if (!drained) {
+                    logger.warn('[dsh-acp] soft-steer abort drain timed out; ending session to isolate late ACP updates')
+                    this.shouldExit = true
+                }
+            }
         }
     }
 

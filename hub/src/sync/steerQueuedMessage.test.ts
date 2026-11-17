@@ -40,7 +40,7 @@ describe('SyncEngine.steerQueuedMessage', () => {
         }
     })
 
-    it.each(['opencode', 'claude'] as const)('routes a remote %s correction using its original localId', async (flavor) => {
+    it.each(['opencode', 'claude', 'dsh'] as const)('routes a remote %s correction using its original localId', async (flavor) => {
         const { store, engine } = createEngine()
         const steer = spyOn(RpcGateway.prototype, 'steerQueuedMessage').mockResolvedValue({ steered: true })
         try {
@@ -202,7 +202,7 @@ describe('SyncEngine.steerQueuedMessage', () => {
 
             expect(result).toEqual({
                 status: 'failed',
-                error: 'Steering is only supported for Claude, Pi, Codex, OpenCode, Antigravity, and Cursor ACP sessions',
+                error: 'Steering is only supported for Claude, Pi, Codex, DSH, OpenCode, Antigravity, and Cursor ACP sessions',
                 localId: null
             })
         } finally {

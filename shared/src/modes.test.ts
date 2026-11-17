@@ -177,10 +177,11 @@ describe('claude auto permission mode', () => {
 })
 
 describe('isSteeringSupportedForFlavor', () => {
-    it('supports agy, claude, codex, cursor, opencode and pi', () => {
+    it('supports agy, claude, codex, cursor, dsh, opencode and pi', () => {
         expect(isSteeringSupportedForFlavor('agy')).toBe(true)
         expect(isSteeringSupportedForFlavor('codex')).toBe(true)
         expect(isSteeringSupportedForFlavor('cursor')).toBe(true)
+        expect(isSteeringSupportedForFlavor('dsh')).toBe(true)
         expect(isSteeringSupportedForFlavor('opencode')).toBe(true)
         expect(isSteeringSupportedForFlavor('pi')).toBe(true)
         expect(isSteeringSupportedForFlavor('claude')).toBe(true)
@@ -191,9 +192,10 @@ describe('isSteeringSupportedForFlavor', () => {
 })
 
 describe('isSteeringSupportedForSession', () => {
-    it('supports agy, claude, codex, opencode and pi sessions', () => {
+    it('supports agy, claude, codex, dsh, opencode and pi sessions', () => {
         expect(isSteeringSupportedForSession({ flavor: 'agy', agyProtocol: 'acp' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'codex' })).toBe(true)
+        expect(isSteeringSupportedForSession({ flavor: 'dsh' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'opencode' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'pi' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'claude' })).toBe(true)
@@ -233,7 +235,7 @@ describe('isSteeringSupportedForSession', () => {
 })
 
 describe('hasActiveSteeringTurn', () => {
-    it.each(['claude', 'codex', 'cursor', 'opencode'])('uses steeringActive rather than thinking for %s', (flavor) => {
+    it.each(['claude', 'codex', 'cursor', 'dsh', 'opencode'])('uses steeringActive rather than thinking for %s', (flavor) => {
         expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: false,
             agentState: { steeringActive: true } })).toBe(true)
         expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: true,
@@ -275,7 +277,8 @@ describe('steering support table', () => {
     type Metadata = { flavor?: string | null; cursorSessionId?: string | null; cursorSessionProtocol?: 'acp' | 'stream-json' | null; agyProtocol?: 'acp' | null }
     function referenceSupportsSession(metadata?: Metadata | null): boolean {
         if (metadata?.flavor === 'claude' || metadata?.flavor === 'codex'
-            || metadata?.flavor === 'opencode' || metadata?.flavor === 'pi') return true
+            || metadata?.flavor === 'dsh' || metadata?.flavor === 'opencode'
+            || metadata?.flavor === 'pi') return true
         if (metadata?.flavor === 'agy') return metadata.agyProtocol === 'acp'
         if (metadata?.flavor !== 'cursor') return false
         if (metadata.cursorSessionProtocol === 'stream-json') return false
@@ -284,7 +287,7 @@ describe('steering support table', () => {
     }
 
     const flavors = [
-        'claude', 'codex', 'cursor', 'opencode', 'pi', 'gemini', 'agy', 'unknown', '',
+        'claude', 'codex', 'cursor', 'dsh', 'opencode', 'pi', 'gemini', 'agy', 'unknown', '',
         '__proto__', 'constructor', 'toString', null, undefined,
     ]
     const cursorShapes: Array<Pick<Metadata, 'cursorSessionId' | 'cursorSessionProtocol' | 'agyProtocol'>> = [

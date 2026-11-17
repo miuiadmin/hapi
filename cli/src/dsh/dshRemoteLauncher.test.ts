@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { RPC_METHODS } from '@hapi/protocol'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { DshMode } from './types'
 
@@ -73,7 +74,21 @@ const harness = vi.hoisted(() => ({
     // Mirrors the backend's advertised promptCapabilities.image gate.
     supportsImages: false,
     // Recorded by the buildDshPromptContent mock.
-    promptContentInputs: [] as Array<{ text: string; images: unknown[] | undefined }>
+    promptContentInputs: [] as Array<{ text: string; images: unknown[] | undefined }>,
+    // ---- soft steer (mirror of the Cursor ACP steer harness) ----
+    // Recorded by the beginSoftSteerPrompt mock.
+    softSteerCalls: [] as Array<{ sessionId: string; content: unknown[] }>,
+    // When set, the mocked steer dispatch rejects with this error.
+    softSteerDispatchError: null as Error | null,
+    // When set, the mocked steer dispatch parks on this promise first.
+    deferSoftSteerDispatch: null as Promise<void> | null,
+    // When set, the mocked steer completion settles with this promise (a
+    // never-settling one simulates a server that never answers).
+    deferSoftSteerCompletion: null as Promise<string | null> | null,
+    /** Mirrors AcpSdkBackend.promptGeneration for the active-turn re-check. */
+    promptGeneration: 0,
+    // When set, the mocked setSteerDeliveryState returns this instead of true.
+    steerDeliveryPersisted: null as boolean | null
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -99,6 +114,10 @@ vi.mock('./utils/dshBackend', () => ({
                 return `dsh-session-${harness.newSessionCalls.length}`
             }),
             prompt: vi.fn(async (sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
+                // Real AcpSdkBackend bumps the generation when a prompt
+                // installs its handler; the steer RPC's active-turn re-check
+                // relies on that bump between turns.
+                harness.promptGeneration += 1
                 harness.promptSessionIds.push(sessionId)
                 harness.prompts.push(content)
                 if (harness.promptBlocker) {
@@ -113,6 +132,18 @@ vi.mock('./utils/dshBackend', () => ({
                     onUpdate({ type: 'turn_complete', stopReason: harness.promptStopReason })
                 }
             }),
+            getPromptGeneration: vi.fn(() => harness.promptGeneration),
+            beginSoftSteerPrompt: vi.fn((sessionId: string, content: unknown[]) => {
+                harness.softSteerCalls.push({ sessionId, content })
+                return {
+                    dispatched: harness.softSteerDispatchError
+                        ? Promise.reject(harness.softSteerDispatchError)
+                        : (harness.deferSoftSteerDispatch ?? Promise.resolve()),
+                    completed: harness.deferSoftSteerCompletion ?? Promise.resolve(null)
+                }
+            }),
+            abortSoftSteers: vi.fn(),
+            waitForResponseComplete: vi.fn(async () => {}),
             cancelPrompt: vi.fn(async () => {
                 if (harness.supportsCancel) return
                 if (harness.cancelBlocker) {
@@ -245,13 +276,26 @@ function createQueue() {
 }
 
 function createSession(queue = createQueue(), sessionId: string | null = null) {
+    // Registered RPC handlers keyed by method — lets steer/abort tests invoke
+    // the real registration path (mirrors the Cursor ACP harness).
+    const handlers = new Map<string, (payload?: unknown) => Promise<unknown>>()
     const session = {
         path: '/tmp/dsh-test',
         logPath: '/tmp/dsh-test/hapi.log',
+        handlers,
         client: {
-            rpcHandlerManager: { registerHandler: vi.fn() },
+            rpcHandlerManager: {
+                handlers,
+                registerHandler: vi.fn((method: string, handler: (payload?: unknown) => Promise<unknown>) => {
+                    handlers.set(method, handler)
+                })
+            },
             updateMetadata: vi.fn((fn: (metadata: unknown) => unknown) => fn({})),
-            flushMetadata: vi.fn(async () => true)
+            flushMetadata: vi.fn(async () => true),
+            updateAgentState: vi.fn((fn: (state: unknown) => unknown) => fn({})),
+            emitMessagesConsumed: vi.fn(),
+            emitSteerIndeterminate: vi.fn(),
+            setSteerDeliveryState: vi.fn(async () => harness.steerDeliveryPersisted ?? true)
         },
         queue,
         sessionId,
@@ -282,6 +326,26 @@ function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: 
 
 function createSessionWithMode(mode?: DshMode) {
     return createSessionWithBatches([['first', mode ?? {}]])
+}
+
+/** Launch with one in-flight turn: prompt 1 parks on `promptBlocker` and the
+ *  queue stays open, so steer tests operate inside a live turn window and
+ *  decide when the turn (and the launcher) settle. */
+async function launchWithParkedTurn() {
+    let releasePrompt!: () => void
+    harness.promptBlocker = new Promise((resolve) => { releasePrompt = resolve })
+    const session = createSession()
+    session.queue.push('first', {}, 'first')
+    const done = new DshRemoteLauncher(session as never).launch()
+    await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+    return {
+        session,
+        done,
+        releasePrompt: () => {
+            harness.promptBlocker = null
+            releasePrompt()
+        }
+    }
 }
 
 describe('DshRemoteLauncher', () => {
@@ -320,6 +384,12 @@ describe('DshRemoteLauncher', () => {
         harness.setConfigOptionErrorQueue = []
         harness.supportsImages = false
         harness.promptContentInputs = []
+        harness.softSteerCalls = []
+        harness.softSteerDispatchError = null
+        harness.deferSoftSteerDispatch = null
+        harness.deferSoftSteerCompletion = null
+        harness.promptGeneration = 0
+        harness.steerDeliveryPersisted = null
     })
 
     it('creates a fresh ACP session and forwards text prompts', async () => {
@@ -1821,5 +1891,337 @@ describe('DshRemoteLauncher', () => {
         await launcher.launch()
 
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'look at this' }]])
+    })
+
+    it('steers a queued message into the active turn', async () => {
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true })
+        // Steer is text-only: the injected content is a single text block.
+        expect(harness.softSteerCalls).toEqual([{
+            sessionId: 'dsh-session-1',
+            content: [{ type: 'text', text: 'soft steer' }]
+        }])
+        await vi.waitFor(() => expect(session.client.emitMessagesConsumed)
+            .toHaveBeenCalledWith(['steer'], { steered: true }))
+        // Committed rows read back as consumed, never as restorable.
+        expect(session.queue.cancelByLocalId('steer')).toBe('consumed')
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('rejects a steer when no turn is in flight', async () => {
+        // Park inside session/new: the backend exists but no turn does.
+        let releaseNew!: () => void
+        harness.newSessionBlocker = new Promise((resolve) => { releaseNew = resolve })
+        const session = createSession()
+        session.queue.push('first', {}, 'first')
+        const done = new DshRemoteLauncher(session as never).launch()
+        await vi.waitFor(() => expect(harness.newSessionCalls).toHaveLength(1))
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'any' }))
+            .resolves.toEqual({ steered: false, error: 'No active steerable turn' })
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({}))
+            .resolves.toEqual({ steered: false, error: 'Missing localId' })
+        expect(harness.softSteerCalls).toHaveLength(0)
+
+        harness.newSessionBlocker = null
+        releaseNew()
+        session.queue.close()
+        await done
+    })
+
+    it('refuses and restores a steer whose mode differs from the active turn', async () => {
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', { model: FLASH }, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'Queued message mode differs from the active turn' })
+        expect(harness.softSteerCalls).toHaveLength(0)
+        // Refused before dispatch: the row is back in the queue and cancellable.
+        expect(session.queue.cancelByLocalId('steer')).toBe(true)
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('restores a queued steer when ACP dispatch fails', async () => {
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        harness.softSteerDispatchError = new Error('stdin closed')
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'Failed to soft-steer into active turn' })
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+        expect(session.queue.cancelByLocalId('steer')).toBe(true)
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('holds an indeterminate dispatch failure instead of restoring it', async () => {
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        harness.softSteerDispatchError = deadTransportError('ACP write callback failed')
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'Steer outcome is being reconciled' })
+        expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer'])
+        // Held outside automatic replay; explicit Cancel still resolves it.
+        expect(session.queue.cancelByLocalId('steer')).toBe(true)
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('restores the row when ACP explicitly rejects after dispatch', async () => {
+        let rejectSoftSteer!: (error: Error) => void
+        harness.deferSoftSteerCompletion = new Promise((_, reject) => { rejectSoftSteer = reject })
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true })
+        // An explicit JSON-RPC rejection means dsh never accepted the
+        // instruction — the row is restored for the next prompt (no loss).
+        rejectSoftSteer(new Error('request rejected'))
+        await vi.waitFor(() => expect(session.queue.cancelByLocalId('steer')).toBe(true))
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer'], { steered: true })
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('holds a transport-ambiguous steer for explicit retry or cancel', async () => {
+        let rejectSoftSteer!: (error: Error) => void
+        harness.deferSoftSteerCompletion = new Promise((_, reject) => { rejectSoftSteer = reject })
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true })
+        rejectSoftSteer(deadTransportError('ACP transport closed'))
+        await vi.waitFor(() => expect(session.queue.cancelByLocalId('steer')).toBe(true))
+        expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer'])
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer'], { steered: true })
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('prevents cancellation once ACP steer dispatch starts', async () => {
+        let releaseDispatch!: () => void
+        harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve })
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        const steerResult = session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' })
+        await Promise.resolve()
+        expect(session.queue.cancelByLocalId('steer')).toBe('in-flight')
+        releaseDispatch()
+        await expect(steerResult).resolves.toEqual({ steered: true })
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['steer'], { steered: true })
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('blocks the next prompt while soft-steer completion is pending', async () => {
+        let releaseDispatch!: () => void
+        let releaseCompletion!: (reason: string | null) => void
+        harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve })
+        harness.deferSoftSteerCompletion = new Promise((resolve) => { releaseCompletion = resolve })
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        const steerResult = session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' })
+        await Promise.resolve()
+        session.queue.push('next', {}, 'next')
+        releasePrompt()
+        await Promise.resolve()
+        // The turn finished but its finally still gates on the soft steer.
+        expect(harness.prompts).toHaveLength(1)
+
+        releaseDispatch()
+        await expect(steerResult).resolves.toEqual({ steered: true })
+        expect(harness.prompts).toHaveLength(1)
+        releaseCompletion(null)
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+
+        session.queue.close()
+        await done
+    })
+
+    it('acknowledges a steer dispatched before an overlapping abort', async () => {
+        let releaseDispatch!: () => void
+        harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve })
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        const steerResult = session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' })
+        await Promise.resolve()
+        releaseDispatch()
+        await expect(steerResult).resolves.toEqual({ steered: true })
+        await session.handlers.get(RPC_METHODS.Abort)!()
+
+        // The inject was accepted before the abort: the ack lands exactly once.
+        await vi.waitFor(() => expect(session.client.emitMessagesConsumed)
+            .toHaveBeenCalledWith(['steer'], { steered: true }))
+        expect(vi.mocked(session.client.emitMessagesConsumed).mock.calls
+            .filter(([ids]) => ids.includes('steer'))).toHaveLength(1)
+
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('holds a soft steer that an abort cancels for explicit resolution', async () => {
+        let finishSoftSteer!: (stopReason: string | null) => void
+        harness.deferSoftSteerCompletion = new Promise((resolve) => { finishSoftSteer = resolve })
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true })
+        releasePrompt()
+        const abort = session.handlers.get(RPC_METHODS.Abort)!()
+        // The cancelled concurrent prompt answers stopReason 'cancelled' —
+        // the row is held for explicit Retry/Cancel, not silently consumed.
+        finishSoftSteer('cancelled')
+        await abort
+
+        await vi.waitFor(() => expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer']))
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer'], { steered: true })
+        expect(session.queue.cancelByLocalId('steer')).toBe(true)
+
+        session.queue.close()
+        await done
+    })
+
+    it('ends the launcher when a soft steer outlives an abort', async () => {
+        // The completion never settles — a server keeping the concurrent
+        // request open past Abort. The bounded drain (5s) must end the
+        // session instead of installing another prompt handler over it.
+        harness.deferSoftSteerCompletion = new Promise(() => {})
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true })
+        releasePrompt()
+        await session.handlers.get(RPC_METHODS.Abort)!()
+
+        expect(harness.backend?.abortSoftSteers).toHaveBeenCalled()
+        expect(harness.backend?.waitForResponseComplete).toHaveBeenCalled()
+        // No second prompt ran over the unresolved soft steer.
+        expect(harness.prompts).toHaveLength(1)
+        session.queue.close()
+        await done
+    }, 10_000)
+
+    it('does not hang teardown while a soft steer completion is unresolved', async () => {
+        // Completion never resolves past Exit/Switch: teardown must skip the
+        // wait (shouldExit gates it) and the cleanup stub answers late steers.
+        harness.deferSoftSteerCompletion = new Promise(() => {})
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true })
+
+        const sw = session.handlers.get(RPC_METHODS.Switch)!()
+        releasePrompt()
+        await sw
+        session.queue.close()
+        await done
+
+        expect(harness.backend?.disconnect).toHaveBeenCalled()
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'Session ending' })
+    })
+
+    it('marks the row indeterminate when the hub delivery-state persist fails', async () => {
+        harness.steerDeliveryPersisted = false
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'Steer state is indeterminate' })
+        expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer'])
+        expect(harness.softSteerCalls).toHaveLength(0)
+        expect(session.queue.cancelByLocalId('steer')).toBe(true)
+
+        harness.steerDeliveryPersisted = null
+        releasePrompt()
+        session.queue.close()
+        await done
+    })
+
+    it('flips steeringActive with the turn', async () => {
+        const session = createSession()
+        session.queue.push('first', {}, 'first')
+        session.queue.close()
+        await new DshRemoteLauncher(session as never).launch()
+
+        const states = session.client.updateAgentState.mock.calls.map(([fn]) =>
+            (fn as (state: Record<string, unknown>) => Record<string, unknown>)({}))
+        expect(states.some((state) => state.steeringActive === true)).toBe(true)
+        expect(states.some((state) => state.steeringActive === false)).toBe(true)
+    })
+
+    it('rejects a steer after the respawn window left no active turn', async () => {
+        let rejectCompletion!: (error: Error) => void
+        harness.deferSoftSteerCompletion = new Promise((_, reject) => { rejectCompletion = reject })
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true })
+        // Kill the child under the turn: the prompt fails transport-ambiguously,
+        // the respawn attempt fails, and the dying transport rejects the
+        // concurrent soft steer (held, not restored).
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.newSessionError = new Error('spawn failed')
+        rejectCompletion(deadTransportError())
+        releasePrompt()
+        await vi.waitFor(() => expect(session.sendSessionEvent.mock.calls.some(
+            (call) => typeof call[0]?.message === 'string' && call[0].message.startsWith('DSH reconnect failed')
+        )).toBe(true))
+        expect(harness.backends).toHaveLength(2)
+        await vi.waitFor(() => expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer']))
+
+        // The turn is over and the respawn died: nothing steerable remains.
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'other' }))
+            .resolves.toEqual({ steered: false, error: 'No active steerable turn' })
+
+        session.queue.close()
+        await done
+    })
+
+    it('rejects a steer once the ACP session ended', async () => {
+        const { session, done, releasePrompt } = await launchWithParkedTurn()
+        // A close-path cancel ended the session mid-turn (custom wrapper).
+        harness.sessionClosedHandler?.()
+        session.queue.push('soft steer', {}, 'steer')
+
+        await expect(session.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'No active steerable turn' })
+        expect(harness.softSteerCalls).toHaveLength(0)
+
+        releasePrompt()
+        session.queue.close()
+        await done
     })
 })
