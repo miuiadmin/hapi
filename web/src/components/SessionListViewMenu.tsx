@@ -252,9 +252,6 @@ export function SessionListViewMenu(props: {
                                 onSelect={() => props.onChange({ unreadOnly: !props.view.unreadOnly })}
                             />
                         </div>
-                        <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
-
-
                         {customized ? (
                             <>
                                 <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
