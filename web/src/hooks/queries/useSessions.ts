@@ -49,7 +49,11 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
             if (!api) {
                 throw new Error('API unavailable')
             }
-            const response = await api.getSessions()
+            // view=slim: the list never reads detail-only fields, and every
+            // field the list does read survives the slim projection (audited
+            // against SessionRowSummary/SessionList/sessionAttention/
+            // sessionLastSeen + the SSE patch gates in useSSE).
+            const response = await api.getSessions({ view: 'slim' })
             // SSE may have delivered newer input while this GET was in flight.
             // Retain its monotonic ordering clock, not deleted rows or stale data.
             const current = queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)

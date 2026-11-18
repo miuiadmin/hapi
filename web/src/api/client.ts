@@ -415,8 +415,16 @@ export class ApiClient {
         })
     }
 
-    async getSessions(): Promise<SessionsResponse> {
-        return await this.request<SessionsResponse>('/api/sessions')
+    /** `view: 'slim'` asks the hub for the compact list projection
+     *  (SessionSummarySlim): detail-only fields (model/effort/hapiMcpUrl/
+     *  model-error diagnostics) and empty-default fields are omitted from the
+     *  wire. Rows are runtime-subsets of SessionSummary — every list consumer
+     *  reads them through optional chaining / `?? default` (audited), so the
+     *  response still satisfies SessionsResponse. Detail flows must NOT pass
+     *  slim; they use getSession() for full metadata. */
+    async getSessions(options?: { view?: 'slim' }): Promise<SessionsResponse> {
+        const query = options?.view === 'slim' ? '?view=slim' : ''
+        return await this.request<SessionsResponse>(`/api/sessions${query}`)
     }
 
     async getHealth(): Promise<HubHealthResponse> {

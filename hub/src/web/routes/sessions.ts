@@ -37,6 +37,7 @@ import {
     supportsModelChange,
     supportsEffort,
     toSessionSummary,
+    toSlimSessionSummary,
     UPLOAD_CHUNK_MAX_BYTES,
     UploadFileRequestSchema
 } from '@hapi/protocol'
@@ -232,6 +233,10 @@ export function createSessionsRoutes(
         const order = c.req.query('order')
         // Peer discovery lists live sessions only, filtered before limit truncation.
         const activeOnly = c.req.query('active') === 'true'
+        // view=slim: same row shape but detail-only fields and empty-default
+        // fields are omitted (see SessionSummarySlim). Default stays full so
+        // existing clients (and detail/prefetch flows) see zero change.
+        const slim = c.req.query('view') === 'slim'
 
         let sessionRecords = engine.getSessionsByNamespace(namespace)
             .filter((session) => !activeOnly || session.active)
@@ -257,11 +262,23 @@ export function createSessionsRoutes(
         )
         const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(sessionIds)
         const sessions = sessionRecords.map((session) => {
-            const summary = toSessionSummary(session, {
+            const extras = {
                 attachedJob: attachedJobs.get(session.id) ?? null,
                 // Same allocator as SSE emits — equal-ms terminal patches stay applyable.
                 attachedJobUpdatedAt: attachedJobVersions.get(session.id) ?? 0
-            })
+            }
+            if (slim) {
+                // Scheduled extras keep slim semantics: 0 / null are omitted
+                // below rather than materialized, like every other default.
+                const scheduledCount = scheduledCounts.get(session.id) ?? 0
+                const scheduledAt = nextScheduledAt.get(session.id) ?? null
+                return {
+                    ...toSlimSessionSummary(session, extras),
+                    ...(scheduledCount > 0 ? { futureScheduledMessageCount: scheduledCount } : {}),
+                    ...(scheduledAt !== null ? { nextScheduledAt: scheduledAt } : {})
+                }
+            }
+            const summary = toSessionSummary(session, extras)
             return {
                 ...summary,
                 futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,

@@ -40,6 +40,30 @@ it('does not let a delayed REST snapshot undo newer user input from SSE', async 
     const data = client.getQueryData<SessionsResponse>(queryKeys.sessions)!
     expect(data.sessions.map(s => s.id)).toEqual(['a', 'b'])
     expect(data.sessions[0]!.lastUserMessageAt).toBe(300)
+    // The list query always asks for the compact projection — every list
+    // consumer tolerates omitted default fields (audited slim contract).
+    expect(getSessions).toHaveBeenCalledWith({ view: 'slim' })
+})
+
+it('tolerates slim rows: absent default fields sort and merge like their defaults', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // A slim wire row: no model/effort/thinking/pendingRequests/… keys at all.
+    const slimRow = {
+        id: 'slim', createdAt: 1, lastUserMessageAt: 100, updatedAt: 100,
+        active: true, metadata: null,
+        metadataVersion: 0, agentStateVersion: 0, todosUpdatedAt: 0
+    } as unknown as SessionSummary
+    const getSessions = vi.fn(async () => ({ sessions: [slimRow] }) as SessionsResponse)
+    const api = { getSessions } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useSessions(api, { enabled: false }), { wrapper })
+    await act(async () => {
+        await result.current.refetch()
+    })
+    const data = client.getQueryData<SessionsResponse>(queryKeys.sessions)!
+    expect(data.sessions.map(s => s.id)).toEqual(['slim'])
+    expect(data.sessions[0]!.contentRevision).toBe(0)
+    expect(getSessions).toHaveBeenCalledWith({ view: 'slim' })
 })
 
 // Adaptive eager interval: fast when any session is active/thinking, slow when idle.
