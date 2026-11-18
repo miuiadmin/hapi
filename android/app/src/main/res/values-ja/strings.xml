@@ -304,7 +304,6 @@
     <string name="chat_back">戻る</string>
     <string name="chat_open_files">セッションのファイル</string>
     <string name="chat_open_scratchlist">スクラッチリスト</string>
-    <string name="chat_open_scratchlist_count">スクラッチリスト（%1$d）</string>
     <string name="chat_open_settings">セッション設定</string>
     <string name="chat_session_actions">セッション操作</string>
     <string name="chat_scratchlist_badge">スクラッチリスト</string>
@@ -315,8 +314,6 @@
     <string name="chat_load_failed_hint">Hub との接続を確認して、もう一度お試しください。</string>
     <string name="chat_empty_title">メッセージはまだありません</string>
     <string name="chat_empty_hint">エージェントが作業を進めると、ここにメッセージが表示されます。</string>
-    <string name="chat_new_messages_one">新着メッセージ 1 件 ↓</string>
-    <string name="chat_new_messages_many">新着メッセージ %1$d 件 ↓</string>
 
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">Hub に文字起こしプロバイダーが設定されていません</string>
@@ -599,7 +596,6 @@
     <string name="scratchlist_to_composer">入力欄へ</string>
     <string name="scratchlist_attachment_only">添付ファイルのみ</string>
     <string name="scratchlist_placeholder">ノート、下書き、思いついたアイデア…</string>
-    <string name="scratchlist_add_photo">写真を追加</string>
     <string name="scratchlist_delete">削除</string>
     <string name="scratchlist_cancel">キャンセル</string>
     <string name="scratchlist_save">保存</string>
