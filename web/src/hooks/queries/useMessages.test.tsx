@@ -23,7 +23,7 @@ describe('useMessages search-target initialization', () => {
             seq: 1,
             invokedAt: 1_000,
         } as unknown as DecryptedMessage
-        sessionStorage.setItem(`hapi:message-window:v2:${sessionId}`, JSON.stringify({
+        localStorage.setItem(`hapi:message-window:v3:${sessionId}`, JSON.stringify({
             messages: [cachedMessage],
             hasMore: true,
             oldestPositionAt: 1_000,
