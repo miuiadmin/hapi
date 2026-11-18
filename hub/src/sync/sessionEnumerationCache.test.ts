@@ -196,4 +196,110 @@ describe('SessionEnumerationCache', () => {
         expect(kept).toEqual(okCommands(2))
         expect(h.fetches.length).toBe(3)
     })
+
+    it('getEntry reports an in-TTL hit as fresh and a stale serve as not fresh', async () => {
+        const h = createHarness()
+        const cold = await h.cache.getEntry('s1|claude', immediateFetch(h, () => okCommands(1)), isCacheable)
+        expect(cold).toEqual({ value: okCommands(1), fresh: true })
+
+        const freshHit = await h.cache.getEntry('s1|claude', immediateFetch(h, () => okCommands(2)), isCacheable)
+        expect(freshHit).toEqual({ value: okCommands(1), fresh: true })
+        expect(h.fetches.length).toBe(1)
+
+        h.clock.now += 31_000
+        const stale = await h.cache.getEntry('s1|claude', deferredFetch(h, okCommands(3)), isCacheable)
+        expect(stale).toEqual({ value: okCommands(1), fresh: false })
+        // The background revalidation was issued; once it lands the value
+        // is fresh again.
+        h.fetches[1].resolve()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        h.clock.now += 1_000
+        const refreshed = await h.cache.getEntry('s1|claude', immediateFetch(h, () => okCommands(4)), isCacheable)
+        expect(refreshed).toEqual({ value: okCommands(3), fresh: true })
+        expect(h.fetches.length).toBe(2)
+    })
+
+    it('force skips the TTL hit, awaits a live fetch, and pins the result', async () => {
+        const h = createHarness()
+        await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(1)), isCacheable)
+
+        const forced = await h.cache.getEntry(
+            's1|claude',
+            immediateFetch(h, () => okCommands(2)),
+            isCacheable,
+            { force: true }
+        )
+        expect(forced).toEqual({ value: okCommands(2), fresh: true })
+        expect(h.fetches.length).toBe(2)
+
+        // The forced fetch repopulated the entry: a plain follow-up inside
+        // the TTL window is served from cache.
+        const pinned = await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(3)), isCacheable)
+        expect(pinned).toEqual(okCommands(2))
+        expect(h.fetches.length).toBe(2)
+    })
+
+    it('force joins an in-flight revalidation instead of issuing a second fetch', async () => {
+        const h = createHarness()
+        await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(1)), isCacheable)
+        h.clock.now += 31_000
+
+        // A background revalidation is pending when a forced caller arrives.
+        const revalidation = h.cache.getEntry('s1|claude', deferredFetch(h, okCommands(2)), isCacheable)
+        const forced = h.cache.getEntry(
+            's1|claude',
+            deferredFetch(h, okCommands(9)),
+            isCacheable,
+            { force: true }
+        )
+        h.fetches[1].resolve()
+
+        const staleServe = await revalidation
+        const forcedValue = await forced
+        expect(staleServe).toEqual({ value: okCommands(1), fresh: false })
+        expect(forcedValue).toEqual({ value: okCommands(2), fresh: true })
+        expect(h.fetches.length).toBe(2)
+    })
+
+    it('force propagates timeouts and failures to the caller', async () => {
+        const h = createHarness(30_000, 10)
+        const coldForced = h.cache.getEntry(
+            's1|claude',
+            deferredFetch(h, okCommands(1)),
+            isCacheable,
+            { force: true }
+        )
+        await expect(coldForced).rejects.toThrow('Enumeration RPC timed out')
+        h.fetches[0].resolve()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        const failing = () => {
+            h.fetches.push({ resolve: () => {}, reject: () => {} })
+            return Promise.reject(new Error('engine offline'))
+        }
+        await expect(
+            h.cache.getEntry('s1|claude', failing, isCacheable, { force: true })
+        ).rejects.toThrow('engine offline')
+        // Let the late rejection settle without an unhandled rejection.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    it('peek exposes the last-good value with its fetch time', async () => {
+        const h = createHarness()
+        expect(h.cache.peek('s1|claude')).toBeUndefined()
+
+        await h.cache.get('s1|claude', immediateFetch(h, () => okCommands(1)), isCacheable)
+        const peeked = h.cache.peek('s1|claude')
+        expect(peeked?.value).toEqual(okCommands(1))
+        expect(peeked?.fetchedAt).toBe(h.clock.now)
+
+        // Uncacheable results never get pinned, so peek stays empty.
+        const failing = () => {
+            h.fetches.push({ resolve: () => {}, reject: () => {} })
+            return Promise.resolve({ success: false, error: 'catalog unavailable' })
+        }
+        const entry = await h.cache.getEntry('s2|claude', failing, isCacheable)
+        expect(entry.value).toEqual({ success: false, error: 'catalog unavailable' })
+        expect(h.cache.peek('s2|claude')).toBeUndefined()
+    })
 })

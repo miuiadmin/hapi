@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, AgentQuotasResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -310,6 +310,22 @@ export class SyncEngine {
      */
     private readonly modelListCache = new SessionEnumerationCache({
         ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+
+    /**
+     * Same single-flight + last-good treatment for machine agent-quota
+     * snapshots. The backing RPC probes three providers on the runner and is
+     * one of the slowest endpoints the hub serves (observed 3-6s healthy,
+     * 170+ whole-second hits per 24h) while the web usage panel re-fetches it
+     * on every focus/reconnect/poll. Quota snapshots move on the scale of
+     * minutes, so a 45s TTL absorbs the refetch storms; stale serves are
+     * marked `fresh: false`, and an explicit refresh bypasses the TTL while
+     * still sharing the in-flight fetch and 8s cap. Entries are keyed by
+     * machine id and machines are few, so no release hook is needed.
+     */
+    private readonly agentQuotasCache = new SessionEnumerationCache({
+        ttlMs: 45_000,
         fetchTimeoutMs: 8_000
     })
 
@@ -6720,8 +6736,38 @@ export class SyncEngine {
         return await this.rpcGateway.queryUsage(machineId, agent, force)
     }
 
+    /**
+     * Agent-quota snapshots served through agentQuotasCache. Fresh hits and
+     * live fetches pass through unchanged; stale-while-revalidate serves are
+     * marked `fresh: false` so clients can label their age. An explicit
+     * refresh forwards `refresh: true` to the runner (bypassing the runner's
+     * own snapshot cache too) and forces the hub fetch under the same 8s cap;
+     * if that fetch fails while a last-good snapshot exists — e.g. the runner
+     * went offline — the stale snapshot is served instead of an error.
+     */
     async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): ReturnType<RpcGateway['getAgentQuotas']> {
-        return await this.rpcGateway.getAgentQuotas(machineId, options)
+        if (options?.refresh === true) {
+            try {
+                const forced = await this.agentQuotasCache.getEntry(
+                    machineId,
+                    () => this.rpcGateway.getAgentQuotas(machineId, { refresh: true }),
+                    undefined,
+                    { force: true }
+                )
+                return forced.value
+            } catch (error) {
+                const stale = this.agentQuotasCache.peek(machineId)
+                if (stale) {
+                    return { ...(stale.value as AgentQuotasResponse), fresh: false }
+                }
+                throw error
+            }
+        }
+        const entry = await this.agentQuotasCache.getEntry(
+            machineId,
+            () => this.rpcGateway.getAgentQuotas(machineId, {})
+        )
+        return entry.fresh ? entry.value : { ...entry.value, fresh: false }
     }
 
     async listMachineDirectory(machineId: string, path: string, includeHidden?: boolean): Promise<RpcListDirectoryResponse> {
