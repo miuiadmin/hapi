@@ -524,3 +524,243 @@ describe('SSEManager message byte budget (Gap #4)', () => {
         expect(hasMarker).toBe(true)
     })
 })
+
+// Live-stream snapshots (streaming agents re-send the whole growing buffer
+// under a stable stream id) dominate reconnect replays and backlogged
+// delivery during bursts. Only the newest snapshot of a stream carries
+// information the older ones do not.
+describe('SSEManager live-snapshot folding', () => {
+    const AGENT_PAYLOAD = 'codex'
+
+    function snapshotMessage(streamId: string, text: string, n: number) {
+        return {
+            id: `snap-${streamId}-${n}`,
+            seq: n,
+            localId: null,
+            content: {
+                role: 'agent',
+                content: {
+                    type: AGENT_PAYLOAD,
+                    data: { type: 'message', message: text, id: streamId, streamSnapshot: true, live: true }
+                }
+            },
+            createdAt: 1_700_000_000_000 + n
+        }
+    }
+
+    function snapshotEvent(sessionId: string, streamId: string, text: string, n: number): SyncEvent {
+        return {
+            type: 'message-received',
+            sessionId,
+            namespace: 'alpha',
+            message: snapshotMessage(streamId, text, n)
+        } as unknown as SyncEvent
+    }
+
+    /** A settled (non-live) line of the same stream: never foldable. */
+    function settledEvent(sessionId: string, streamId: string, text: string, n: number): SyncEvent {
+        const message = snapshotMessage(streamId, text, n)
+        const data = (message.content as { content: { data: Record<string, unknown> } }).content.data
+        delete data.live
+        return {
+            type: 'message-received',
+            sessionId,
+            namespace: 'alpha',
+            message
+        } as unknown as SyncEvent
+    }
+
+    function subscribeVisible(
+        manager: SSEManager,
+        id: string,
+        options: { visibility?: 'visible' | 'hidden'; resumeFrom?: string | null; send?: (event: SyncEvent, eventId?: string, serialized?: string) => void | Promise<void> } = {}
+    ) {
+        return manager.subscribe({
+            id,
+            namespace: 'alpha',
+            all: true,
+            visibility: options.visibility ?? 'visible',
+            resumeFrom: options.resumeFrom ?? null,
+            send: options.send ?? (() => {}),
+            sendHeartbeat: () => {}
+        })
+    }
+
+    function messageIdOf(event: SyncEvent): string | undefined {
+        return event.type === 'message-received' ? event.message.id : undefined
+    }
+
+    it('replay folds same-stream snapshots to the newest and keeps other events in order', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const sent: Array<{ event: SyncEvent; eventId?: string }> = []
+        subscribeVisible(manager, 'a', { send: (event, eventId) => { sent.push({ event, eventId }) } })
+
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'a', 1))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'ab', 2))
+        manager.broadcast({ type: 'session-updated', sessionId: 's1', namespace: 'alpha' })
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'abc', 3))
+        const cursor = sent[0]?.eventId
+        expect(cursor).toBeTruthy()
+        manager.unsubscribe('a')
+
+        const reconnect = subscribeVisible(manager, 'b', { resumeFrom: cursor })
+        expect(reconnect.resume).toBe('ok')
+
+        const replayed = reconnect.replay.map((entry) => entry.event)
+        expect(replayed).toHaveLength(2)
+        expect(replayed[0]).toMatchObject({ type: 'session-updated', sessionId: 's1' })
+        expect(messageIdOf(replayed[1]!)).toBe('snap-stream-1-3')
+    })
+
+    it('replay folds streams independently and never folds settled lines', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const sent: Array<{ event: SyncEvent; eventId?: string }> = []
+        subscribeVisible(manager, 'a', { send: (event, eventId) => { sent.push({ event, eventId }) } })
+
+        manager.broadcast(snapshotEvent('s1', 'stream-a', 'a1', 1))
+        manager.broadcast(snapshotEvent('s1', 'stream-b', 'b1', 2))
+        manager.broadcast(snapshotEvent('s1', 'stream-a', 'a1a2', 3))
+        manager.broadcast(settledEvent('s1', 'stream-b', 'b-final', 4))
+        const cursor = sent[0]?.eventId
+        manager.unsubscribe('a')
+
+        const reconnect = subscribeVisible(manager, 'b', { resumeFrom: cursor })
+        expect(reconnect.resume).toBe('ok')
+
+        const ids = reconnect.replay.map((entry) => messageIdOf(entry.event) ?? entry.event.type)
+        // stream-a keeps its newest snapshot; stream-b keeps its newest
+        // snapshot AND its settled line (never folded).
+        expect(ids).toEqual(['snap-stream-b-2', 'snap-stream-a-3', 'snap-stream-b-4'])
+    })
+
+    it('events queued behind a replay are folded before they are drained', async () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const sent: Array<{ event: SyncEvent; eventId?: string }> = []
+        subscribeVisible(manager, 'a', { send: (event, eventId) => { sent.push({ event, eventId }) } })
+        manager.broadcast({ type: 'session-updated', sessionId: 'anchor', namespace: 'alpha' })
+        const cursor = sent[0]?.eventId
+        manager.unsubscribe('a')
+
+        // One buffered event the reconnect will replay, so its pending queue
+        // is active and live broadcasts queue behind the replay.
+        manager.broadcast({ type: 'session-updated', sessionId: 'missed', namespace: 'alpha' })
+
+        const drained: SyncEvent[] = []
+        const reconnect = subscribeVisible(manager, 'b', {
+            resumeFrom: cursor,
+            send: (event) => { drained.push(event) }
+        })
+        expect(reconnect.replay).toHaveLength(1)
+
+        // Fires while the caller is still "writing the replay": queued, then
+        // folded at drain time to one snapshot per stream.
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'a', 1))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'ab', 2))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'abc', 3))
+        manager.broadcast({ type: 'session-updated', sessionId: 'after', namespace: 'alpha' })
+
+        await manager.drainPending('b')
+
+        expect(drained).toHaveLength(2)
+        expect(messageIdOf(drained[0]!)).toBe('snap-stream-1-3')
+        expect(drained[1]).toMatchObject({ type: 'session-updated', sessionId: 'after' })
+    })
+
+    it('a backlogged live connection holds and merges snapshots until its writes drain', async () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const received: SyncEvent[] = []
+        const resolvers: Array<() => void> = []
+        subscribeVisible(manager, 'slow', {
+            send: (event) => {
+                received.push(event)
+                if (received.length <= 64) {
+                    // First 64 writes stay unresolved: the connection is behind.
+                    return new Promise<void>((resolve) => { resolvers.push(resolve) })
+                }
+                return undefined
+            }
+        })
+
+        // 64 non-snapshot events pile up unresolved in flight.
+        for (let i = 0; i < 64; i++) {
+            manager.broadcast({ type: 'session-updated', sessionId: `bulk-${i}`, namespace: 'alpha' })
+        }
+        expect(received).toHaveLength(64)
+
+        // Snapshots now arrive while the connection is behind: they must be
+        // held (not written) and folded to the newest per stream.
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'a', 1))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'ab', 2))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'abc', 3))
+        manager.broadcast({ type: 'session-updated', sessionId: 'tail', namespace: 'alpha' })
+        expect(received).toHaveLength(64)
+
+        for (const resolve of resolvers) {
+            resolve()
+        }
+        // The last in-flight write's completion drains the held queue.
+        const deadline = Date.now() + 2_000
+        while (received.length < 66 && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+
+        expect(received).toHaveLength(66)
+        expect(messageIdOf(received[64]!)).toBe('snap-stream-1-3')
+        expect(received[65]).toMatchObject({ type: 'session-updated', sessionId: 'tail' })
+        expect(manager.hasSubscription('slow')).toBe(true)
+    })
+
+    it('hidden connections get one marker per session instead of live snapshots', () => {
+        const tracker = new VisibilityTracker()
+        const manager = new SSEManager(0, tracker)
+        const hiddenReceived: SyncEvent[] = []
+        const visibleReceived: SyncEvent[] = []
+        subscribeVisible(manager, 'h', { visibility: 'hidden', send: (event) => { hiddenReceived.push(event) } })
+        subscribeVisible(manager, 'v', { send: (event) => { visibleReceived.push(event) } })
+
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'a', 1))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'ab', 2))
+        // Same session keeps silent; a different session gets its own marker.
+        manager.broadcast(snapshotEvent('s2', 'stream-2', 'x', 3))
+        // Settled lines keep flowing to hidden connections untouched.
+        manager.broadcast(settledEvent('s1', 'stream-1', 'final', 4))
+
+        expect(hiddenReceived).toHaveLength(3)
+        expect(hiddenReceived[0]).toMatchObject({ type: 'messages-invalidated', sessionId: 's1' })
+        expect(hiddenReceived[1]).toMatchObject({ type: 'messages-invalidated', sessionId: 's2' })
+        expect(messageIdOf(hiddenReceived[2]!)).toBe('snap-stream-1-4')
+
+        // The visible sibling saw every snapshot live.
+        expect(visibleReceived).toHaveLength(4)
+
+        // Becoming visible again resumes snapshot delivery.
+        tracker.setVisibility('h', 'alpha', 'visible')
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'abc', 5))
+        expect(hiddenReceived).toHaveLength(4)
+        expect(messageIdOf(hiddenReceived[3]!)).toBe('snap-stream-1-5')
+
+        // Hidden again starts a fresh marker budget for the session.
+        tracker.setVisibility('h', 'alpha', 'hidden')
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'abcd', 6))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'abcde', 7))
+        expect(hiddenReceived).toHaveLength(5)
+        expect(hiddenReceived[4]).toMatchObject({ type: 'messages-invalidated', sessionId: 's1' })
+    })
+
+    it('a healthy visible connection still receives every snapshot live', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const received: SyncEvent[] = []
+        subscribeVisible(manager, 'fresh', { send: (event) => { received.push(event) } })
+
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'a', 1))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'ab', 2))
+        manager.broadcast(snapshotEvent('s1', 'stream-1', 'abc', 3))
+
+        expect(received).toHaveLength(3)
+        expect(received.map((event) => messageIdOf(event))).toEqual([
+            'snap-stream-1-1',
+            'snap-stream-1-2',
+            'snap-stream-1-3'
+        ])
+    })
+})

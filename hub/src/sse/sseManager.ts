@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { getLiveReasoningStreamId, getTextLiveStreamId } from '@hapi/protocol/messages'
 import type { SyncEvent } from '../sync/syncEngine'
 import type { VisibilityState } from '../visibility/visibilityTracker'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -19,11 +20,18 @@ type SSEConnection = SSESubscription & {
     inflightBytes: number
     pendingBytes: number
     /**
-     * Non-null while a resumed connection is still writing its replay: live
-     * broadcasts land here instead of on the wire so replayed events keep
-     * their original order. `drainPending` flushes and clears it.
+     * Non-null while events must be queued instead of written directly:
+     * either a resumed connection is still writing its replay (live
+     * broadcasts land here so replayed events keep their original order), or
+     * a live connection fell behind (`inflight` above the hold threshold) and
+     * further events are held so same-stream snapshots can merge.
+     * `drainPending` flushes and clears it.
      */
     pending: Array<{ event: SyncEvent; eventId: string; serialized: string }> | null
+    /** Last visibility observed for this connection (lazily refreshed on snapshot broadcasts). */
+    visible: boolean
+    /** Sessions already sent a hidden-marker this hidden period. */
+    invalidatedWhileHidden: Set<string>
 }
 
 export type SSEResumeResult = {
@@ -51,6 +59,65 @@ const EVENT_BUFFER_MAX_BYTES = 2 * 1024 * 1024
  * verdict triggers.
  */
 const MESSAGE_EVENT_MAX_BYTES = EVENT_BUFFER_MAX_BYTES / 2
+
+/**
+ * Once a connection's pending queue grows past this many events (or bytes),
+ * superseded live-stream snapshots in it are folded away: same streamId keeps
+ * only the newest snapshot. Bounds a replay- or backlog-blocked connection's
+ * memory and write volume during streaming bursts.
+ */
+const PENDING_COMPACT_MIN_EVENTS = 64
+const PENDING_COMPACT_MIN_BYTES = 256 * 1024
+
+/**
+ * Identity of the live stream a message-received event snapshots, or null for
+ * every other event. Streaming agents re-send the whole growing buffer under
+ * a stable stream id every few hundred milliseconds; every snapshot but the
+ * newest of a stream is dead weight on any path that can skip it (replay and
+ * backlogged delivery) because a newer snapshot is a strict superset.
+ */
+function liveSnapshotStreamKey(event: SyncEvent): string | null {
+    if (event.type !== 'message-received') {
+        return null
+    }
+    const content = event.message?.content
+    const textStreamId = getTextLiveStreamId(content)
+    if (textStreamId !== null) {
+        return `${event.sessionId}\u0000text\u0000${textStreamId}`
+    }
+    const reasoningStreamId = getLiveReasoningStreamId(content)
+    if (reasoningStreamId !== null) {
+        return `${event.sessionId}\u0000reasoning\u0000${reasoningStreamId}`
+    }
+    return null
+}
+
+/** Drop superseded live-stream snapshots from a batch, keeping the newest per stream. */
+function foldSnapshotBatch<T extends { event: SyncEvent }>(items: T[]): T[] {
+    if (items.length < 2) {
+        return items
+    }
+    const newestPerStream = new Map<string, number>()
+    for (let i = 0; i < items.length; i++) {
+        const key = liveSnapshotStreamKey(items[i]!.event)
+        if (key !== null) {
+            newestPerStream.set(key, i)
+        }
+    }
+    if (newestPerStream.size === 0) {
+        return items
+    }
+    let dropped = false
+    const kept = items.filter((item, index) => {
+        const key = liveSnapshotStreamKey(item.event)
+        if (key === null || newestPerStream.get(key) === index) {
+            return true
+        }
+        dropped = true
+        return false
+    })
+    return dropped ? kept : items
+}
 
 export class SSEManager {
     private readonly connections: Map<string, SSEConnection> = new Map()
@@ -104,7 +171,9 @@ export class SSEManager {
             inflight: 0,
             inflightBytes: 0,
             pendingBytes: 0,
-            pending: null
+            pending: null,
+            visible: options.visibility === 'visible',
+            invalidatedWhileHidden: new Set()
         }
 
         const { resume, replay } = this.resolveResume(subscription, options.resumeFrom ?? null)
@@ -133,9 +202,11 @@ export class SSEManager {
     }
 
     /**
-     * Flush events queued while the caller was writing a replay, then switch
-     * the connection to direct delivery. Must be awaited after the replay has
-     * been written; a no-op for connections that never queued.
+     * Flush events queued while the caller was writing a replay (or while the
+     * connection was held back as a laggard), then switch the connection to
+     * direct delivery. Must be awaited after the replay has been written; a
+     * no-op for connections that never queued. Each batch folds superseded
+     * same-stream snapshots before it goes on the wire.
      */
     async drainPending(id: string): Promise<void> {
         const connection = this.connections.get(id)
@@ -143,7 +214,7 @@ export class SSEManager {
             return
         }
         while (connection.pending) {
-            const batch = connection.pending.splice(0)
+            const batch = foldSnapshotBatch(connection.pending.splice(0))
             connection.pendingBytes = 0
             if (batch.length === 0) {
                 // No await between this check and the assignment, so no
@@ -200,13 +271,36 @@ export class SSEManager {
             return { resume: 'gap', replay: [] }
         }
         const replay: Array<{ event: SyncEvent; eventId: string; serialized: string }> = []
+        // Replay folding: a reconnecting client that missed a streaming burst
+        // does not need every intermediate snapshot of a stream — the newest
+        // one is a strict superset of the older ones and the client collapses
+        // rows by stream id anyway. Keep the newest per stream; the cursor
+        // boundary above is computed from the untouched ring, so folding can
+        // never turn an 'ok' into a silent gap (evicted events still force
+        // the REST resync exactly as before).
+        const supersededSlots = new Set<number>()
+        const newestSnapshotSlot = new Map<string, number>()
         for (const entry of this.eventBuffer) {
             if (entry.seq > seq && this.shouldSend(connection, entry.event)) {
+                const snapshotKey = liveSnapshotStreamKey(entry.event)
+                if (snapshotKey !== null) {
+                    const previousSlot = newestSnapshotSlot.get(snapshotKey)
+                    if (previousSlot !== undefined) {
+                        supersededSlots.add(previousSlot)
+                    }
+                    newestSnapshotSlot.set(snapshotKey, replay.length)
+                }
                 replay.push({
                     event: entry.event,
                     eventId: this.eventIdFor(entry.seq, connection.namespace),
                     serialized: entry.serialized
                 })
+            }
+        }
+        if (supersededSlots.size > 0) {
+            return {
+                resume: 'ok',
+                replay: replay.filter((_item, index) => !supersededSlots.has(index))
             }
         }
         return { resume: 'ok', replay }
@@ -304,6 +398,11 @@ export class SSEManager {
         const serialized = JSON.stringify(event)
         const seq = this.recordEvent(event, serialized)
         const eventBytes = serialized.length * 2
+        // Computed once per broadcast: the live stream this event snapshots,
+        // if any. Drives the hidden-connection and laggard policies below.
+        const snapshotKey = liveSnapshotStreamKey(event)
+        let hiddenMarker: SyncEvent | null = null
+        let hiddenMarkerSerialized = ''
         for (const connection of this.connections.values()) {
             if (!this.shouldSend(connection, event)) {
                 continue
@@ -312,37 +411,142 @@ export class SSEManager {
             // The id is per-connection: same epoch and seq, but tagged with
             // the receiving namespace so the cursor stays bound to it.
             const eventId = this.eventIdFor(seq, connection.namespace)
-            if (connection.pending) {
-                if (connection.pending.length >= 4096 || connection.pendingBytes + eventBytes > 8 * 1024 * 1024) {
-                    this.unsubscribe(connection.id)
-                    connection.close?.()
+
+            if (event.type === 'message-received' && snapshotKey !== null && !this.refreshVisibility(connection)) {
+                // Hidden connections get no live snapshots — nobody is
+                // watching. One lightweight messages-invalidated marker per
+                // session per hidden period tells the client its window went
+                // stale (targeted refetch); the client's own visibility
+                // resync closes the gap when the tab comes back, and settled
+                // lines keep flowing as regular message-received events.
+                if (connection.invalidatedWhileHidden.has(event.sessionId)) {
                     continue
                 }
-                connection.pending.push({ event, eventId, serialized })
-                connection.pendingBytes += eventBytes
+                connection.invalidatedWhileHidden.add(event.sessionId)
+                if (hiddenMarker === null) {
+                    hiddenMarker = {
+                        type: 'messages-invalidated',
+                        sessionId: event.sessionId,
+                        namespace: event.namespace
+                    }
+                    hiddenMarkerSerialized = JSON.stringify(hiddenMarker)
+                }
+                this.deliverTo(
+                    connection,
+                    hiddenMarker,
+                    eventId,
+                    hiddenMarkerSerialized,
+                    hiddenMarkerSerialized.length * 2
+                )
                 continue
             }
 
-            if (connection.inflight >= 4096 || connection.inflightBytes + eventBytes > 8 * 1024 * 1024) {
-                this.unsubscribe(connection.id)
-                connection.close?.()
-                continue
+            // Laggard live connection: earlier writes are still unresolved, so
+            // this snapshot would pile onto a backlog. Hold this and further
+            // events in the pending queue (order-preserving) where same-stream
+            // snapshots can merge instead of amplifying; the last in-flight
+            // write's completion drains the queue.
+            if (
+                snapshotKey !== null
+                && connection.pending === null
+                && (connection.inflight >= PENDING_COMPACT_MIN_EVENTS
+                    || connection.inflightBytes >= PENDING_COMPACT_MIN_BYTES)
+            ) {
+                connection.pending = []
             }
-            try {
-                const result = connection.send(event, eventId, serialized)
-                if (result) {
-                    connection.inflight++
-                    connection.inflightBytes += eventBytes
-                    void Promise.resolve(result).catch(() => {
-                        this.unsubscribe(connection.id)
-                        connection.close?.()
-                    }).finally(() => { connection.inflight--; connection.inflightBytes -= eventBytes })
-                }
-            } catch {
-                this.unsubscribe(connection.id)
-                connection.close?.()
-            }
+
+            this.deliverTo(connection, event, eventId, serialized, eventBytes)
         }
+    }
+
+    /**
+     * Route one event to a connection: onto its pending queue while one is
+     * active (replay or laggard hold, with backpressure compaction), else as
+     * a direct write tracked against the in-flight caps.
+     */
+    private deliverTo(
+        connection: SSEConnection,
+        event: SyncEvent,
+        eventId: string,
+        serialized: string,
+        eventBytes: number
+    ): void {
+        if (connection.pending) {
+            if (connection.pending.length >= 4096 || connection.pendingBytes + eventBytes > 8 * 1024 * 1024) {
+                this.unsubscribe(connection.id)
+                connection.close?.()
+                return
+            }
+            connection.pending.push({ event, eventId, serialized })
+            connection.pendingBytes += eventBytes
+            if (
+                connection.pending.length >= PENDING_COMPACT_MIN_EVENTS
+                || connection.pendingBytes >= PENDING_COMPACT_MIN_BYTES
+            ) {
+                this.compactPending(connection)
+            }
+            return
+        }
+
+        if (connection.inflight >= 4096 || connection.inflightBytes + eventBytes > 8 * 1024 * 1024) {
+            this.unsubscribe(connection.id)
+            connection.close?.()
+            return
+        }
+        try {
+            const result = connection.send(event, eventId, serialized)
+            if (result) {
+                connection.inflight++
+                connection.inflightBytes += eventBytes
+                void Promise.resolve(result).catch(() => {
+                    this.unsubscribe(connection.id)
+                    connection.close?.()
+                }).finally(() => {
+                    connection.inflight--
+                    connection.inflightBytes -= eventBytes
+                    // A laggard hold opened while writes were outstanding:
+                    // the queue drains once the last one settles.
+                    if (connection.inflight === 0 && connection.pending && connection.pending.length > 0) {
+                        void this.drainPending(connection.id)
+                    }
+                })
+            }
+        } catch {
+            this.unsubscribe(connection.id)
+            connection.close?.()
+        }
+    }
+
+    /** Fold superseded same-stream snapshots in a backlogged connection's pending queue. */
+    private compactPending(connection: SSEConnection): void {
+        const pending = connection.pending
+        if (!pending || pending.length < 2) {
+            return
+        }
+        const compacted = foldSnapshotBatch(pending)
+        if (compacted === pending) {
+            return
+        }
+        let bytesAfter = 0
+        for (const item of compacted) {
+            bytesAfter += item.serialized.length * 2
+        }
+        connection.pending = compacted
+        connection.pendingBytes = bytesAfter
+    }
+
+    /**
+     * Lazily sync the connection's cached visibility with the tracker. A
+     * transition (either direction) starts a fresh hidden-marker budget: one
+     * messages-invalidated per session per hidden period.
+     */
+    private refreshVisibility(connection: SSEConnection): boolean {
+        const visible = this.visibilityTracker.isVisibleConnection(connection.id)
+        if (visible !== connection.visible) {
+            connection.visible = visible
+            connection.invalidatedWhileHidden.clear()
+        }
+        return visible
     }
 
     stop(): void {
