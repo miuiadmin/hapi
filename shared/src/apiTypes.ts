@@ -1033,7 +1033,15 @@ export type AgentQuotasRequest = z.infer<typeof AgentQuotasRequestSchema>
 
 export const AgentQuotasResponseSchema = z.object({
     accounts: z.array(AgentQuotaAccountSchema),
-    fetchedAt: z.number()
+    fetchedAt: z.number(),
+    /**
+     * Hub-set staleness marker: the runner never populates it. The hub serves
+     * quota snapshots through a stale-while-revalidate cache, so a response
+     * served from an expired snapshot (runner unreachable or background
+     * revalidation still in flight) carries `fresh: false`; responses straight
+     * from a live fetch or an in-TTL hit omit the field entirely.
+     */
+    fresh: z.boolean().optional()
 })
 export type AgentQuotasResponse = z.infer<typeof AgentQuotasResponseSchema>
 

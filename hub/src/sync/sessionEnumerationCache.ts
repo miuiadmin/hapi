@@ -59,7 +59,24 @@ export class SessionEnumerationCache {
         fetch: () => Promise<T>,
         isCacheable: (value: T) => boolean = () => true
     ): Promise<T> {
+        return (await this.getEntry(key, fetch, isCacheable)).value
+    }
+
+    /**
+     * Like get(), but reports whether the served value was fresh (in-TTL hit
+     * or a live fetch) as opposed to a stale-while-revalidate serve. With
+     * `force` the TTL check and the immediate stale serve are skipped: the
+     * caller always waits for a fetch (joining any in-flight one) under the
+     * same fetchTimeoutMs cap — explicit revalidation semantics.
+     */
+    async getEntry<T>(
+        key: string,
+        fetch: () => Promise<T>,
+        isCacheable: (value: T) => boolean = () => true,
+        options?: { force?: boolean }
+    ): Promise<{ value: T; fresh: boolean }> {
         const now = this.options.now ?? Date.now
+        const force = options?.force === true
         let entry = this.entries.get(key)
         if (!entry) {
             entry = {}
@@ -68,11 +85,12 @@ export class SessionEnumerationCache {
 
         // Fresh value: serve without any RPC.
         if (
-            entry.value !== undefined &&
-            entry.fetchedAt !== undefined &&
-            now() - entry.fetchedAt < this.options.ttlMs
+            !force
+            && entry.value !== undefined
+            && entry.fetchedAt !== undefined
+            && now() - entry.fetchedAt < this.options.ttlMs
         ) {
-            return entry.value as T
+            return { value: entry.value as T, fresh: true }
         }
 
         if (!entry.inFlight) {
@@ -99,18 +117,19 @@ export class SessionEnumerationCache {
             }).catch(() => {})
         }
 
-        if (entry.value !== undefined) {
+        if (!force && entry.value !== undefined) {
             // Stale-while-revalidate: serve what we have; the in-flight fetch
             // above refreshes the entry for later callers.
-            return entry.value as T
+            return { value: entry.value as T, fresh: false }
         }
 
-        // Cold path: wait for the shared fetch, capped at fetchTimeoutMs. The
-        // underlying fetch keeps running past the cap so a late success still
-        // populates the cache for the next caller.
+        // Cold path (or forced revalidation): wait for the shared fetch,
+        // capped at fetchTimeoutMs. The underlying fetch keeps running past
+        // the cap so a late success still populates the cache for the next
+        // caller.
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined
         try {
-            return await Promise.race([
+            const value = await Promise.race([
                 entry.inFlight as Promise<T>,
                 new Promise<never>((_, reject) => {
                     timeoutHandle = setTimeout(
@@ -119,10 +138,22 @@ export class SessionEnumerationCache {
                     )
                 })
             ])
+            return { value, fresh: true }
         } finally {
             if (timeoutHandle !== undefined) {
                 clearTimeout(timeoutHandle)
             }
         }
+    }
+
+    /** Last-good value for the key with its fetch time, if any. Exposed so
+     *  callers can decide their own fallback policy (e.g. serve a stale
+     *  snapshot when a forced refresh hits an unreachable machine). */
+    peek(key: string): { value: unknown; fetchedAt: number } | undefined {
+        const entry = this.entries.get(key)
+        if (!entry || entry.value === undefined || entry.fetchedAt === undefined) {
+            return undefined
+        }
+        return { value: entry.value, fetchedAt: entry.fetchedAt }
     }
 }
