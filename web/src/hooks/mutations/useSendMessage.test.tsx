@@ -929,3 +929,40 @@ describe('useSendMessage', () => {
         })
     })
 })
+
+describe('send watchdog', () => {
+    it('flips an unsettled send to failed after 10s and a late success overwrites it', async () => {
+        vi.useFakeTimers()
+        try {
+            const request = deferred<void>()
+            const api = createMockApi(() => request.promise)
+            const { appendOptimisticMessage, updateMessageStatus } = await import('@/lib/message-window-store')
+            const updateMock = vi.mocked(updateMessageStatus)
+
+            const { result } = renderHook(
+                () => useSendMessage(api, 'session-A'),
+                { wrapper: createWrapper() },
+            )
+
+            await act(async () => {
+                void result.current.sendMessage('wedged send')
+            })
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(9_999) })
+            expect(updateMock).not.toHaveBeenCalledWith('session-A', 'local-id-1', 'failed')
+
+            await act(async () => { await vi.advanceTimersByTimeAsync(2) })
+            expect(updateMessageStatus).toHaveBeenCalledWith('session-A', 'local-id-1', 'failed')
+
+            // The mutation is still running; a late settlement overwrites.
+            await act(async () => {
+                request.resolve()
+                await request.promise
+                await vi.advanceTimersByTimeAsync(0)
+            })
+            expect(updateMessageStatus).toHaveBeenLastCalledWith('session-A', 'local-id-1', 'sent')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+})

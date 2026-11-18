@@ -29,6 +29,12 @@ export type SendMessageAcceptance = {
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
 
+/** A POST that never settles would leave the optimistic row spinning
+ * forever (wedged proxy, dead runner mid-request). Flip the visual state
+ * to failed after this long so the retry affordance appears; a late
+ * settlement still overwrites via onSuccess/onError as usual. */
+const SEND_WATCHDOG_MS = 10_000
+
 /**
  * Information about a send that the underlying mutation rejected.
  *
@@ -221,9 +227,17 @@ export function useSendMessage(
         onMutate: async (input) => {
             const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const
             appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, 'sending'))
-            return { successStatus }
+            const watchdog = setTimeout(() => {
+                // Still pending: surface a retry affordance instead of an
+                // endless spinner. Purely visual — the mutation keeps running,
+                // and any eventual onSuccess/onError transition overwrites
+                // this status (or removes the row) as usual.
+                updateMessageStatus(input.sessionId, input.localId, 'failed')
+            }, SEND_WATCHDOG_MS)
+            return { successStatus, watchdog }
         },
         onSuccess: (_, input, context) => {
+            clearTimeout(context?.watchdog)
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
@@ -232,7 +246,8 @@ export function useSendMessage(
             haptic.notification('success')
             options?.onSuccess?.(input.sessionId)
         },
-        onError: (error, input) => {
+        onError: (error, input, context) => {
+            clearTimeout(context?.watchdog)
             // Attachment sends keep the legacy failed-bubble UX: the
             // composer-restore path can only re-seat text + scheduledAt,
             // not the uploaded attachment metadata.  Removing the row
