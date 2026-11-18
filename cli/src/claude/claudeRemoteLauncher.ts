@@ -80,8 +80,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         // the stop, auto-sending it into a fresh turn. The queued rows stay
         // invoked_at IS NULL on the hub and surface in the queued bar with
         // the manual send-now (↑) affordance instead — same semantics as the
-        // dsh/codex abort paths.
-        this.session.queue.reset()
+        // dsh/codex abort paths. Dispatching steer reservations survive the
+        // reset so an in-flight steer resolves as indeterminate through its
+        // normal path instead of leaving a ghost 'dispatching' row on the hub
+        // (mirrors codexRemoteLauncher's abort reset).
+        this.session.queue.reset({ preserveDispatchingReservations: true })
         if (this.abortController && !this.abortController.signal.aborted) {
             this.abortController.abort();
         }
