@@ -2510,6 +2510,151 @@ describe('sessions routes', () => {
         expect(unlimitedBody.sessions).toHaveLength(3)
     })
 
+    it('omits detail-only and empty-default fields for view=slim', async () => {
+        const session = createSession({
+            id: 'slim-session',
+            model: 'gpt-5.4',
+            modelReasoningEffort: 'medium',
+            effort: 'high',
+            // Non-default read state must survive slim (unread dot machinery).
+            readState: { readRevision: 7, manualUnread: true, version: 3 },
+            todos: [
+                { content: 'one', status: 'completed', priority: 'medium', id: '1' },
+                { content: 'two', status: 'in_progress', priority: 'medium', id: '2' }
+            ],
+            agentState: {
+                controlledByUser: false,
+                requests: {
+                    'req-1': { tool: 'Bash', arguments: {}, createdAt: 5 }
+                },
+                completedRequests: {}
+            },
+            metadata: {
+                hapiMcpUrl: 'http://127.0.0.1:52999/mcp',
+                lastModelError: {
+                    eventId: 'evt-1',
+                    kind: 'overloaded_error',
+                    transient: true,
+                    rawSnippet: 'x'.repeat(2048),
+                    atTs: 123,
+                    priorAssistantClaimsDone: true
+                }
+            } as never
+        })
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: () => new Map([['slim-session', 0]]),
+            getNextScheduledAtBySessionIds: () => new Map([['slim-session', null]]),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => 111,
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const slim = await app.request('/api/sessions?view=slim')
+        expect(slim.status).toBe(200)
+        const slimRow = ((await slim.json()) as { sessions: Array<Record<string, unknown>> }).sessions[0]!
+
+        // Identity, order key and SSE patch-gate watermarks always present.
+        expect(slimRow.id).toBe('slim-session')
+        expect(slimRow.updatedAt).toBe(1)
+        expect(slimRow.createdAt).toBe(1)
+        expect(slimRow.metadataVersion).toBe(1)
+        expect(slimRow.agentStateVersion).toBe(1)
+        expect(slimRow.todosUpdatedAt).toBe(0)
+
+        // Referenced list state survives slim.
+        expect(slimRow.active).toBe(true)
+        expect(slimRow.readState).toEqual({ readRevision: 7, manualUnread: true, version: 3 })
+        expect(slimRow.todoProgress).toEqual({ completed: 1, total: 2 })
+        expect(slimRow.pendingRequests).toEqual([
+            { id: 'req-1', kind: 'permission', tool: 'Bash', since: 5 }
+        ])
+        expect(slimRow.pendingRequestsCount).toBe(1)
+        expect(slimRow.pendingRequestKinds).toEqual(['permission'])
+        expect((slimRow.metadata as Record<string, unknown>).lastModelError).toEqual({
+            eventId: 'evt-1',
+            kind: 'overloaded_error',
+            transient: true,
+            bridgedForEventId: undefined,
+            retriedAndFailed: undefined,
+            supersededByUserTurn: undefined,
+            bridgeable: undefined,
+            acknowledgedAt: undefined
+        })
+
+        // Detail-only fields are absent.
+        expect('model' in slimRow).toBe(false)
+        expect('modelReasoningEffort' in slimRow).toBe(false)
+        expect('effort' in slimRow).toBe(false)
+        expect('activeAt' in slimRow).toBe(false)
+        expect((slimRow.metadata as Record<string, unknown>).hapiMcpUrl).toBeUndefined()
+        expect(((slimRow.metadata as Record<string, unknown>).lastModelError as Record<string, unknown>)?.rawSnippet).toBeUndefined()
+
+        // Empty-default fields are omitted rather than materialized.
+        expect('thinking' in slimRow).toBe(false)
+        expect('pinned' in slimRow).toBe(false)
+        expect('globalPinned' in slimRow).toBe(false)
+        expect('derivedToolWork' in slimRow).toBe(false)
+        expect('backgroundTaskCount' in slimRow).toBe(false)
+        expect('futureScheduledMessageCount' in slimRow).toBe(false)
+        expect('nextScheduledAt' in slimRow).toBe(false)
+        expect('attachedJob' in slimRow).toBe(false)
+        // A non-zero allocated job watermark survives even without a job —
+        // REST must not reset the client's SSE patch gate to 0.
+        expect(slimRow.attachedJobUpdatedAt).toBe(111)
+
+        // Default (no view) keeps the full shape for existing clients.
+        const full = await app.request('/api/sessions')
+        expect(full.status).toBe(200)
+        const fullRow = ((await full.json()) as { sessions: Array<Record<string, unknown>> }).sessions[0]!
+        expect(fullRow.model).toBe('gpt-5.4')
+        expect(fullRow.effort).toBe('high')
+        expect(fullRow.activeAt).toBe(1)
+        expect(fullRow.backgroundTaskCount).toBe(0)
+        expect(fullRow.futureScheduledMessageCount).toBe(0)
+        expect(fullRow.nextScheduledAt).toBeNull()
+        expect(fullRow.attachedJob).toBeNull()
+        expect(fullRow.attachedJobUpdatedAt).toBe(111)
+        expect((fullRow.metadata as Record<string, unknown>).hapiMcpUrl).toBe('http://127.0.0.1:52999/mcp')
+    })
+
+    it('keeps non-zero scheduled extras and default read state omission in slim rows', async () => {
+        const session = createSession({ id: 'sched-session' })
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: () => new Map([['sched-session', 2]]),
+            getNextScheduledAtBySessionIds: () => new Map([['sched-session', 1700000000000]]),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => 0,
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const slim = await app.request('/api/sessions?view=slim')
+        expect(slim.status).toBe(200)
+        const slimRow = ((await slim.json()) as { sessions: Array<Record<string, unknown>> }).sessions[0]!
+        expect(slimRow.futureScheduledMessageCount).toBe(2)
+        expect(slimRow.nextScheduledAt).toBe(1700000000000)
+        // No read state on the session → key omitted entirely (readers treat
+        // absent as EMPTY_READ_STATE).
+        expect('readState' in slimRow).toBe(false)
+        // Zero allocated job watermark collapses to the omitted default.
+        expect('attachedJobUpdatedAt' in slimRow).toBe(false)
+    })
+
     it('searches message content only through the explicit content endpoint', async () => {
         const session = createSession({ id: 'content-session' })
         const engine = {

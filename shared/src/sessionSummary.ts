@@ -287,6 +287,132 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
     }
 }
 
+/**
+ * `lastModelError` as carried by view=slim list rows. The list row only
+ * renders the urgent-model-error halo, which needs the state fields
+ * (`eventId`, `kind`, `transient`, bridge/outcome flags, `acknowledgedAt`).
+ * The diagnostic payload (`rawSnippet`, `priorAssistantClaimsDone`,
+ * timestamps) belongs to the detail banner, which reads the full session
+ * metadata from GET /sessions/:id — never this projection.
+ */
+export type SessionSummaryModelErrorSlim = Omit<
+    NonNullable<SessionSummaryMetadata['lastModelError']>,
+    'rawSnippet' | 'priorAssistantClaimsDone' | 'atTs' | 'notifiedAt'
+>
+
+/**
+ * Metadata projection for view=slim list rows. Same fields as
+ * {@link SessionSummaryMetadata} minus `hapiMcpUrl` (no list surface reads
+ * it) and with the detail-only model-error payload trimmed to its state
+ * fields. Everything the session list, its hover tooltips, search and
+ * mention chips read stays.
+ */
+export type SessionSummaryMetadataSlim = Omit<SessionSummaryMetadata, 'hapiMcpUrl' | 'lastModelError'> & {
+    lastModelError?: SessionSummaryModelErrorSlim
+}
+
+/**
+ * view=slim projection of {@link SessionSummary} for GET /api/sessions?view=slim.
+ *
+ * Runtime contract (audited against every web list consumer): fields that no
+ * list surface reads are absent (`model`, `modelReasoningEffort`, `effort`,
+ * `metadata.hapiMcpUrl`, `activeAt`, model-error diagnostics), and fields at
+ * their empty default are omitted instead of materialized
+ * (`pendingRequests: []`, `todoProgress: null`, `attachedJob: null`,
+ * `backgroundTaskCount: 0`, default `readState`, `thinking/active/pinned`
+ * when false, …). All web readers access them through optional chaining,
+ * `?? default` or falsy checks, so an absent key is indistinguishable from
+ * the default. SSE keep-alive patches re-materialize the concrete values
+ * they carry, so cache rows self-heal to full fidelity between refetches.
+ *
+ * Always present even when at their default: `id`, `updatedAt`, `createdAt`
+ * (stable order key fallback), and the version watermarks
+ * `metadataVersion` / `agentStateVersion` / `todosUpdatedAt` — the SSE patch
+ * gates compare `patch.version >= current`, and `>= undefined` is always
+ * false, so omitting them would silently drop structured patches.
+ */
+export type SessionSummarySlim = Partial<Omit<SessionSummary, 'metadata'>> & {
+    id: string
+    updatedAt: number
+    createdAt?: number
+    metadataVersion: number
+    agentStateVersion: number
+    todosUpdatedAt: number
+    metadata: SessionSummaryMetadataSlim | null
+}
+
+function toSlimSessionSummaryMetadata(
+    metadata: SessionSummaryMetadata | null
+): SessionSummaryMetadataSlim | null {
+    if (!metadata) {
+        return null
+    }
+    const { hapiMcpUrl: _omitHapiMcpUrl, lastModelError, ...rest } = metadata
+    if (!lastModelError) {
+        return rest
+    }
+    const {
+        rawSnippet: _omitRawSnippet,
+        priorAssistantClaimsDone: _omitPriorClaims,
+        atTs: _omitAtTs,
+        notifiedAt: _omitNotifiedAt,
+        ...slimError
+    } = lastModelError
+    return { ...rest, lastModelError: slimError }
+}
+
+/** True when the read state is the all-default "never interacted" state and
+ *  carries no signal for the list (unread dot, merge winner). */
+function isDefaultReadState(readState: SessionSummary['readState']): boolean {
+    return readState !== undefined
+        && (readState.version ?? 0) === 0
+        && (readState.readRevision ?? 0) === 0
+        && readState.manualUnread !== true
+}
+
+/** view=slim projection for list rows: drop detail-only fields and omit
+ *  empty-default fields so the wire payload stays compact. See
+ *  {@link SessionSummarySlim} for the runtime contract. */
+export function toSlimSessionSummary(
+    session: Session,
+    extras?: Parameters<typeof toSessionSummary>[1]
+): SessionSummarySlim {
+    const summary = toSessionSummary(session, extras)
+    const {
+        model: _omitModel,
+        modelReasoningEffort: _omitModelReasoningEffort,
+        effort: _omitEffort,
+        activeAt: _omitActiveAt,
+        metadata,
+        ...rest
+    } = summary
+
+    const slim: SessionSummarySlim = {
+        ...rest,
+        metadata: toSlimSessionSummaryMetadata(metadata)
+    }
+
+    if (slim.thinking === false) delete slim.thinking
+    if (slim.active === false) delete slim.active
+    if (slim.pinned === false) delete slim.pinned
+    if (slim.globalPinned === false) delete slim.globalPinned
+    if (slim.derivedToolWork === false) delete slim.derivedToolWork
+    if (slim.hasConversationContent === false) delete slim.hasConversationContent
+    if (slim.contentRevision === 0) delete slim.contentRevision
+    if (slim.backgroundTaskCount === 0) delete slim.backgroundTaskCount
+    if (slim.futureScheduledMessageCount === 0) delete slim.futureScheduledMessageCount
+    if (slim.pendingRequestsCount === 0) delete slim.pendingRequestsCount
+    if (slim.pendingRequests?.length === 0) delete slim.pendingRequests
+    if (slim.pendingRequestKinds?.length === 0) delete slim.pendingRequestKinds
+    if (slim.todoProgress === null) delete slim.todoProgress
+    if (slim.nextScheduledAt === null) delete slim.nextScheduledAt
+    if (slim.attachedJob === null) delete slim.attachedJob
+    if (slim.attachedJobUpdatedAt === 0) delete slim.attachedJobUpdatedAt
+    if (isDefaultReadState(slim.readState)) delete slim.readState
+
+    return slim
+}
+
 export function toSessionSummary(
     session: Session,
     extras?: {
