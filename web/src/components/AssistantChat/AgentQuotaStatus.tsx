@@ -98,11 +98,20 @@ export function AgentQuotaStatus(props: { machineId: string; agentFlavor: string
         queryKey: queryKeys.machineAgentQuotas(props.machineId),
         queryFn: async () => await api.getMachineAgentQuotas(props.machineId),
         staleTime: 60_000,
+        gcTime: 10 * 60_000,
         refetchInterval: QUOTA_REFRESH_INTERVAL_MS,
+        // The machine-scoped RPC behind this endpoint is slow (seconds) and
+        // every mobile focus switch would re-pay it while stale.
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
         retry: false
     })
-    // A failed refetch keeps the previous data; hide it rather than show stale numbers.
-    const buckets = query.isError ? [] : selectComposerQuotaBuckets(query.data, props.agentFlavor)
+    // A failed INITIAL fetch has nothing to show. A failed background
+    // refetch keeps the previous numbers — quota counts drift slowly, so
+    // slightly stale beats a blinking chip.
+    const buckets = query.isError && query.data === undefined
+        ? []
+        : selectComposerQuotaBuckets(query.data, props.agentFlavor)
     if (buckets.length === 0) return null
 
     const parts = buckets.map((bucket) => {

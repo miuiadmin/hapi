@@ -153,7 +153,7 @@ describe('AgentQuotaStatus', () => {
         expect(screen.getByText('40% used')).toBeTruthy()
     })
 
-    it('hides previously loaded quotas once a refetch fails', async () => {
+    it('keeps previously loaded quotas when a background refetch fails', async () => {
         const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
         getMachineAgentQuotasMock.mockResolvedValueOnce(response)
         renderStatus('claude', queryClient)
@@ -162,7 +162,9 @@ describe('AgentQuotaStatus', () => {
         getMachineAgentQuotasMock.mockRejectedValueOnce(new Error('Runner offline'))
         await queryClient.refetchQueries()
 
-        await vi.waitFor(() => expect(screen.queryByRole('button')).toBeNull())
+        // Quota counts drift slowly; stale numbers beat a blinking chip. The
+        // button stays until the cache is cleared or a fresh load succeeds.
+        expect(screen.queryByRole('button', { name: '5h 12% · 7d 40%' })).toBeTruthy()
     })
 
     it('renders nothing when the runner cannot report quotas', async () => {
