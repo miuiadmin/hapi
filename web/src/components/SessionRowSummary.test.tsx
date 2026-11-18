@@ -1010,3 +1010,56 @@ describe('SessionRowSummary model-error + attention', () => {
         expect(screen.queryByLabelText(/Model error/i)).toBeNull()
     })
 })
+
+describe('SessionRowSummary display preference wiring', () => {
+    // The merge that took the upstream side of this file once dropped the
+    // useSessionListView wiring and left the compactRows / showPresenceBadge
+    // settings dead. These tests pin the toggle → DOM contract so a silent
+    // unwiring fails the gate.
+    function setViewPrefs(prefs: { compactRows?: boolean, showPresenceBadge?: boolean }) {
+        localStorage.setItem('hapi-session-list-compact-rows', String(prefs.compactRows ?? false))
+        localStorage.setItem('hapi-session-list-show-presence-badge', String(prefs.showPresenceBadge ?? true))
+        localStorage.setItem('hapi-session-list-status', 'all')
+        localStorage.setItem('hapi-session-list-unread-only', 'false')
+    }
+
+    it('renders the presence badge only when showPresenceBadge is on', () => {
+        setViewPrefs({ showPresenceBadge: true, compactRows: false })
+        const on = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary()} showDetailedStatus={false} />
+            </I18nProvider>
+        )
+        expect(on.container.querySelector('[data-testid="session-presence"]')).not.toBeNull()
+        on.unmount()
+
+        setViewPrefs({ showPresenceBadge: false, compactRows: false })
+        const off = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary()} showDetailedStatus={false} />
+            </I18nProvider>
+        )
+        expect(off.container.querySelector('[data-testid="session-presence"]')).toBeNull()
+    })
+
+    it('compacts the row (icon size, gap) only when compactRows is on', () => {
+        setViewPrefs({ compactRows: false, showPresenceBadge: true })
+        const roomy = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary()} showDetailedStatus={false} />
+            </I18nProvider>
+        )
+        expect(roomy.container.querySelector('.h-6.w-6')).not.toBeNull()
+        expect(roomy.container.querySelector('.h-4.w-4')).toBeNull()
+        roomy.unmount()
+
+        setViewPrefs({ compactRows: true, showPresenceBadge: true })
+        const compact = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary()} showDetailedStatus={false} />
+            </I18nProvider>
+        )
+        expect(compact.container.querySelector('.h-4.w-4')).not.toBeNull()
+        expect(compact.container.querySelector('.h-6.w-6')).toBeNull()
+    })
+})
