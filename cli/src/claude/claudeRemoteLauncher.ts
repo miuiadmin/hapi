@@ -75,6 +75,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async abort(): Promise<void> {
+        // A stop parks the queue; it must not resume it. Without this the
+        // loop's next attempt immediately consumes whatever was queued before
+        // the stop, auto-sending it into a fresh turn. The queued rows stay
+        // invoked_at IS NULL on the hub and surface in the queued bar with
+        // the manual send-now (↑) affordance instead — same semantics as the
+        // dsh/codex abort paths.
+        this.session.queue.reset()
         if (this.abortController && !this.abortController.signal.aborted) {
             this.abortController.abort();
         }
