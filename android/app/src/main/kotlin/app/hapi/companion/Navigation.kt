@@ -42,6 +42,14 @@ import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
 import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
+import app.hapi.companion.feature.settings.DictationSettingsViewModel
+import app.hapi.companion.feature.settings.ChatSettingsViewModel
+import app.hapi.companion.feature.settings.MachinesScreen
+import app.hapi.companion.feature.settings.DisplayViewModel
+import app.hapi.companion.feature.settings.SettingsDisplayScreen
+import app.hapi.companion.feature.settings.RenameMachineGateway
+import app.hapi.companion.feature.settings.MachinesViewModel
+import app.hapi.companion.feature.settings.SettingsChatScreen
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
 import app.hapi.companion.feature.files.ApiFilesGateway
 import app.hapi.companion.feature.files.FileViewerScreen
@@ -114,6 +122,7 @@ object Routes {
     /** Session files browser (B-M4c): Changes / Browse / Search tabs. */
     const val FILES = "chat/{sessionId}/files"
 
+    fun terminal(sessionId: String) = "chat/$sessionId/terminal"
     fun files(sessionId: String) = "chat/$sessionId/files"
 
     /**
@@ -174,6 +183,9 @@ object Routes {
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
     const val SETTINGS_PASSKEYS = "settings/passkeys"
+    const val SETTINGS_CHAT = "settings/chat"
+    const val SETTINGS_DISPLAY = "settings/display"
+    const val SETTINGS_MACHINES = "settings/machines"
 }
 
 /**
@@ -410,6 +422,48 @@ fun HapiNavigation() {
             )
             SettingsGeneralScreen(
                 viewModel = holder.viewModel,
+                dictation = holder.dictation,
+                onOpenMachines = { navController.navigate(Routes.SETTINGS_MACHINES) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_CHAT) {
+            val hubGraph = activeHubGraph ?: return@composable
+            // Same app-wide-prefs subpage shape as Display (per-hub key only
+            // so a hub swap rebuilds the holder from DataStore).
+            val holder = viewModel<ChatSettingsViewModelHolder>(
+                key = "settingsChat:${'$'}{hubGraph.hubUrl}",
+                factory = viewModelFactory { ChatSettingsViewModelHolder(graph) },
+            )
+            SettingsChatScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_MACHINES) {
+            val hubGraph = activeHubGraph ?: return@composable
+            val holder = viewModel<MachinesViewModelHolder>(
+                key = "settingsMachines:${hubGraph.hubUrl}",
+                factory = viewModelFactory { MachinesViewModelHolder(hubGraph) },
+            )
+            MachinesScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_DISPLAY) {
+            val hubGraph = activeHubGraph ?: return@composable
+            // Keyed per hub like the sibling subpages, though display prefs
+            // themselves are app-wide; a hub swap just rebuilds from DataStore.
+            val holder = viewModel<DisplayViewModelHolder>(
+                key = "settingsDisplay:${hubGraph.hubUrl}",
+                factory = viewModelFactory { DisplayViewModelHolder(graph) },
+            )
+            SettingsDisplayScreen(
+                viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
         }
@@ -542,6 +596,8 @@ fun HapiNavigation() {
                     navController.navigate(Routes.fileViewer(sessionId, path, mode = "file", line = line))
                 },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
+                onOpenSession = { targetId -> navController.navigate(Routes.chat(targetId)) },
+                onOpenTerminal = { navController.navigate(Routes.terminal(sessionId)) },
             )
         }
 
@@ -986,6 +1042,42 @@ private class FileViewerViewModelHolder(
  * Shells for the settings graph (B-M4e). Settings/usage/storage are hub-scoped
  * (keys include the hub origin): a hub switch swaps in fresh state.
  */
+private class DisplayViewModelHolder(graph: AppGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val viewModel = DisplayViewModel(graph.displayPrefs, scope)
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
+private class ChatSettingsViewModelHolder(graph: AppGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val viewModel = ChatSettingsViewModel(graph.chatPrefs, scope)
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
+private class MachinesViewModelHolder(hubGraph: HubGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val viewModel = MachinesViewModel(
+        machineStore = hubGraph.machineStore,
+        renameGateway = RenameMachineGateway { machineId, displayName ->
+            scope.launch {
+                hubGraph.session.api.renameMachine(machineId, displayName)
+            }
+        },
+        scope = scope,
+    )
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
 private class SettingsViewModelHolder(
     graph: AppGraph,
     hubGraph: HubGraph,
@@ -1006,8 +1098,16 @@ private class SettingsViewModelHolder(
             }
         },
         fetchHealth = { hubGraph.session.api.health() },
+        fetchHubSettings = { hubGraph.session.api.getHubSettings() },
+        putHubSettings = { request -> hubGraph.session.api.updateHubSettings(request) },
         scope = scope,
         probeHealth = probeHealth,
+    )
+    /** Dictation provider/language rows: app-wide prefs + this hub's providers. */
+    val dictation = DictationSettingsViewModel(
+        prefs = graph.dictationPrefs,
+        api = HapiDictationApi(hubGraph.session.api),
+        scope = scope,
     )
 
     override fun onCleared() {
