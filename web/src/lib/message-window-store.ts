@@ -143,7 +143,68 @@ const appliedRewindLocalIds = new Map<string, Set<string>>()
 
 const NOTIFY_THROTTLE_MS = 150
 const PERSIST_THROTTLE_MS = 200
-const STORAGE_KEY_PREFIX = 'hapi:message-window:v2:'
+const STORAGE_KEY_PREFIX = 'hapi:message-window:v3:'
+// Cross-restart persistence: localStorage survives tab close and PWA relaunch
+// so a cached re-entry paints the last tail instantly (0 network legs) while
+// reconcile runs. sessionStorage keeps a same-tab fallback for environments
+// where localStorage access throws (private mode).
+const WINDOW_STORAGE_LRU_KEY = `${STORAGE_KEY_PREFIX}__lru__`
+const WINDOW_STORAGE_MAX_SESSIONS = 12
+const WINDOW_STORAGE_MAX_BYTES = 1_000_000
+type WindowStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+const windowStorage: WindowStorage | null = (() => {
+    try {
+        return typeof localStorage?.getItem === 'function' ? localStorage : null
+    } catch {
+        return null
+    }
+})()
+const tabStorage: WindowStorage | null = (() => {
+    try {
+        return typeof sessionStorage?.getItem === 'function' ? sessionStorage : null
+    } catch {
+        return null
+    }
+})()
+/** Sessions persisted for instant re-entry, most recent last. */
+let lruSessionIds: string[] | null = null
+function readLru(): string[] {
+    if (lruSessionIds !== null) return lruSessionIds
+    if (!windowStorage) return []
+    try {
+        const raw = windowStorage.getItem(WINDOW_STORAGE_LRU_KEY)
+        const parsed = raw ? JSON.parse(raw) as unknown : null
+        lruSessionIds = Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+    } catch {
+        lruSessionIds = []
+    }
+    return lruSessionIds!
+}
+function writeLru(ids: string[]): void {
+    lruSessionIds = ids
+    if (!windowStorage) return
+    try {
+        windowStorage.setItem(WINDOW_STORAGE_LRU_KEY, JSON.stringify(ids))
+    } catch {
+    }
+}
+function touchLru(sessionId: string): void {
+    const ids = readLru().filter((id) => id !== sessionId)
+    ids.push(sessionId)
+    while (ids.length > WINDOW_STORAGE_MAX_SESSIONS) {
+        const evicted = ids.shift()
+        if (evicted !== undefined && windowStorage) {
+            try {
+                windowStorage.removeItem(`${STORAGE_KEY_PREFIX}${evicted}`)
+            } catch {
+            }
+        }
+    }
+    writeLru(ids)
+}
+function forgetLru(sessionId: string): void {
+    writeLru(readLru().filter((id) => id !== sessionId))
+}
 const pendingNotifySessionIds = new Set<string>()
 const pendingPersistSessionIds = new Set<string>()
 let notifyRafId: ReturnType<typeof requestAnimationFrame> | null = null
@@ -197,10 +258,56 @@ function getStorageKey(sessionId: string): string {
 }
 
 function isSessionStorageAvailable(): boolean {
+    return windowStorage !== null || tabStorage !== null
+}
+function readPersistedRaw(sessionId: string): string | null {
+    if (windowStorage) {
+        try {
+            const raw = windowStorage.getItem(getStorageKey(sessionId))
+            if (raw !== null) return raw
+        } catch {
+        }
+    }
+    if (tabStorage) {
+        try {
+            return tabStorage.getItem(getStorageKey(sessionId))
+        } catch {
+        }
+    }
+    return null
+}
+function writePersistedRaw(sessionId: string, raw: string): boolean {
+    if (!windowStorage) {
+        if (tabStorage) {
+            try {
+                tabStorage.setItem(getStorageKey(sessionId), raw)
+            } catch {
+            }
+        }
+        return false
+    }
+    if (raw.length > WINDOW_STORAGE_MAX_BYTES) {
+        // Oversized windows (very long rows) are skipped rather than
+        // truncated — a truncated message array would corrupt the
+        // oldest/newest position bookkeeping on re-entry.
+        return false
+    }
     try {
-        return typeof sessionStorage?.getItem === 'function'
+        windowStorage.setItem(getStorageKey(sessionId), raw)
+        touchLru(sessionId)
+        return true
     } catch {
         return false
+    }
+}
+function removePersistedRaw(sessionId: string): void {
+    forgetLru(sessionId)
+    for (const storage of [windowStorage, tabStorage]) {
+        if (!storage) continue
+        try {
+            storage.removeItem(getStorageKey(sessionId))
+        } catch {
+        }
     }
 }
 
@@ -230,7 +337,7 @@ function persistState(sessionId: string, state: InternalState): void {
     }
     try {
         if (!shouldPersistState(state)) {
-            sessionStorage.removeItem(getStorageKey(sessionId))
+            removePersistedRaw(sessionId)
             return
         }
         const persisted: PersistedMessageWindowState = {
@@ -245,7 +352,7 @@ function persistState(sessionId: string, state: InternalState): void {
             epoch: state.epoch,
             requiresLatestReset: state.requiresLatestReset
         }
-        sessionStorage.setItem(getStorageKey(sessionId), JSON.stringify(persisted))
+        writePersistedRaw(sessionId, JSON.stringify(persisted))
     } catch {
     }
 }
@@ -255,10 +362,7 @@ function clearPersistedState(sessionId: string): void {
     if (!isSessionStorageAvailable()) {
         return
     }
-    try {
-        sessionStorage.removeItem(getStorageKey(sessionId))
-    } catch {
-    }
+    removePersistedRaw(sessionId)
 }
 
 function flushPersistedStates(): void {
@@ -280,9 +384,12 @@ function schedulePersist(sessionId: string): void {
         return
     }
     pendingPersistSessionIds.add(sessionId)
-    if (persistTimerId === null) {
-        persistTimerId = setTimeout(flushPersistedStates, PERSIST_THROTTLE_MS)
+    // Trailing-edge debounce: always re-arm. A stale timer handle from a
+    // discarded clock (tests) must never block future scheduling.
+    if (persistTimerId !== null) {
+        clearTimeout(persistTimerId)
     }
+    persistTimerId = setTimeout(flushPersistedStates, PERSIST_THROTTLE_MS)
 }
 
 function createState(sessionId: string): InternalState {
@@ -320,10 +427,11 @@ function hydrateState(sessionId: string): InternalState | null {
         return null
     }
     try {
-        const raw = sessionStorage.getItem(getStorageKey(sessionId))
+        const raw = readPersistedRaw(sessionId)
         if (!raw) {
             return null
         }
+        if (windowStorage) touchLru(sessionId)
         const parsed = JSON.parse(raw) as Partial<PersistedMessageWindowState> | null
         if (!parsed || !Array.isArray(parsed.messages)) {
             clearPersistedState(sessionId)

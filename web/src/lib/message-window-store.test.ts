@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import type { NormalizedMessage } from '@/chat/types'
@@ -286,7 +286,7 @@ afterEach(() => {
         clearMessageWindow(id)
     }
     touchedSessions.clear()
-    sessionStorage.clear()
+    sessionStorage.clear(); localStorage.clear()
     vi.restoreAllMocks()
 })
 
@@ -466,7 +466,7 @@ it('fetches one older context page before first paint when the cold page is tool
 
     it('does not fetch context on cached re-entry with a tool-only latest page', async () => {
         const id = sessionId('reentry-tool-only')
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [makeAgentMessage({ id: 'cached', seq: 5, at: 5_000 })],
             hasMore: true,
             oldestPositionAt: 5_000,
@@ -700,7 +700,7 @@ it('fetches one older context page before first paint when the cold page is tool
     it('renders a persisted window immediately, then requests a small latest tail on re-entry', async () => {
         const id = sessionId('reentry')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -748,7 +748,7 @@ it('fetches one older context page before first paint when the cold page is tool
     it('keeps the catch-up flag across a failed re-entry sync and clears it once a retry lands', async () => {
         const id = sessionId('reentry-failure')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -795,7 +795,7 @@ it('fetches one older context page before first paint when the cold page is tool
             { type: 'turn_duration', flavor: 'codex', durationMs: 39_426 }
         ].map((data, index) => ({ id: `round-${index}`, seq: 40 + index, localId: null,
             createdAt: 40_000 + index, content: { role: 'agent', content: { type: 'codex', data: { ...data, turn_id: 'round' } } } }))
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: tail, hasMore: true, oldestPositionAt: 40_000, oldestPositionSeq: 40,
             newestPositionAt: 40_002, newestPositionSeq: 42, epoch: 3
         }))
@@ -829,7 +829,7 @@ it('fetches one older context page before first paint when the cold page is tool
             invokedAt: null,
             status: 'queued'
         })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached, queued],
             hasMore: true,
             oldestPositionAt: 4_000,
@@ -858,7 +858,7 @@ it('fetches one older context page before first paint when the cold page is tool
     it('keeps the latest page cursor available for older history after re-entry', async () => {
         const id = sessionId('reentry-older-history')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -909,7 +909,7 @@ it('fetches one older context page before first paint when the cold page is tool
     it('keeps cached messages visible when the re-entry refresh fails', async () => {
         const id = sessionId('reentry-refresh-failure')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -937,7 +937,7 @@ it('fetches one older context page before first paint when the cold page is tool
     it('preserves live and optimistic rows that arrive during a re-entry refresh', async () => {
         const id = sessionId('reentry-concurrent-rows')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -979,7 +979,7 @@ it('fetches one older context page before first paint when the cold page is tool
     it('keeps incremental synchronization for non-activation refreshes', async () => {
         const id = sessionId('incremental-refresh')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -1209,7 +1209,7 @@ it('fetches one older context page before first paint when the cold page is tool
     it('invalidates an in-flight incremental request when re-entry prioritizes latest', async () => {
         const id = sessionId('reentry-in-flight')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [cached],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -2388,7 +2388,7 @@ describe('reading forward from a context window', () => {
         const id = sessionId('context-forward-already-loaded')
         // A hit already inside the rendered window: loadMessageContext is
         // skipped, so there is no cursor, but the search lock is held.
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: Array.from({ length: 700 }, (_, i) => makeAgentMessage({
                 id: `row-${i}`, seq: i + 100, at: (i + 100) * 1_000
             })),
@@ -2431,7 +2431,7 @@ describe('reading forward from a context window', () => {
 
     it('restores the forward cursor from a persisted context window', () => {
         const id = sessionId('context-forward-persist')
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [makeAgentMessage({ id: 'target', seq: 40, at: 40_000 })],
             hasMore: false,
             oldestPositionAt: 40_000,
@@ -2450,7 +2450,7 @@ describe('reading forward from a context window', () => {
 
     it('does not resume forward loading for a legacy window with no context cursor', () => {
         const id = sessionId('context-forward-legacy')
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })],
             hasMore: false,
             oldestPositionAt: 40_000,
@@ -2647,7 +2647,7 @@ describe('search-target message context', () => {
         await expect(loadMessageContext(api, id, target.id)).resolves.toBe(true)
         await new Promise((resolve) => setTimeout(resolve, 250))
 
-        const raw = sessionStorage.getItem(`hapi:message-window:v2:${id}`)
+        const raw = sessionStorage.getItem(`hapi:message-window:v3:${id}`)
         expect(raw).toBeNull()
 
         const reloadedId = sessionId('search-context-persistence-reloaded')
@@ -2657,7 +2657,7 @@ describe('search-target message context', () => {
 
     it('forces a latest reset for legacy cached windows without the persisted flag', () => {
         const id = sessionId('legacy-history-cache')
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [makeAgentMessage({ id: 'legacy', seq: 40, at: 40_000 })],
             hasMore: true,
             oldestPositionAt: 40_000,
@@ -2800,7 +2800,7 @@ describe('V2 persistence boundary', () => {
 
     it('hydrates V2 sending rows as queued reconciliation candidates', () => {
         const id = sessionId('hydrate-sending')
-        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
             messages: [makeUserMessage({
                 id: 'local-1',
                 localId: 'local-1',
@@ -3621,5 +3621,46 @@ describe('gap recovery', () => {
         expect(state.pendingGapRecovery).toBe(false)
         expect(state.warning).toBeNull()
         expect(state.messages).toHaveLength(310)
+    })
+})
+
+describe('cross-restart window persistence (localStorage)', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers() })
+
+    const persistViaTailSync = async (id: string, seq: number) => {
+        activateMessageWindow(id)
+        const getMessages = vi.fn().mockResolvedValueOnce(latestResponse(
+            [makeAgentMessage({ id: `m-${seq}`, seq, at: seq * 1_000 })],
+            { epoch: 1, hasMore: false }
+        ))
+        await syncTailMessages(createApi(getMessages), id)
+    }
+
+    it('evicts the least recently written session beyond twelve persisted windows', async () => {
+        const ids = Array.from({ length: 13 }, (_, i) => sessionId(`lru-${i}`))
+        for (const [index, id] of ids.entries()) {
+            await persistViaTailSync(id, index + 1)
+        }
+        await vi.advanceTimersByTimeAsync(200 + 50)
+        const lru = JSON.parse(localStorage.getItem('hapi:message-window:v3:__lru__') as string) as string[]
+        expect(lru).toHaveLength(12)
+        expect(localStorage.getItem(`hapi:message-window:v3:${ids[0]}`)).toBeNull()
+        expect(localStorage.getItem(`hapi:message-window:v3:${ids[12]}`)).not.toBeNull()
+    })
+
+    it('hydrates a window persisted only in localStorage after a restart', () => {
+        const id = sessionId('restart-reentry')
+        localStorage.setItem(`hapi:message-window:v3:${id}`, JSON.stringify({
+            messages: [makeAgentMessage({ id: 'kept', seq: 5, at: 5_000 })],
+            hasMore: true,
+            oldestPositionAt: 5_000,
+            oldestPositionSeq: 5,
+            newestPositionAt: 5_000,
+            newestPositionSeq: 5,
+            epoch: 1
+        }))
+        activateMessageWindow(id)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toContain('kept')
     })
 })
