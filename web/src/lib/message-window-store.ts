@@ -463,8 +463,16 @@ function pruneExcessPersistedWindows(): void {
             if (!isLegacy && !key.startsWith(STORAGE_KEY_PREFIX)) {
                 continue
             }
-            const id = key.slice((isLegacy ? LEGACY_STORAGE_KEY_PREFIX : STORAGE_KEY_PREFIX).length)
-            if (id === '__lru__' || lruIds.includes(id)) {
+            // Eviction candidates are LEGACY v2 keys only: v3 windows are
+            // bounded by the write-time LRU, and evicting a v3 window that
+            // the eager prefetch just persisted (no listeners yet) made the
+            // prefetch re-fetch it on every flush — a war that pinned the
+            // session list in its loading state.
+            if (!isLegacy) {
+                continue
+            }
+            const id = key.slice(LEGACY_STORAGE_KEY_PREFIX.length)
+            if (lruIds.includes(id)) {
                 continue
             }
             if ((listeners.get(id)?.size ?? 0) > 0) {
@@ -556,8 +564,11 @@ function flushPersistedStates(): void {
             clearPersistedState(sessionId)
         }
     }
-    // Reload pruning rides every persist flush so legacy and unhydrated
-    // windows stay bounded even when no in-memory eviction runs.
+    // Reload pruning rides the flush, but only ever evicts LEGACY v2 keys:
+    // v3 windows are bounded by the write-time LRU, and evicting a v3
+    // window the eager prefetch just persisted (no listeners yet) made the
+    // prefetch re-fetch it on every flush — a war that pinned the session
+    // list in its loading state on devices with many sessions.
     pruneExcessPersistedWindows()
 }
 
