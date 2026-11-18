@@ -49,6 +49,7 @@ export interface HapiMcpBridgeOptions {
     exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    enableLinkPr?: boolean;
     onChangeTitle?: (title: string) => void;
     /** Session project cwd for relative spawn_peer directories (Codex --cd aware). */
     workingDirectory?: string;
@@ -92,7 +93,7 @@ export async function buildHapiMcpBridge(
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
         skillLookup: options.skillLookup,
-        askUserTool: options.askUserTool,
+        askUserTool: options.askUserTool,        enableLinkPr: options.enableLinkPr,
         onChangeTitle: options.onChangeTitle,
         workingDirectory: options.workingDirectory ?? options.skillLookup?.workingDirectory
     });
@@ -123,6 +124,14 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
+    // Prompt — not approve: link_pr mutates session metadata. Native
+    // pre-approval would bypass BasePermissionHandler's read-only guard.
+    if (happyServer.toolNames.includes('link_pr')) {
+        tools.link_pr = {
+            approval_mode: 'prompt'
+        };
+    }
+
     // Discovery shortlist only - same trust as skill_lookup / change_title.
     // Skipped when this session's peer tools are disabled (create-time
     // snapshot first: later bootstraps in the same process must not flip an

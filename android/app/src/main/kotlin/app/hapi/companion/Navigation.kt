@@ -2,13 +2,7 @@ package app.hapi.companion
 
 import android.content.Context
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -21,7 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -44,46 +38,31 @@ import app.hapi.companion.di.viewModelFactory
 import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
-import app.hapi.companion.feature.agentterminal.AgentTerminalViewModel
-import app.hapi.companion.feature.agentterminal.SocketIoAgentTerminalGateway
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
-import app.hapi.companion.feature.chat.attachments.PrepareResult
-import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
 import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
-import app.hapi.companion.feature.chat.composer.AudioRecordStreamingSource
-import app.hapi.companion.feature.chat.composer.DeepgramRealtimeDictationEngine
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
-import app.hapi.companion.feature.chat.composer.OkHttpProviderSocketFactory
-import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
 import app.hapi.companion.feature.files.ApiFilesGateway
-import app.hapi.companion.feature.files.DirectoryExpandPrefs
-import app.hapi.companion.feature.files.DirectorySortPrefs
-import app.hapi.companion.feature.files.FilePaths
 import app.hapi.companion.feature.files.FileViewerScreen
 import app.hapi.companion.feature.files.FileViewerStrings
 import app.hapi.companion.feature.files.FileViewerViewModel
 import app.hapi.companion.feature.files.FilesScreen
 import app.hapi.companion.feature.files.FilesStrings
 import app.hapi.companion.feature.files.FilesViewModel
-import app.hapi.companion.feature.files.MarkdownPreviewPrefs
 import app.hapi.companion.feature.files.ViewerMode
 import app.hapi.companion.feature.home.HomeScreen
 import app.hapi.companion.feature.newsession.ApiNewSessionGateway
-import app.hapi.companion.feature.newsession.CodexImportStrings
-import app.hapi.companion.feature.newsession.CodexImportedSessionsStore
-import app.hapi.companion.feature.newsession.MemoryCodexImportedSessionsStore
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionScreen
 import app.hapi.companion.feature.newsession.NewSessionStrings
 import app.hapi.companion.feature.newsession.NewSessionViewModel
-import app.hapi.companion.feature.newsession.PiImportStrings
 import app.hapi.companion.feature.pairing.ManualEntryScreen
 import app.hapi.companion.feature.pairing.PairingScreen
 import app.hapi.companion.feature.pairing.PasskeySignInScreen
 import app.hapi.companion.feature.passkey.CredentialManagerPasskeyPlatform
 import app.hapi.companion.feature.passkey.findActivity
+import app.hapi.companion.feature.pairing.PairingError
 import app.hapi.companion.feature.pairing.PairingUiState
 import app.hapi.companion.feature.pairing.PairingViewModel
 import app.hapi.companion.feature.pairing.QrScanScreen
@@ -91,22 +70,9 @@ import app.hapi.companion.feature.scratchlist.ContentResolverAttachmentImporter
 import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
-import app.hapi.companion.feature.sessions.ApiSessionExportFetcher
 import app.hapi.companion.feature.sessions.InMemorySessionListOrderStore
-import app.hapi.companion.feature.sessions.SessionDisplayPrefs
-import app.hapi.companion.feature.sessions.SessionExportSupport
-import app.hapi.companion.feature.sessions.SessionGroupCollapsePrefs
 import app.hapi.companion.feature.sessions.SessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionListViewModel
-import app.hapi.companion.feature.settings.ChatSettingsViewModel
-import app.hapi.companion.feature.settings.DictationSettingsViewModel
-import app.hapi.companion.feature.settings.DisplayViewModel
-import app.hapi.companion.feature.settings.MachinesScreen
-import app.hapi.companion.feature.settings.MachinesViewModel
-import app.hapi.companion.feature.settings.RenameMachineGateway
-import app.hapi.companion.feature.settings.SessionHeaderMetadata
-import app.hapi.companion.feature.settings.SettingsChatScreen
-import app.hapi.companion.feature.settings.SettingsDisplayScreen
 import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
@@ -121,32 +87,19 @@ import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
-import app.hapi.companion.feature.terminal.SharedPrefsTerminalFontPrefs
-import app.hapi.companion.feature.terminal.SocketIoTerminalGateway
-import app.hapi.companion.feature.terminal.TerminalEventListener
-import app.hapi.companion.feature.terminal.TerminalScreen
-import app.hapi.companion.feature.terminal.TerminalViewModel
-import app.hapi.companion.feature.toasts.HubToasts
 import app.hapi.data.auth.AuthTerminalReason
 import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.protocol.wire.PasskeySummary
 import app.hapi.protocol.wire.SessionListOrder
 import kotlinx.serialization.json.JsonObject
-import okhttp3.OkHttpClient
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
-import kotlinx.coroutines.withTimeoutOrNull
 
 object Routes {
     const val HOME = "home"
@@ -198,13 +151,8 @@ object Routes {
 
     fun scratchlist(sessionId: String) = "chat/$sessionId/scratchlist"
 
-    /** Interactive remote terminal, pushed above its chat. */
-    const val TERMINAL = "chat/{sessionId}/terminal"
-
-    fun terminal(sessionId: String) = "chat/$sessionId/terminal"
-
     /** New-session form (B-M3d); optional machine preselect. */
-    const val NEW_SESSION = "newSession?machineId={machineId}&share={share}"
+    const val NEW_SESSION = "newSession?machineId={machineId}"
 
     fun newSession(machineId: String? = null) =
         if (machineId == null) "newSession" else "newSession?machineId=$machineId"
@@ -219,21 +167,12 @@ object Routes {
     /**
      * Settings hub (category directory) + flat subpage routes (B-M4e → P2
      * hub IA). Usage/Storage are owner-only dashboards reached straight from
-     * the hub rows; General holds the uncategorized items, Display the P2
-     * session-list/metadata/font-scale preferences, Chat the P2
-     * composer/collapse/surface-color preferences.
+     * the hub rows; General holds the uncategorized items.
      */
     const val SETTINGS = "settings"
     const val SETTINGS_GENERAL = "settings/general"
-    const val SETTINGS_DISPLAY = "settings/display"
-    const val SETTINGS_CHAT = "settings/chat"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
-
-    /** Machines management (rename) under settings (web `/settings/machines`). */
-    const val SETTINGS_MACHINES = "settings/machines"
-
-    /** Passkey management under settings (web `/settings/passkeys`). */
     const val SETTINGS_PASSKEYS = "settings/passkeys"
 }
 
@@ -306,9 +245,6 @@ fun HapiNavigation() {
         }
     }
 
-    // A system share arrived (ACTION_SEND, cold start or onNewIntent): the
-    // share inbox above owns the hand-off (upstream flow); nothing to do here.
-
     // Last hub signed out (or roster wiped): nothing to show but pairing.
     // Any other active-hub change invalidates an open chat (old hub's session).
     LaunchedEffect(registryState.activeHubUrl) {
@@ -321,39 +257,9 @@ fun HapiNavigation() {
             }
         } else if (
             navController.currentDestination?.route in
-                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST, Routes.TERMINAL)
+                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
         ) {
             navController.popBackStack(Routes.HOME, inclusive = false)
-        }
-    }
-
-    // Hub-pushed toasts (web `ToastContainer` twin): collected at the app
-    // level and shown one at a time as a top snackbar over the nav host —
-    // 6 s auto-dismiss (web TOAST_DURATION_MS; SnackbarDuration has no custom
-    // value, hence Indefinite + withTimeoutOrNull), action tap opens the
-    // target session (push-tap navigation shape), no target = plain display.
-    // Sequential rather than the web's stacked column — declared divergence.
-    val toastSnackbar = remember { SnackbarHostState() }
-    val toastContext = LocalContext.current
-    LaunchedEffect(activeHubGraph, navController, toastContext) {
-        val hubGraph = activeHubGraph ?: return@LaunchedEffect
-        hubGraph.toasts.collect { toast ->
-            val route = HubToasts.routeFor(toast)
-            val result = withTimeoutOrNull(HubToasts.DURATION_MS) {
-                toastSnackbar.showSnackbar(
-                    message = HubToasts.message(toast),
-                    actionLabel = route?.let { toastContext.getString(R.string.toast_open) },
-                    withDismissAction = true,
-                    duration = SnackbarDuration.Indefinite,
-                )
-            }
-            if (result == SnackbarResult.ActionPerformed && route != null) {
-                navController.navigate(route) {
-                    // Keep the stack shallow: back always lands on the list.
-                    popUpTo(Routes.HOME)
-                    launchSingleTop = true
-                }
-            }
         }
     }
 
@@ -429,7 +335,6 @@ fun HapiNavigation() {
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.SHARE, arguments = listOf(navArgument("requestId") { type = NavType.StringType })) { entry ->
             val batch = shares.find { it.id == entry.arguments?.getString("requestId") } ?: return@composable
@@ -467,13 +372,7 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory {
-                    SessionListViewModelHolder(
-                        graph.sessionDisplayPrefs,
-                        graph.sessionGroupCollapsePrefs,
-                        graph.displayPrefs.settings.map { it.showActiveSessionsOnly },
-                    )
-                },
+                factory = viewModelFactory { SessionListViewModelHolder() },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph, graph.sessionListOrderPrefs),
@@ -485,12 +384,6 @@ fun HapiNavigation() {
                 onOpenSession = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
                 onNewSession = { navController.navigate(Routes.newSession()) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                sessionExport = remember(hubGraph, graph) {
-                    SessionExportSupport(
-                        fetcher = ApiSessionExportFetcher(hubGraph.session.api),
-                        formatStore = graph.sessionExportFormatStore,
-                    )
-                },
                 connectionChrome = hubGraph.connectionChrome,
                 runnerSkewChrome = hubGraph.runnerSkewChrome,
             )
@@ -516,48 +409,6 @@ fun HapiNavigation() {
                 factory = viewModelFactory { SettingsViewModelHolder(graph, hubGraph) },
             )
             SettingsGeneralScreen(
-                viewModel = holder.viewModel,
-                dictation = holder.dictation,
-                onOpenMachines = { navController.navigate(Routes.SETTINGS_MACHINES) },
-                onBack = { navController.popBackStack() },
-            )
-        }
-
-        composable(Routes.SETTINGS_MACHINES) {
-            val hubGraph = activeHubGraph ?: return@composable
-            val holder = viewModel<MachinesViewModelHolder>(
-                key = "settingsMachines:${hubGraph.hubUrl}",
-                factory = viewModelFactory { MachinesViewModelHolder(hubGraph) },
-            )
-            MachinesScreen(
-                viewModel = holder.viewModel,
-                onBack = { navController.popBackStack() },
-            )
-        }
-
-        composable(Routes.SETTINGS_DISPLAY) {
-            val hubGraph = activeHubGraph ?: return@composable
-            // Keyed per hub like the sibling subpages, though display prefs
-            // themselves are app-wide; a hub swap just rebuilds from DataStore.
-            val holder = viewModel<DisplayViewModelHolder>(
-                key = "settingsDisplay:${hubGraph.hubUrl}",
-                factory = viewModelFactory { DisplayViewModelHolder(graph) },
-            )
-            SettingsDisplayScreen(
-                viewModel = holder.viewModel,
-                onBack = { navController.popBackStack() },
-            )
-        }
-
-        composable(Routes.SETTINGS_CHAT) {
-            val hubGraph = activeHubGraph ?: return@composable
-            // Same app-wide-prefs subpage shape as Display (per-hub key only
-            // so a hub swap rebuilds the holder from DataStore).
-            val holder = viewModel<ChatSettingsViewModelHolder>(
-                key = "settingsChat:${hubGraph.hubUrl}",
-                factory = viewModelFactory { ChatSettingsViewModelHolder(graph) },
-            )
-            SettingsChatScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
@@ -621,13 +472,7 @@ fun HapiNavigation() {
             }
             val holder = viewModel<ChatViewModelHolder>(
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
-                factory = viewModelFactory {
-                    ChatViewModelHolder(
-                        graph, hubGraph, sessionId, appContext,
-                        graph.dictationProviderId, graph.dictationLanguage,
-                        graph.sessionHeaderMetadata,
-                    )
-                },
+                factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
             )
             DisposableEffect(holder) {
                 composedChat.value = ComposedChat(hubGraph.hubUrl, holder.viewModel)
@@ -667,7 +512,6 @@ fun HapiNavigation() {
                         generatedImageUrl = { imageId ->
                             hubGraph.generatedImageUrl(sessionId, imageId)
                         },
-                        hubMediaUrl = { path -> hubGraph.hubMediaUrl(path) },
                         // Non-image generated media (video/audio/file): same
                         // endpoint, same authed client (JWT + silent 401
                         // re-auth + ETag disk cache) as the image loader.
@@ -697,21 +541,7 @@ fun HapiNavigation() {
                     // a hint chip (no per-line highlight — B-M4c trade-off).
                     navController.navigate(Routes.fileViewer(sessionId, path, mode = "file", line = line))
                 },
-                onOpenSession = { targetId ->
-                    // Session citations PUSH the cited chat: back returns to
-                    // the citing conversation (web SPA history parity), unlike
-                    // the supersede callback above which replaces this entry.
-                    navController.navigate(Routes.chat(targetId)) { launchSingleTop = true }
-                },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
-                sessionExport = remember(hubGraph, graph) {
-                    SessionExportSupport(
-                        fetcher = ApiSessionExportFetcher(hubGraph.session.api),
-                        formatStore = graph.sessionExportFormatStore,
-                    )
-                },
-                onOpenTerminal = { navController.navigate(Routes.terminal(sessionId)) },
-                agentTerminal = holder.agentTerminal,
             )
         }
 
@@ -722,47 +552,17 @@ fun HapiNavigation() {
             val sessionId = entry.arguments?.getString("sessionId") ?: return@composable
             val hubGraph = activeHubGraph ?: return@composable
             val filesContext = LocalContext.current
-            val appContext = filesContext.applicationContext
             val holder = viewModel<FilesViewModelHolder>(
                 key = "files:${hubGraph.hubUrl}:$sessionId",
                 factory = viewModelFactory {
-                    FilesViewModelHolder(
-                        hubGraph, sessionId, filesStrings(filesContext),
-                        graph.directorySortPrefs, graph.directoryExpandPrefs,
-                    )
+                    FilesViewModelHolder(hubGraph, sessionId, filesStrings(filesContext))
                 },
             )
-            // "Add to composer" reuses the chat ViewModel of the entry below
-            // this route (same holder key + the chat entry as owner), so the
-            // backticked reference lands in the live composer draft, not a
-            // stale one. Guarded: without a chat below, the menu item hides
-            // (web `canAddToComposer` twin).
-            val chatEntry = remember(entry) {
-                runCatching { navController.getBackStackEntry(Routes.CHAT) }.getOrNull()
-            }
-            val chatHolder = chatEntry?.let { owner ->
-                viewModel<ChatViewModelHolder>(
-                    viewModelStoreOwner = owner,
-                    key = "chat:${hubGraph.hubUrl}:$sessionId",
-                    factory = viewModelFactory {
-                        ChatViewModelHolder(
-                            graph, hubGraph, sessionId, appContext,
-                            graph.dictationProviderId, graph.dictationLanguage,
-                        )
-                    },
-                )
-            }
             FilesScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
                 onOpenFile = { path, staged ->
                     navController.navigate(Routes.fileViewer(sessionId, path, staged = staged))
-                },
-                onAddFileToComposer = chatHolder?.let { chat ->
-                    { path ->
-                        chat.viewModel.insertComposerText(FilePaths.formatFileReference(path))
-                        navController.popBackStack()
-                    }
                 },
             )
         }
@@ -811,7 +611,6 @@ fun HapiNavigation() {
                     FileViewerViewModelHolder(
                         hubGraph, sessionId, path, staged, mode, line,
                         fileViewerStrings(viewerContext),
-                        graph.markdownPreviewPrefs,
                     )
                 },
             )
@@ -843,13 +642,7 @@ fun HapiNavigation() {
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
-                    factory = viewModelFactory {
-                        ChatViewModelHolder(
-                            graph, hubGraph, sessionId, appContext,
-                            graph.dictationProviderId, graph.dictationLanguage,
-                            graph.sessionHeaderMetadata,
-                        )
-                    },
+                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
                 )
             }
             ScratchlistScreen(
@@ -862,31 +655,10 @@ fun HapiNavigation() {
                 onBack = { navController.popBackStack() },
                 onSendToComposer = chatHolder?.let { chat ->
                     { scratchEntry ->
-                        chat.viewModel.promoteScratchlistEntryToComposer(scratchEntry)
+                        chat.viewModel.insertComposerText(scratchEntry.text)
                         navController.popBackStack()
                     }
                 },
-                // "Send to queue" stays on this screen (busy state machine +
-                // entry delete live in the scratchlist ViewModel); true =
-                // hub accepted.
-                onSendToQueue = chatHolder?.let { chat -> chat.viewModel::sendScratchlistEntryToQueue },
-            )
-        }
-
-        composable(
-            route = Routes.TERMINAL,
-            arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
-        ) { entry ->
-            val sessionId = entry.arguments?.getString("sessionId") ?: return@composable
-            val hubGraph = activeHubGraph ?: return@composable
-            val appContext = LocalContext.current.applicationContext
-            val holder = viewModel<TerminalViewModelHolder>(
-                key = "terminal:${hubGraph.hubUrl}:$sessionId",
-                factory = viewModelFactory { TerminalViewModelHolder(hubGraph, sessionId, appContext) },
-            )
-            TerminalScreen(
-                viewModel = holder.viewModel,
-                onBack = { navController.popBackStack() },
             )
         }
 
@@ -907,11 +679,8 @@ fun HapiNavigation() {
                 key = "newSession:${hubGraph.hubUrl}",
                 factory = viewModelFactory {
                     NewSessionViewModelHolder(
-                        hubGraph, graph.newSessionPrefs, graph.directoryBrowserPrefs, machineId,
+                        hubGraph, graph.newSessionPrefs, machineId,
                         newSessionStrings(formContext),
-                        codexImportedSessionsStore = graph.codexImportedSessionsStore,
-                        codexImportStrings = codexImportStrings(formContext),
-                        piImportStrings = piImportStrings(formContext),
                     )
                 },
             )
@@ -944,6 +713,19 @@ fun HapiNavigation() {
                     }
                 }
                 NavigateHomeOnSuccess(navController, state)
+                val context = LocalContext.current
+                // Passkey sign-in starts the single system sheet right here.
+                // A passkey failure (incl. "enter the Hub address") continues
+                // on the passkey screen, which shares this ViewModel's state.
+                // Plain remember: returning to this screen must not re-navigate.
+                var passkeyStarted by remember { mutableStateOf(false) }
+                LaunchedEffect(state, passkeyStarted) {
+                    if (!passkeyStarted || state == PairingUiState.Validating) return@LaunchedEffect
+                    passkeyStarted = false
+                    if ((state as? PairingUiState.Error)?.error is PairingError.Passkey) {
+                        navController.navigate(Routes.PAIRING_PASSKEY)
+                    }
+                }
 
                 PairingScreen(
                     state = state,
@@ -955,7 +737,12 @@ fun HapiNavigation() {
                     },
                     onScanQr = { navController.navigate(Routes.PAIRING_SCAN) },
                     onManualEntry = { navController.navigate(Routes.PAIRING_MANUAL) },
-                    onPasskeySignIn = { navController.navigate(Routes.PAIRING_PASSKEY) },
+                    onPasskeySignIn = {
+                        context.findActivity()?.let { activity ->
+                            passkeyStarted = true
+                            viewModel.signInWithPasskey(null, CredentialManagerPasskeyPlatform(activity))
+                        }
+                    },
                     onPairPrefill = viewModel::pairFromPrefill,
                     onSwitchToPrefilledHub = viewModel::switchToPrefilledHub,
                     onDismissPrefill = viewModel::dismissPrefill,
@@ -1000,11 +787,6 @@ fun HapiNavigation() {
                 PasskeySignInScreen(
                     state = state,
                     initialHubUrl = prefill?.hubUrl.orEmpty(),
-                    onDiscover = {
-                        context.findActivity()?.let { activity ->
-                            viewModel.discoverPasskeyHub(CredentialManagerPasskeyPlatform(activity))
-                        }
-                    },
                     onSignIn = { hubUrl ->
                         // The system sheet needs the hosting Activity.
                         context.findActivity()?.let { activity ->
@@ -1016,16 +798,6 @@ fun HapiNavigation() {
                 )
             }
         }
-    }
-
-    // Top-center like the web container (`safe-area-inset-top` twin); renders
-    // nothing while no toast is showing, so it never blocks screen input.
-    SnackbarHost(
-        hostState = toastSnackbar,
-        modifier = Modifier
-            .align(Alignment.TopCenter)
-            .statusBarsPadding(),
-    )
     }
 }
 
@@ -1088,15 +860,9 @@ private class ShareViewModelHolder : ViewModel() {
  * Androidx-lifecycle shell around the plain [SessionListViewModel]: survives
  * config changes with the nav entry. Retain only the current graph: returning
  * to the same URL creates a new HubGraph and must not revive a closed store
- * or its old filter. The global SSE pipe still belongs to HubGraph. The P2
- * display "active sessions only" lens arrives as an app-wide flow (default
- * off, so tests and previews construct without display prefs).
+ * or its old filter. The global SSE pipe still belongs to HubGraph.
  */
-private class SessionListViewModelHolder(
-    private val displayPrefs: SessionDisplayPrefs? = null,
-    private val groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
-    private val showActiveSessionsOnly: Flow<Boolean> = flowOf(false),
-) : ViewModel() {
+private class SessionListViewModelHolder : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
@@ -1114,10 +880,6 @@ private class SessionListViewModelHolder(
             lastSeenStore = hubGraph.lastSeenStore,
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
-            displayPrefs = displayPrefs,
-            groupCollapsePrefs = groupCollapsePrefs,
-            showActiveSessionsOnly = showActiveSessionsOnly,
-            cursorChatStoreProbe = hubGraph.session.api::getCursorChatStoreStatus,
             connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
             orderStore = orderStore,
         ).also { model = it }
@@ -1129,42 +891,13 @@ private class SessionListViewModelHolder(
     }
 }
 
-/** Shell for the Display subpage's [DisplayViewModel] (app-wide prefs, no hub state). */
-private class DisplayViewModelHolder(graph: AppGraph) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val viewModel = DisplayViewModel(graph.displayPrefs, scope)
-
-    override fun onCleared() {
-        scope.cancel()
-    }
-}
-
-/** Same shell for the Chat subpage's [ChatSettingsViewModel] (app-wide prefs). */
-private class ChatSettingsViewModelHolder(graph: AppGraph) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val viewModel = ChatSettingsViewModel(graph.chatPrefs, scope)
-
-    override fun onCleared() {
-        scope.cancel()
-    }
-}
-
 /** Same shell for the per-session [ChatViewModel] (+ its dictation controller). */
 private class ChatViewModelHolder(
-    private val appGraph: AppGraph,
     hubGraph: HubGraph,
     sessionId: String,
     appContext: Context,
-    // Defaults keep the holder compilable for callers that predate dictation
-    // overrides (e.g. forks with extra chat entry points): null flows mean
-    // auto provider + auto language, i.e. the pre-override behavior.
-    dictationProviderId: StateFlow<String?> = MutableStateFlow(null),
-    dictationLanguage: StateFlow<String?> = MutableStateFlow(null),
-    /** P2 display gates for the header subtitle (app-wide flow; default = all visible). */
-    headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val attachmentPreparer = AttachmentPreparer(appContext)
 
     val viewModel = ChatViewModel(
         sessionId = sessionId,
@@ -1177,86 +910,26 @@ private class ChatViewModelHolder(
         syncTargets = hubGraph.syncTargets,
         scope = scope,
         drafts = hubGraph.chatDrafts,
-        attachmentDrafts = hubGraph.attachmentDrafts,
-        draftSnapshots = hubGraph.composerDraftSnapshots,
         scratchlist = hubGraph.scratchlistStore,
-        recentSkills = hubGraph.recentSkills,
-        // Scratchlist promote seams (web `scratchlistAttachmentFlow.ts`):
-        // hub blob fetch + the Android pick pipeline for rehydration.
-        scratchlistBlobFetcher = ScratchlistPromoter.AttachmentFetcher { id, attachmentId ->
-            try {
-                hubGraph.session.api.getScratchlistAttachment(id, attachmentId)
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (_: Exception) {
-                null
-            }
-        },
-        scratchlistPickPreparer = ScratchlistPromoter.PickPreparer { attachment, bytes, mimeType ->
-            val resolved = mimeType.takeIf { it.isNotBlank() } ?: attachment.mimeType
-            when (val prepared = attachmentPreparer.prepareFetched(attachment.filename, resolved, bytes)) {
-                is PrepareResult.Ready -> prepared.attachment
-                else -> null
-            }
-        },
-        headerMetadata = headerMetadata,
     )
 
     /**
      * Holder-scoped so a recording survives rotation; [onCleared] discards
-     * any take still open when the screen goes away for good. The provider /
-     * language overrides read the app-graph caches live, so settings changes
-     * apply from the next take without recreating the chat.
+     * any take still open when the screen goes away for good.
      */
     val dictation = DictationController(
         api = HapiDictationApi(hubGraph.session.api),
         recorder = MediaRecorderDictation(appContext),
         scope = scope,
-        preferredProviderId = { dictationProviderId.value },
-        languageCode = { dictationLanguage.value },
-        realtimeEngine = DeepgramRealtimeDictationEngine(
-            api = hubGraph.session.api,
-            socketFactory = OkHttpProviderSocketFactory(OkHttpClient()),
-            audioFactory = { AudioRecordStreamingSource() },
-        ),
-    )
-
-    /**
-     * Agent PTY panel, chat-embedded. Lives with the chat VM so the
-     * socket (and its unsubscribe-on-destroy) follows the chat screen's
-     * lifetime, not the panel's show/hide toggles. Lazy: it only connects
-     * once the panel is first opened (web connects at hidden mount).
-     */
-    val agentTerminal = AgentTerminalViewModel(
-        sessionId = sessionId,
-        sessionStore = hubGraph.sessionStore,
-        gatewayFactory = { listener: app.hapi.companion.feature.agentterminal.AgentTerminalEventListener ->
-            SocketIoAgentTerminalGateway(
-                baseUrl = hubGraph.hubUrl,
-                sessionId = sessionId,
-                tokenProvider = {
-                    withContext(Dispatchers.IO) {
-                        hubGraph.session.authenticator.currentJwt() ?: hubGraph.session.ensureFreshToken()
-                    }
-                },
-                listener = listener,
-                scope = scope,
-            )
-        },
-        scope = scope,
     )
 
     override fun onCleared() {
         dictation.cancel()
-        // Stop BEFORE discarding: the exit flush persists the final text +
-        // tray references while the tray still holds them, then the discard
-        // empties it (drafts v2 keeps the hub uploads — the persisted/carried
-        // references own them; only the in-memory tray goes away).
-        viewModel.stop()
+        // Leaving the chat for good (not rotation): un-sent uploaded
+        // attachments are discarded after a best-effort hub delete (B-M3f;
+        // attachments are not part of drafts v1).
         viewModel.discardAttachments()
-        // Best-effort unsubscribe + socket stop before the scope dies (the
-        // hub also idles the stream on socket-level disconnect).
-        agentTerminal.close()
+        viewModel.stop()
         scope.cancel()
     }
 }
@@ -1266,8 +939,6 @@ private class FilesViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     strings: FilesStrings,
-    sortPrefs: DirectorySortPrefs,
-    expandPrefs: DirectoryExpandPrefs,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -1276,11 +947,6 @@ private class FilesViewModelHolder(
         gateway = ApiFilesGateway(hubGraph.session.api),
         scope = scope,
         strings = strings,
-        sortSource = sortPrefs.sort,
-        onSortChanged = { sort -> sortPrefs.setSort(sort) },
-        expandedSource = expandPrefs.expandedPaths(hubGraph.hubUrl, sessionId),
-        onExpandedChanged = { paths -> expandPrefs.setExpandedPaths(hubGraph.hubUrl, sessionId, paths) },
-        sessions = hubGraph.sessionStore.sessions,
     )
 
     override fun onCleared() {
@@ -1297,7 +963,6 @@ private class FileViewerViewModelHolder(
     mode: ViewerMode?,
     line: Int?,
     strings: FileViewerStrings,
-    markdownPrefs: MarkdownPreviewPrefs,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -1310,10 +975,6 @@ private class FileViewerViewModelHolder(
         gateway = ApiFilesGateway(hubGraph.session.api),
         scope = scope,
         strings = strings,
-        // The pref stores the non-default Source choice (web twin); the VM
-        // state is the preview flag, so flip at the seam.
-        markdownPreviewSource = markdownPrefs.source.map { source -> !source },
-        onMarkdownPreviewChanged = { preview -> markdownPrefs.setSource(!preview) },
     )
 
     override fun onCleared() {
@@ -1345,34 +1006,8 @@ private class SettingsViewModelHolder(
             }
         },
         fetchHealth = { hubGraph.session.api.health() },
-        fetchHubSettings = { hubGraph.session.api.getHubSettings() },
-        putHubSettings = { hubGraph.session.api.updateHubSettings(it) },
         scope = scope,
         probeHealth = probeHealth,
-    )
-
-    /** Dictation provider/language rows: app-wide prefs + this hub's providers. */
-    val dictation = DictationSettingsViewModel(
-        prefs = graph.dictationPrefs,
-        api = HapiDictationApi(hubGraph.session.api),
-        scope = scope,
-    )
-
-    override fun onCleared() {
-        scope.cancel()
-    }
-}
-
-/** Shell for the machines screen; live store keeps names current after rename. */
-private class MachinesViewModelHolder(hubGraph: HubGraph) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    val viewModel = MachinesViewModel(
-        machineStore = hubGraph.machineStore,
-        renameGateway = RenameMachineGateway { machineId, displayName ->
-            hubGraph.session.api.renameMachine(machineId, displayName)
-        },
-        scope = scope,
     )
 
     override fun onCleared() {
@@ -1448,54 +1083,12 @@ private class ScratchlistViewModelHolder(
     }
 }
 
-/** Shell for the interactive remote terminal. */
-private class TerminalViewModelHolder(
-    hubGraph: HubGraph,
-    sessionId: String,
-    appContext: Context,
-) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    val viewModel = TerminalViewModel(
-        sessionId = sessionId,
-        sessionStore = hubGraph.sessionStore,
-        // Factory-injection solves VM↔gateway ordering: the gateway gets the
-        // event listener the VM constructs it with.
-        gatewayFactory = { listener: TerminalEventListener ->
-            SocketIoTerminalGateway(
-                baseUrl = hubGraph.hubUrl,
-                sessionId = sessionId,
-                tokenProvider = {
-                    // Store reads may block; the fallback exchange is network
-                    // I/O (same pattern as the settings holder).
-                    withContext(Dispatchers.IO) {
-                        hubGraph.session.authenticator.currentJwt() ?: hubGraph.session.ensureFreshToken()
-                    }
-                },
-                listener = listener,
-                scope = scope,
-            )
-        },
-        fontPrefs = SharedPrefsTerminalFontPrefs(appContext),
-        scope = scope,
-    )
-
-    override fun onCleared() {
-        viewModel.close()
-        scope.cancel()
-    }
-}
-
 /** Shell for the create form (B-M3d); draft persistence survives via prefs. */
 private class NewSessionViewModelHolder(
     hubGraph: HubGraph,
     prefs: NewSessionPrefs,
-    browserPrefs: DirectoryBrowserPrefs,
     initialMachineId: String?,
     strings: NewSessionStrings,
-    codexImportedSessionsStore: CodexImportedSessionsStore = MemoryCodexImportedSessionsStore(),
-    codexImportStrings: CodexImportStrings = CodexImportStrings(),
-    piImportStrings: PiImportStrings = PiImportStrings(),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -1503,13 +1096,9 @@ private class NewSessionViewModelHolder(
         gateway = ApiNewSessionGateway(hubGraph.session.api),
         machineStore = hubGraph.machineStore,
         prefs = prefs,
-        browserPrefs = browserPrefs,
         scope = scope,
         initialMachineId = initialMachineId,
         strings = strings,
-        codexImportStore = codexImportedSessionsStore,
-        codexStrings = codexImportStrings,
-        piStrings = piImportStrings,
     )
 
     override fun onCleared() {
@@ -1576,15 +1165,12 @@ private fun filesStrings(context: Context) = FilesStrings(
     unknownError = context.getString(R.string.files_error_unknown),
     listDirectoryFailed = context.getString(R.string.files_error_list),
     searchFailed = context.getString(R.string.files_error_search),
-    downloadFailedTitle = context.getString(R.string.files_download_failed),
-    downloadFailedDefault = context.getString(R.string.files_download_failed_default),
 )
 
 /** Resource-resolved [FileViewerStrings] (B-M5a Strings seam). */
 private fun fileViewerStrings(context: Context) = FileViewerStrings(
     loadDiffFailed = context.getString(R.string.files_error_load_diff),
     readFileFailed = context.getString(R.string.files_error_read_file),
-    downloadFailedDefault = context.getString(R.string.files_download_failed_default),
 )
 
 /** Resource-resolved [NewSessionStrings] (B-M5a Strings seam). */
@@ -1602,36 +1188,5 @@ private fun newSessionStrings(context: Context) = NewSessionStrings(
     runnerUpgradeRequired = context.getString(R.string.new_session_error_runner_upgrade_required),
     noAvailableAgents = context.getString(R.string.new_session_error_no_available_agents),
     selectedAgentUnavailable = context.getString(R.string.new_session_error_selected_agent_unavailable),
-    agyNotListed = context.getString(R.string.new_session_agy_not_listed),
-    opencodeLoadFailedDetail = context.getString(R.string.new_session_error_opencode_models_detail),
-    opencodeDefaultLabel = context.getString(R.string.new_session_opencode_default),
-    selectVariant = context.getString(R.string.new_session_select_variant),
     grokAutoUnavailable = context.getString(R.string.new_session_grok_auto_unavailable),
-    grokAutoUnavailableDesc = context.getString(R.string.new_session_grok_auto_unavailable_desc),
-)
-
-/** Resource-resolved [CodexImportStrings] (slice A Strings seam). */
-private fun codexImportStrings(context: Context) = CodexImportStrings(
-    loadFailed = context.getString(R.string.codex_sync_failed_body),
-    importFailedReason = context.getString(R.string.codex_sync_failed_body_with_reason),
-    timeout = context.getString(R.string.codex_sync_error_timeout),
-    sessionActive = context.getString(R.string.codex_sync_error_active),
-    createFailed = context.getString(R.string.new_session_error_create),
-    clientNotFound = context.getString(R.string.codex_sync_restart_failed_not_found),
-    restartFailedBody = context.getString(R.string.codex_sync_restart_failed_body),
-    detectFailedBody = context.getString(R.string.codex_sync_duplicates_detect_failed_body),
-    mergeFailedBody = context.getString(R.string.codex_sync_duplicates_merge_failed_body),
-)
-
-/** Resource-resolved [PiImportStrings] (slice C Strings seam). */
-private fun piImportStrings(context: Context) = PiImportStrings(
-    loadFailed = context.getString(R.string.pi_import_failed_body),
-    errorDiverged = context.getString(R.string.pi_import_error_diverged),
-    errorActive = context.getString(R.string.pi_import_error_active),
-    successTitle = context.getString(R.string.pi_import_success_title),
-    successBodyOne = context.getString(R.string.pi_import_success_body_one),
-    successBodyMany = context.getString(R.string.pi_import_success_body_many),
-    failedTitle = context.getString(R.string.pi_import_failed_title),
-    failedPartial = context.getString(R.string.pi_import_failed_partial),
-    createFailed = context.getString(R.string.new_session_error_create),
 )

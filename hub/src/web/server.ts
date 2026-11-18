@@ -23,6 +23,7 @@ import {
     PasskeyChallengeStore
 } from './routes/passkey'
 import { createEventsRoutes } from './routes/events'
+import { createFeaturesRoutes } from './routes/features'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
@@ -209,52 +210,95 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     return { distDir, indexHtmlPath: join(distDir, 'index.html') }
 }
 
-/**
- * Single source of truth for static-asset cache policy, shared by the
- * embedded-asset branch (compiled binaries) and the dist-dir serveStatic
- * branch (source runs). Returns null for "no explicit policy".
- */
-export function cacheControlForRequestPath(path: string): string | null {
-    if (path === '/sw.js') {
-        return 'no-store, no-cache, must-revalidate'
-    }
-    if (path.startsWith('/assets/fonts/')) {
-        // KaTeX fonts are copied into assets/fonts/ under their original
-        // (non-content-hashed) names by the copyKaTeXFonts vite plugin — the
-        // one /assets/ family whose bytes can change under a stable URL (a
-        // katex upgrade may revise a same-named font). Bound their caching
-        // instead of promising immutability; keep in sync with that plugin.
-        return 'public, max-age=86400'
-    }
-    if (path.startsWith('/assets/')) {
-        // Everything else under /assets/ is content-hashed by Vite: the bytes
-        // behind a given name never change across releases, so clients may
-        // cache them immutably and only fetch the names a fresh index.html
-        // points at. Without this, every navigation re-downloads the full
-        // (multi-MB) chunk set because the response carries no validator.
-        return 'public, max-age=31536000, immutable'
-    }
-    if (path === '/' || path === '/index.html' || path === '/404.html') {
-        // The HTML shell must always be revalidated: it is the only pointer
-        // to the current hashed asset set, and a stale copy would pin a
-        // client to a retired bundle (including an old service worker URL).
-        return 'no-cache'
-    }
-    return null
+const COMPRESSIBLE_CONTENT_TYPE_REGEX =
+    /^\s*(?:text\/(?!event-stream(?:[;\s]|$))[^;\s]+|application\/(?:javascript|json|xml|xml-dtd|ecmascript|dart|postscript|rtf|tar|toml|vnd\.dart|vnd\.ms-fontobject|vnd\.ms-opentype|wasm|x-httpd-php|x-javascript|x-ns-proxy-autoconfig|x-sh|x-tar|x-virtualbox-hdd|x-virtualbox-ova|x-virtualbox-ovf|x-virtualbox-vbox|x-virtualbox-vdi|x-virtualbox-vhd|x-virtualbox-vmdk|x-www-form-urlencoded)|font\/(?:otf|ttf)|image\/(?:bmp|vnd\.adobe\.photoshop|vnd\.microsoft\.icon|vnd\.ms-dds|x-icon|x-ms-bmp)|message\/rfc822|model\/gltf-binary|x-shader\/x-fragment|x-shader\/x-vertex|[^;\s]+?\+(?:json|text|xml|yaml))(?:[;\s]|$)/i
+
+function isCompressibleContentType(contentType: string | null): boolean {
+    return Boolean(contentType && COMPRESSIBLE_CONTENT_TYPE_REGEX.test(contentType))
 }
 
-export function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
+function withVaryAcceptEncoding(response: Response): Response {
+    const existing = response.headers.get('Vary')
+    if (
+        existing?.trim() === '*' ||
+        existing?.split(',').some((part) => part.trim().toLowerCase() === 'accept-encoding')
+    ) {
+        return response
+    }
+    const nextVary = existing ? `${existing}, Accept-Encoding` : 'Accept-Encoding'
+    try {
+        response.headers.set('Vary', nextVary)
+        return response
+    } catch {
+        const headers = new Headers(response.headers)
+        headers.set('Vary', nextVary)
+        return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers
+        })
+    }
+}
+
+export function getStaticCacheHeaders(requestPath: string, options?: { spaFallback?: boolean }): Record<string, string> {
+    if (!options?.spaFallback && requestPath === '/sw.js') {
+        return {
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'CDN-Cache-Control': 'no-store',
+            'Cloudflare-CDN-Cache-Control': 'no-store'
+        }
+    }
+    if (!options?.spaFallback && requestPath.startsWith('/assets/fonts/')) {
+        // copyKaTeXFonts (web/vite.config.ts) copies the katex fonts into
+        // assets/fonts/ under their original, non-content-hashed names — the
+        // only non-hashed family under /assets/ — so they must not get the
+        // blanket immutable rule: a katex upgrade can revise a same-named
+        // font, and immutable would pin stale bytes for up to a year in the
+        // browser HTTP cache, the SW precache and any CDN edge that respects
+        // origin max-age. (Upstream PR #2484.)
+        return {
+            'Cache-Control': 'public, max-age=86400'
+        }
+    }
+    if (!options?.spaFallback && requestPath.startsWith('/assets/')) {
+        return {
+            'Cache-Control': 'public, max-age=31536000, immutable'
+        }
+    }
+    if (
+        options?.spaFallback ||
+        requestPath === '/' ||
+        requestPath === '/index.html' ||
+        requestPath === '/404.html' ||
+        requestPath === '/manifest.webmanifest'
+    ) {
+        return {
+            'Cache-Control': 'no-cache'
+        }
+    }
+    return {}
+}
+
+function isApiOrCliPath(path: string): boolean {
+    return path === '/api' || path.startsWith('/api/') || path === '/cli' || path.startsWith('/cli/')
+}
+
+function isAssetsPath(path: string): boolean {
+    return path === '/assets' || path.startsWith('/assets/')
+}
+
+function serveEmbeddedAsset(
+    asset: EmbeddedWebAsset,
+    method: string,
+    options?: { spaFallback?: boolean }
+): Response {
     const headers: Record<string, string> = {
-        'Content-Type': asset.mimeType
+        'Content-Type': asset.mimeType,
+        ...getStaticCacheHeaders(asset.path, options)
     }
 
-    const cacheControl = cacheControlForRequestPath(asset.path)
-    if (cacheControl !== null) {
-        headers['Cache-Control'] = cacheControl
-    }
-    if (asset.path === '/sw.js') {
-        headers['CDN-Cache-Control'] = 'no-store'
-        headers['Cloudflare-CDN-Cache-Control'] = 'no-store'
+    if (method === 'HEAD') {
+        return new Response(null, { status: 200, headers })
     }
 
     return new Response(Bun.file(asset.sourcePath), {
@@ -262,7 +306,7 @@ export function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
     })
 }
 
-function createWebApp(options: {
+export function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
     getVisibilityTracker: () => VisibilityTracker | null
@@ -271,6 +315,7 @@ function createWebApp(options: {
     vapidPublicKey: string
     corsOrigins?: string[]
     embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
+    distDir?: string
     relayMode?: boolean
     officialWebUrl?: string
 }): Hono<WebAppEnv> {
@@ -292,6 +337,33 @@ function createWebApp(options: {
     app.use('/api/*', corsMiddleware)
     app.use('/cli/*', corsMiddleware)
 
+    // Gzip JSON API and Web static asset responses (HTML, JS, CSS, SVG, TTF,
+    // manifest). /cli/* stays uncompressed and /api/events uses sync-flushed
+    // compression in compressSseResponse while skipping hono/compress via
+    // Transfer-Encoding. Gated on acceptsGzip so `gzip;q=0` refusals are honored,
+    // and adds Vary: Accept-Encoding so caches never mix representations.
+    const gzipCompress = compress({ encoding: 'gzip' })
+    app.use('*', async (c, next) => {
+        if (c.req.path === '/cli' || c.req.path.startsWith('/cli/')) {
+            return next()
+        }
+        if (acceptsGzip(c.req.header('Accept-Encoding'))) {
+            await gzipCompress(c, next)
+        } else {
+            await next()
+        }
+
+        const contentEncoding = c.res.headers.get('Content-Encoding')
+        const shouldVary = contentEncoding === 'gzip' || (
+            !contentEncoding &&
+            !c.res.headers.has('Transfer-Encoding') &&
+            isCompressibleContentType(c.res.headers.get('Content-Type'))
+        )
+        if (shouldVary) {
+            c.res = withVaryAcceptEncoding(c.res)
+        }
+    })
+
     // Health check endpoint (no auth required).
     // Capabilities are additive so older clients can ignore unknown fields.
     app.get('/health', (c) => c.json({
@@ -302,27 +374,6 @@ function createWebApp(options: {
             titleSuggestion: readTitleProviderConfig() !== null
         }
     }))
-
-    // Gzip JSON API responses. Over the relay tunnel every byte is metered
-    // twice (the SNI proxy copies in both directions), and API payloads are
-    // repetitive JSON that compresses to roughly a quarter of its size.
-    //
-    // This deliberately does not touch /api/events: streamSSE sets
-    // Transfer-Encoding, which hono's compress() skips, and that stream is
-    // already gzipped by compressSseResponse with an explicit sync flush.
-    // Binary uploads/downloads are skipped too - compress() only handles
-    // content types it knows are compressible.
-    //
-    // Gated on the q-aware parser because hono's compress() matches the
-    // Accept-Encoding value by substring: `gzip;q=0` - an explicit refusal -
-    // would otherwise still get a gzip body it cannot consume.
-    const gzipCompress = compress({ encoding: 'gzip' })
-    app.use('/api/*', async (c, next) => {
-        if (acceptsGzip(c.req.header('Accept-Encoding'))) {
-            return gzipCompress(c, next)
-        }
-        return next()
-    })
 
     app.route('/cli', createCliRoutes(options.getSyncEngine))
 
@@ -339,6 +390,7 @@ function createWebApp(options: {
     app.route('/api', createPasskeyLoginRoutes(passkeyDeps))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createFeaturesRoutes())
     app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
@@ -346,7 +398,7 @@ function createWebApp(options: {
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
-    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine, options.store))
+    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))
     app.route('/api', createUsageRoutes(options.store, options.getSyncEngine))
     app.route('/api', createActivityRoutes(options.store))
     app.route('/api', createGitRoutes(options.getSyncEngine))
@@ -410,7 +462,7 @@ from GitHub Pages instead of through the relay tunnel.
         }
 
         app.use('*', async (c, next) => {
-            if (c.req.path.startsWith('/api')) {
+            if (isApiOrCliPath(c.req.path)) {
                 return await next()
             }
 
@@ -418,27 +470,38 @@ from GitHub Pages instead of through the relay tunnel.
                 return await next()
             }
 
-            const asset = embeddedAssetMap.get(c.req.path)
+            const lookupPath = c.req.path === '/' ? '/index.html' : c.req.path
+            const asset = embeddedAssetMap.get(lookupPath)
             if (asset) {
-                return serveEmbeddedAsset(asset)
+                return serveEmbeddedAsset(asset, c.req.method)
+            }
+
+            if (isAssetsPath(c.req.path)) {
+                return c.notFound()
             }
 
             return await next()
         })
 
         app.get('*', async (c, next) => {
-            if (c.req.path.startsWith('/api')) {
+            if (isApiOrCliPath(c.req.path)) {
                 await next()
                 return
             }
 
-            return serveEmbeddedAsset(indexHtmlAsset)
+            if (isAssetsPath(c.req.path)) {
+                return c.notFound()
+            }
+
+            return serveEmbeddedAsset(indexHtmlAsset, c.req.method, { spaFallback: true })
         })
 
         return app
     }
 
-    const { distDir, indexHtmlPath } = findWebappDistDir()
+    const { distDir, indexHtmlPath } = options.distDir
+        ? { distDir: options.distDir, indexHtmlPath: join(options.distDir, 'index.html') }
+        : findWebappDistDir()
 
     if (!existsSync(indexHtmlPath)) {
         app.get('/', (c) => {
@@ -450,40 +513,53 @@ from GitHub Pages instead of through the relay tunnel.
         return app
     }
 
-    // Source-run fallback (no embedded assets): mirror the embedded branch's
-    // cache policy via serveStatic's onFound hook so both serving shapes
-    // behave identically (see cacheControlForRequestPath).
-    type FoundContext = { req: { path: string }, header: (name: string, value: string) => void }
-    const applyAssetCacheHeaders = (_foundPath: string, c: FoundContext) => {
-        const value = cacheControlForRequestPath(c.req.path === '' ? '/' : c.req.path)
-        if (value !== null) {
-            c.header('Cache-Control', value)
+    const serveDistStatic = serveStatic({
+        root: distDir,
+        onFound: (_filePath, ctx) => {
+            for (const [key, value] of Object.entries(getStaticCacheHeaders(ctx.req.path))) {
+                ctx.header(key, value)
+            }
         }
-    }
-    // The SPA fallback always serves the index shell regardless of the
-    // request path, so it always gets the HTML no-cache policy.
-    const applyHtmlShellCacheHeaders = (_foundPath: string, c: { header: (name: string, value: string) => void }) => {
-        c.header('Cache-Control', 'no-cache')
-    }
-
-    app.use('/assets/*', serveStatic({ root: distDir, onFound: applyAssetCacheHeaders }))
+    })
+    const serveDistSpaFallback = serveStatic({
+        root: distDir,
+        path: 'index.html',
+        onFound: (_filePath, ctx) => {
+            for (const [key, value] of Object.entries(getStaticCacheHeaders('/index.html', { spaFallback: true }))) {
+                ctx.header(key, value)
+            }
+        }
+    })
 
     app.use('*', async (c, next) => {
-        if (c.req.path.startsWith('/api')) {
+        if (isApiOrCliPath(c.req.path)) {
             await next()
             return
         }
 
-        return await serveStatic({ root: distDir, onFound: applyAssetCacheHeaders })(c, next)
+        if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+            await next()
+            return
+        }
+
+        const response = await serveDistStatic(c, next)
+        if (!response && !c.finalized && isAssetsPath(c.req.path)) {
+            return c.notFound()
+        }
+        return response
     })
 
     app.get('*', async (c, next) => {
-        if (c.req.path.startsWith('/api')) {
+        if (isApiOrCliPath(c.req.path)) {
             await next()
             return
         }
 
-        return await serveStatic({ root: distDir, path: 'index.html', onFound: applyHtmlShellCacheHeaders })(c, next)
+        if (isAssetsPath(c.req.path)) {
+            return c.notFound()
+        }
+
+        return await serveDistSpaFallback(c, next)
     })
 
     return app

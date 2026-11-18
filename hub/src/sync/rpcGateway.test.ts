@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import type { Server, Socket } from 'socket.io'
 import { getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { RpcRegistry } from '../socket/rpcRegistry'
-import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError, RpcTimeoutError } from './rpcGateway'
+import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
 function createGateway() {
     const timeouts: number[] = []
@@ -16,6 +16,9 @@ function createGateway() {
                     if (payload.method.endsWith(':stop-session')) return JSON.stringify({ status: 'already_gone' })
                     if (payload.method.endsWith(':cursor-chat-store-status')) {
                         return JSON.stringify({ onDisk: false, store: null })
+                    }
+                    if (payload.method.endsWith(':preview-fork-boundary')) {
+                        return JSON.stringify({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
                     }
                     return JSON.stringify({
                         success: true,
@@ -280,8 +283,7 @@ describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
             }
         } as unknown as Server
         const rpcRegistry = {
-            getSocketIdForMethod() { return 'socket-1' },
-            getMethodsForSocket() { return [] }
+            getSocketIdForMethod() { return 'socket-1' }
         } as unknown as RpcRegistry
         return new RpcGateway(io, rpcRegistry)
     }
@@ -312,16 +314,15 @@ describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
     })
 })
 
-// The ack-deadline rejection from socket.io (`Error('operation has timed out')`)
-// must surface as a typed RpcTimeoutError so HTTP layers can distinguish
-// "waited out the deadline, engine may be wedged" from any other failure.
-describe('RpcGateway ack-deadline wrapping', () => {
-    function createGatewayWithRejection(rejection: unknown) {
+describe('RpcGateway preview boundary error surfacing', () => {
+    it('surfaces a resolved CLI error envelope as a rejected preview', async () => {
+        // RpcHandlerManager serializes a thrown handler error as a RESOLVED
+        // {error} envelope; the preview must not mistake it for a cut.
         const socket = {
             timeout() {
                 return {
-                    emitWithAck() {
-                        return Promise.reject(rejection)
+                    async emitWithAck() {
+                        return JSON.stringify({ error: 'Native history is ambiguous' })
                     }
                 }
             }
@@ -332,239 +333,17 @@ describe('RpcGateway ack-deadline wrapping', () => {
             }
         } as unknown as Server
         const rpcRegistry = {
-            getSocketIdForMethod() { return 'socket-1' },
-            getMethodsForSocket() { return [] }
+            getSocketIdForMethod() { return 'socket-1' }
         } as unknown as RpcRegistry
-        return new RpcGateway(io, rpcRegistry)
-    }
+        const gateway = new RpcGateway(io, rpcRegistry)
 
-    it('wraps the socket.io ack-deadline rejection as RpcTimeoutError', async () => {
-        const gateway = createGatewayWithRejection(new Error('operation has timed out'))
-        const error = await gateway.approvePermission('session-1', 'request-1').catch((e: unknown) => e)
-        expect(error).toBeInstanceOf(RpcTimeoutError)
-        expect((error as RpcTimeoutError).method).toBe('session-1:permission')
-        expect((error as RpcTimeoutError).timeoutMs).toBe(30_000)
+        await expect(gateway.previewForkBoundary('session-1', { mode: 'current' }))
+            .rejects.toThrow('Native history is ambiguous')
     })
 
-    it('passes unrelated RPC rejections through unchanged', async () => {
-        const boom = new Error('socket write failed')
-        const gateway = createGatewayWithRejection(boom)
-        const error = await gateway.denyPermission('session-1', 'request-1').catch((e: unknown) => e)
-        expect(error).toBe(boom)
-    })
-})
-
-// The spawn path must narrow rpcCall's typed delivery failures into typed
-// error results instead of throwing, so machine-level HTTP routes can map
-// them onto honest statuses rather than a generic 500.
-describe('RpcGateway spawnSession delivery-error narrowing', () => {
-    function createSpawnGateway(opts: { socketId?: string; rejection?: unknown }) {
-        const socket = {
-            timeout() {
-                return {
-                    emitWithAck() {
-                        return Promise.reject(opts.rejection ?? new Error('unused'))
-                    }
-                }
-            }
-        }
-        const io = {
-            of() {
-                return { sockets: { get() { return opts.socketId ? socket : undefined } } }
-            }
-        } as unknown as Server
-        const rpcRegistry = {
-            getSocketIdForMethod() { return opts.socketId },
-            getMethodsForSocket() { return [] }
-        } as unknown as RpcRegistry
-        return new RpcGateway(io, rpcRegistry)
-    }
-
-    it('returns an rpc_target_missing error result when no socket serves the spawn method', async () => {
-        const gateway = createSpawnGateway({})
-
-        const result = await gateway.spawnSession('machine-1', '/workspace')
-
-        expect(result).toEqual({
-            type: 'error',
-            message: 'RPC handler not registered: machine-1:spawn-happy-session',
-            code: 'rpc_target_missing'
-        })
-    })
-
-    it('returns an engine_unresponsive error result when the spawn ack deadline blows', async () => {
-        const gateway = createSpawnGateway({
-            socketId: 'socket-1',
-            rejection: new Error('operation has timed out')
-        })
-
-        const result = await gateway.spawnSession('machine-1', '/workspace')
-
-        expect(result).toEqual({
-            type: 'error',
-            message: 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session',
-            code: 'engine_unresponsive'
-        })
-    })
-})
-
-// 2026-11-06 postmortem: a runner starved its app-layer RPC handlers while
-// socket.io stayed healthy (pings flowing, activeAt advancing), so every
-// caller burned a full 30s ack timeout for 42 minutes. The watchdog probes
-// the wedged socket and force-reconnects it when even a cheap
-// machine-scoped RPC stops answering.
-describe('RpcGateway RPC stall watchdog', () => {
-    interface StallHarness {
-        gateway: RpcGateway
-        disconnects: number[]
-        probeCalls: number[]
-    }
-
-    /** Socket whose acks only ever settle via their own timer: a normal RPC
-     *  rejects when its timeout elapses (the stall signal), and the probe is
-     *  answerable/failable per test via `probeBehavior`. */
-    function createStallHarness(opts?: {
-        probeBehavior?: 'hang' | 'answer' | 'fast-error'
-        probeTimeoutMs?: number
-        probeCooldownMs?: number
-        enabled?: boolean
-    }): StallHarness {
-        const disconnects: number[] = []
-        const probeCalls: number[] = []
-        const socket = {
-            connected: true,
-            id: 'socket-1',
-            timeout(timeoutMs: number) {
-                return {
-                    emitWithAck(_event: string, payload: { method: string }) {
-                        if (payload.method.endsWith(':agent-availability')) {
-                            probeCalls.push(timeoutMs)
-                            if (opts?.probeBehavior === 'answer') {
-                                return Promise.resolve(JSON.stringify({ agents: [] }))
-                            }
-                            if (opts?.probeBehavior === 'fast-error') {
-                                return Promise.reject(new Error('handler blew up'))
-                            }
-                            return new Promise<never>((_, reject) => {
-                                setTimeout(() => reject(new Error('operation has timed out')), timeoutMs)
-                            })
-                        }
-                        // A wedged runner: the ack deadline expires. This
-                        // tree's rpcCall narrows on the socket.io message, so
-                        // rejecting with it models the deadline blowing.
-                        return Promise.reject(new Error('operation has timed out'))
-                    }
-                }
-            },
-            disconnect(close: boolean) {
-                disconnects.push(close ? 1 : 0)
-            }
-        }
-        const io = {
-            of() {
-                return { sockets: { get() { return socket } } }
-            }
-        } as unknown as Server
-        const rpcRegistry = {
-            getSocketIdForMethod() { return 'socket-1' },
-            getMethodsForSocket() { return ['machine-1:agent-availability', 'session-9:abort'] }
-        } as unknown as RpcRegistry
-        const gateway = new RpcGateway(io, rpcRegistry, {
-            probeTimeoutMs: opts?.probeTimeoutMs ?? 20,
-            probeCooldownMs: opts?.probeCooldownMs ?? 60_000,
-            ...(opts?.enabled === undefined ? {} : { enabled: opts.enabled })
-        })
-        return { gateway, disconnects, probeCalls }
-    }
-
-    it('force-reconnects a socket whose probe also times out while connected', async () => {
-        const h = createStallHarness({ probeBehavior: 'hang', probeTimeoutMs: 20 })
-        // The ack deadline blows instantly, then the 20ms probe times out
-        // too — wedged app layer on a live transport.
-        await expect(
-            h.gateway.killSession('session-1')
-        ).rejects.toThrow()
-        // The probe runs fire-and-forget; give its timer a beat to land.
-        await new Promise((resolve) => setTimeout(resolve, 80))
-
-        expect(h.probeCalls.length).toBe(1)
-        expect(h.disconnects).toEqual([1])
-    })
-
-    it('does nothing when the probe answers — busy, not wedged', async () => {
-        const h = createStallHarness({ probeBehavior: 'answer', probeTimeoutMs: 20 })
-        await expect(
-            h.gateway.killSession('session-1')
-        ).rejects.toThrow()
-        await new Promise((resolve) => setTimeout(resolve, 40))
-
-        expect(h.probeCalls.length).toBe(1)
-        expect(h.disconnects).toEqual([])
-    })
-
-    it('does nothing when the probe fails fast — the handler answered', async () => {
-        const h = createStallHarness({ probeBehavior: 'fast-error', probeTimeoutMs: 50 })
-        await expect(
-            h.gateway.killSession('session-1')
-        ).rejects.toThrow()
-        await new Promise((resolve) => setTimeout(resolve, 40))
-
-        expect(h.probeCalls.length).toBe(1)
-        expect(h.disconnects).toEqual([])
-    })
-
-    it('skips the probe when a fast error is not a timeout', async () => {
-        // A handler that answers with an error inside the budget is alive;
-        // no probe may fire at all.
-        const socket = {
-            connected: true,
-            id: 'socket-1',
-            timeout() {
-                return {
-                    emitWithAck() {
-                        return Promise.reject(new Error('handler exploded instantly'))
-                    }
-                }
-            },
-            disconnect() { throw new Error('must not disconnect') }
-        }
-        const io = { of() { return { sockets: { get() { return socket } } } } } as unknown as Server
-        const rpcRegistry = {
-            getSocketIdForMethod() { return 'socket-1' },
-            getMethodsForSocket() { return ['machine-1:agent-availability'] }
-        } as unknown as RpcRegistry
-        const gateway = new RpcGateway(io, rpcRegistry, { probeTimeoutMs: 20 })
-
-        // killSession propagates the raw handler error; the default 30s
-        // budget means the instant rejection is classified "alive".
-        await expect(gateway.killSession('session-1')).rejects.toThrow('handler exploded')
-        await new Promise((resolve) => setTimeout(resolve, 40))
-    })
-
-    it('respects the probe cooldown across repeated timeouts', async () => {
-        const h = createStallHarness({ probeBehavior: 'hang', probeTimeoutMs: 20, probeCooldownMs: 60_000 })
-        await expect(
-            h.gateway.killSession('session-a')
-        ).rejects.toThrow()
-        await new Promise((resolve) => setTimeout(resolve, 80))
-        // A second caller times out well inside the cooldown window.
-        await expect(
-            h.gateway.killSession('session-b')
-        ).rejects.toThrow()
-        await new Promise((resolve) => setTimeout(resolve, 80))
-
-        expect(h.probeCalls.length).toBe(1)
-        expect(h.disconnects).toEqual([1])
-    })
-
-    it('can be disabled entirely', async () => {
-        const h = createStallHarness({ probeBehavior: 'hang', enabled: false })
-        await expect(
-            h.gateway.killSession('session-1')
-        ).rejects.toThrow()
-        await new Promise((resolve) => setTimeout(resolve, 40))
-
-        expect(h.probeCalls).toEqual([])
-        expect(h.disconnects).toEqual([])
+    it('answers the boundary when the CLI reports success', async () => {
+        const { gateway } = createGateway()
+        await expect(gateway.previewForkBoundary('session-1', { mode: 'current' }))
+            .resolves.toEqual({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
     })
 })

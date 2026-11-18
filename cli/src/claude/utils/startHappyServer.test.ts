@@ -476,6 +476,7 @@ describe('startHappyServer skill_lookup', () => {
         const tools = await mcp.listTools()
 
         expect(server.toolNames).toEqual([
+            'link_pr',
             'display_image',
             'display_video',
             'display_media',
@@ -992,6 +993,7 @@ describe('startHappyServer peer tools kill switch', () => {
         // session_job is own-session (not peer) — stays available when peer tools are off.
         expect(toolNames).toEqual([
             'change_title',
+            'link_pr',
             'display_image',
             'display_video',
             'display_media',
@@ -1015,7 +1017,7 @@ describe('startHappyServer peer tools kill switch', () => {
         delete process.env.HAPI_DISABLE_PEER_TOOLS
         applyHubPeerToolsDisabled(true)
         const { toolNames } = await startServer()
-        expect(toolNames).toEqual(['change_title', 'display_image', 'display_video', 'display_media', 'session_job'])
+        expect(toolNames).toEqual(['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'session_job'])
         const tools = await client!.listTools()
         const names = tools.tools.map((tool) => tool.name)
         expect(names).not.toContain('list_peers')

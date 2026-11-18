@@ -40,6 +40,7 @@ export const SETTINGS_STORAGE_KEYS: readonly string[] = [
     // Sessions, machines, files
     'hapi-app-badge-enabled',
     'hapi-keep-unread-sessions-visible',
+    'hapi-smooth-list-indicators',
     'hapi-pin-in-progress-sessions',
     'hapi-session-list-status-mode',
     'hapi-session-list-status',

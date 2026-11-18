@@ -29,6 +29,7 @@ import {
     sortPinnedGroupsFirst,
     type GroupSettings
 } from '@/lib/groupSettings'
+import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
@@ -145,9 +146,19 @@ import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
+import { useForkFlow } from '@/hooks/useForkFlow'
+import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
+import { useFeatures, type FeaturesResponse } from '@/hooks/queries/useFeatures'
+import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
+import {
+    DEFAULT_PR_CHIP_DISPLAY,
+    getPrimaryGithubPrRef,
+    resolveGithubPrChipDisplay
+} from '@hapi/protocol'
+import { formatGithubPrChipDetailParts, SessionPrChip } from '@/components/SessionPrChip'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
@@ -1200,6 +1211,8 @@ const SessionItem = memo(function SessionItem(props: {
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
     api: ApiClient | null
+    features: FeaturesResponse | null
+    prNowMs: number
     titleSuggestionAvailable?: boolean
     selected?: boolean
     showDetailedStatus?: boolean
@@ -1219,6 +1232,8 @@ const SessionItem = memo(function SessionItem(props: {
         onSelect,
         showPath = true,
         api,
+        features,
+        prNowMs,
         titleSuggestionAvailable = false,
         selected = false,
         showDetailedStatus = false,
@@ -1235,11 +1250,18 @@ const SessionItem = memo(function SessionItem(props: {
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
+    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
-    const [forkOpen, setForkOpen] = useState(false)
-    const [forkPending, setForkPending] = useState(false)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prChipDisplay = features?.prChipDisplay
+    const forkFlow = useForkFlow({
+        session: s,
+        api: api!,
+        onForked: (childSessionId) => onSelect(childSessionId)
+    })
+    const forkFlowOpen = forkFlow.flowOpen
     const pendingRequestPressedRef = useRef(false)
     const rowRef = useRef<HTMLDivElement>(null)
     const rowButtonRef = useRef<HTMLButtonElement>(null)
@@ -1270,14 +1292,14 @@ const SessionItem = memo(function SessionItem(props: {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || exportOpen || archiveOpen || deleteOpen || forkOpen || reopenError !== null
+    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1454,6 +1476,18 @@ const SessionItem = memo(function SessionItem(props: {
         onSelect(s.id, undefined, undefined, pendingRequestId)
     }
     const sessionName = getSessionTitle(s)
+    const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
+    const linkedPr = useMemo(() => {
+        if (!githubPrAwarenessEnabled || !primaryPrRef) return null
+        const profile = prChipDisplay ?? DEFAULT_PR_CHIP_DISPLAY
+        const display = resolveGithubPrChipDisplay(primaryPrRef, profile, prNowMs)
+        const parts = formatGithubPrChipDetailParts(primaryPrRef, display, t)
+        return {
+            glyph: parts.glyph,
+            detail: parts.detail,
+            href: primaryPrRef.url
+        }
+    }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, prNowMs, t])
     const attention = useMemo(
         () => showDetailedStatus
             ? classifySessionAttention(s, {
@@ -1473,7 +1507,7 @@ const SessionItem = memo(function SessionItem(props: {
         <>
             <div
                 ref={rowRef}
-                className="session-list-row relative"
+                className="session-list-row relative flex w-full items-start"
                 data-session-row-id={s.id}
                 data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
@@ -1488,7 +1522,7 @@ const SessionItem = memo(function SessionItem(props: {
                             && event.target.closest('[data-session-pending-request-id]') !== null
                     }}
                     data-session-scroll-anchor
-                    className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                    className={`session-list-item group/session-row flex min-w-0 flex-1 flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
                     aria-describedby={describedBy}
@@ -1502,6 +1536,10 @@ const SessionItem = memo(function SessionItem(props: {
                         attentionTooltipId={attentionId}
                         lastSeenVersion={lastSeenVersion}
                         scheduleTooltipId={scheduleId}
+                        githubPrAwarenessEnabled={githubPrAwarenessEnabled}
+                        showPrChip={!(githubPrAwarenessEnabled && primaryPrRef)}
+                        prChipDisplay={prChipDisplay}
+                        prNowMs={prNowMs}
                         inRunningSection={inRunningSection}
                         projectLabel={projectLabel}
                         machineLabel={machineLabel}
@@ -1510,6 +1548,22 @@ const SessionItem = memo(function SessionItem(props: {
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
                     />
                 </button>
+                {githubPrAwarenessEnabled && primaryPrRef ? (
+                    <div
+                        data-testid="session-pr-chip-wrap"
+                        className="flex shrink-0 items-center self-start py-2 pr-2"
+                        style={hasQuickAction
+                            ? { paddingRight: 'calc(var(--session-row-action-span, 2rem) + 0.5rem)' }
+                            : undefined}
+                    >
+                        <SessionPrChip
+                            refs={s.metadata?.externalRefs}
+                            displayProfile={prChipDisplay}
+                            nowMs={prNowMs}
+                            interactive
+                        />
+                    </div>
+                ) : null}
                 {hasQuickAction ? (
                     <div className="session-row-quick-action absolute right-1 top-1.5 items-center gap-0.5">
                         {showQuickUnpin ? (
@@ -1554,10 +1608,12 @@ const SessionItem = memo(function SessionItem(props: {
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
+                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                linkedPr={linkedPr}
                 onExport={() => setExportOpen(true)}
                 onMarkUnread={() => markSessionUnread(s.id, s.readState)}
                 onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
-                    ? () => setForkOpen(true)
+                    ? () => forkFlow.openFork()
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
                 onArchive={() => setArchiveOpen(true)}
@@ -1568,28 +1624,48 @@ const SessionItem = memo(function SessionItem(props: {
                 anchorPoint={menuAnchorPoint}
             />
 
-            {forkOpen ? (
+            {forkFlow.preview ? (
+                <ForkPreviewDialog
+                    isOpen
+                    view={forkFlow.preview.view}
+                    prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
+                    stale={forkFlow.stale}
+                    loading={forkFlow.loading}
+                    onCancel={forkFlow.closePreview}
+                    onConfirm={forkFlow.confirmPreview}
+                />
+            ) : null}
+
+            {forkFlow.legacyFallback ? (
                 <ConfirmDialog
                     isOpen={true}
-                    onClose={() => { if (!forkPending) setForkOpen(false) }}
+                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
                     title={t('dialog.sessionFork.title')}
                     description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
                     confirmLabel={t('dialog.sessionFork.confirm')}
                     confirmingLabel={t('dialog.sessionFork.confirming')}
-                    isPending={forkPending}
+                    isPending={forkFlow.confirming}
                     destructive
                     centerTitle
+                    onConfirm={forkFlow.confirmLegacy}
+                />
+            ) : null}
+
+            {forkFlow.errorMessage && !forkFlow.preview ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={forkFlow.closePreview}
+                    title={t('dialog.sessionFork.title')}
+                    description={forkFlow.errorMessage}
+                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    isPending={forkFlow.loading}
+                    hideCancel
+                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                    centerTitle
                     onConfirm={async () => {
-                        if (!api) return
-                        setForkPending(true)
-                        try {
-                            const result = s.thinking && supportsCompletedFork
-                                ? await api.forkConversation(s.id, undefined, true)
-                                : await api.forkConversation(s.id)
-                            onSelect(result.sessionId)
-                        } finally {
-                            setForkPending(false)
-                        }
+                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                        else forkFlow.closePreview()
                     }}
                 />
             ) : null}
@@ -1621,6 +1697,15 @@ const SessionItem = memo(function SessionItem(props: {
                     isPending={isPending}
                 />
             ) : null}
+
+            <LinkPrDialog
+                isOpen={linkPrOpen}
+                onClose={() => setLinkPrOpen(false)}
+                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+                onUpsert={upsertExternalRef}
+                onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
+                isPending={isPending}
+            />
 
             {exportOpen ? (
                 <SessionExportDialog
@@ -1719,6 +1804,15 @@ export function SessionList(props: {
         machinesById = {},
         onNewSessionInDirectory
     } = props
+    const { features } = useFeatures(api)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
+    // Stable between minute ticks so memoized SessionItem rows do not
+    // remount on unrelated SSE updates when awareness is off (or mid-minute).
+    const prNowMs = useMemo(
+        () => (githubPrAwarenessEnabled ? Date.now() : 0),
+        [prClockTick, githubPrAwarenessEnabled]
+    )
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()
@@ -2342,6 +2436,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
@@ -2448,6 +2544,8 @@ export function SessionList(props: {
             onSelect={props.onSelect}
             showPath={false}
             api={api}
+            features={features}
+            prNowMs={prNowMs}
             titleSuggestionAvailable={titleSuggestionAvailable}
             selected={s.id === selectedSessionId}
             showDetailedStatus={showDetailedStatus}
@@ -3183,6 +3281,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}

@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 
 import { hasConversationMessageContent } from '@hapi/protocol/messages'
 import { decodeMessageContent } from './contentCodec'
+import { prepareCached } from './statementCache'
 
 import type { StoredMessage } from './types'
 import {
@@ -45,6 +46,7 @@ import {
     copyMessagesToSession as copyStoredMessagesToSession,
     getAllMessages,
     getMessagesAfterSeq,
+    getMaxSeq,
     getMinSeq,
     getMessageSeqById,
     getMessageById,
@@ -139,6 +141,10 @@ export class MessageStore {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
     }
 
+    getMaxSeq(sessionId: string): number {
+        return getMaxSeq(this.db, sessionId)
+    }
+
     getMinSeq(sessionId: string): number | null {
         return getMinSeq(this.db, sessionId)
     }
@@ -218,16 +224,25 @@ export class MessageStore {
 
     // ponytail: scans through leading bookkeeping; index content if that prefix becomes costly.
     hasConversationContent(sessionId: string): boolean {
-        const query = this.db.prepare<{ content: string | Uint8Array }, [string]>(
-            'SELECT content FROM messages WHERE session_id = ? ORDER BY seq ASC'
+        const statement = prepareCached(
+            this.db,
+            'SELECT seq, content FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT 16'
         )
-        try {
-            for (const row of query.iterate(sessionId)) {
-                if (hasConversationMessageContent(decodeMessageContent(row.content))) return true
+        let afterSeq = -1
+        while (true) {
+            const rows = statement.all(sessionId, afterSeq) as Array<{ seq: number; content: string | Uint8Array }>
+            if (rows.length === 0) {
+                return false
             }
-            return false
-        } finally {
-            query.finalize()
+            for (const row of rows) {
+                if (hasConversationMessageContent(decodeMessageContent(row.content))) {
+                    return true
+                }
+            }
+            if (rows.length < 16) {
+                return false
+            }
+            afterSeq = rows[rows.length - 1]!.seq
         }
     }
 
@@ -317,8 +332,9 @@ export class MessageStore {
             localId?: string | null
             createdAt?: number
             invokedAt?: number | null
-        }> = []
+        }> = [],
+        upToSeq?: number
     ): { deleted: number; inserted: number; epoch: number } {
-        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement)
+        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement, upToSeq)
     }
 }

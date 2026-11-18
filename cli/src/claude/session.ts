@@ -20,6 +20,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     /** Peer-tools switch captured from this session's bootstrap (env > hub). */
     readonly peerToolsDisabled: boolean;
     claudeArgs?: string[];
+    startupResumeSessionAt?: string;
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
     readonly hookSettingsPath: string;
@@ -31,8 +32,19 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     localLaunchFailure: LocalLaunchFailure | null = null;
     /** Model the local TUI runs, "[1m]" suffix intact: launch seed, then PostModelSwitch. */
     localContextModel: string | null = null;
+    /** Set by the remote launcher: abort the current SDK attempt so the main
+     * loop respawns Claude with fresh one-shot args (history RPC restarts). */
+    requestRemoteRestart: (() => Promise<void>) | null = null;
+    /** Set by the runner: called with the native prompt uuid when the launcher
+     * hands a queued batch to the SDK (rewind branch proof). */
+    onNativeInputSubmitted: ((nativePromptUuid: string) => void) | null = null;
+    /** Set by the runner: called after a /clear-style reset discarded the
+     * conversation, so a pending rewind intent pointing into it can be
+     * cancelled. */
+    onConversationReset: (() => void) | null = null;
     /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
     localTurnStartedAt = 0;
+    readonly beforeLocalLaunch?: () => Promise<boolean>;
     private nativeSkillNames = new Set<string>();
     private permissionModeListener: ((mode: PermissionMode) => void) | null = null;
 
@@ -44,6 +56,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         sessionId: string | null;
         claudeEnvVars?: Record<string, string>;
         claudeArgs?: string[];
+        startupResumeSessionAt?: string;
         mcpServers: Record<string, any>;
         messageQueue: MessageQueue2<EnhancedMode>;
         onModeChange: (mode: 'local' | 'remote') => void;
@@ -56,6 +69,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         permissionMode?: PermissionMode;
         model?: SessionModel;
         effort?: SessionEffort;
+        beforeLocalLaunch?: () => Promise<boolean>;
     }) {
         super({
             api: opts.api,
@@ -90,6 +104,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.claudeEnvVars = opts.claudeEnvVars;
         this.peerToolsDisabled = opts.client.peerToolsDisabled ?? isPeerToolsDisabled();
         this.claudeArgs = opts.claudeArgs;
+        this.startupResumeSessionAt = opts.startupResumeSessionAt;
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
         this.hookSettingsPath = opts.hookSettingsPath;
@@ -97,6 +112,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.localPermissionBridge = new LocalPermissionBridge(opts.client);
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
+        this.beforeLocalLaunch = opts.beforeLocalLaunch;
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.effort = opts.effort;
@@ -154,8 +170,16 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * Handles: --resume (with or without session ID) and --fork-session.
      * `--fork-session` must be one-shot; keeping it across relaunches would
      * branch again off the already-forked native id.
+     *
+     * The rewind boundary (--resume-session-at) is NOT managed through this
+     * buffer at all: spawns derive it fresh from the durable rewind intent
+     * (deriveSpawnArgs), so there is nothing to consume, arm or strip here.
+     * A fork-at-message request's boundary rides claudeArgs until the child
+     * materializes, but spawns filter boundary flags out and re-derive them,
+     * so a stale one on the buffer is inert.
      */
     consumeOneTimeFlags = (): void => {
+        this.consumeStartupResumeSessionAt();
         if (!this.claudeArgs) return;
 
         const filteredArgs: string[] = [];
@@ -187,4 +211,15 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.claudeArgs = filteredArgs.length > 0 ? filteredArgs : undefined;
         logger.debug(`[Session] Consumed one-time flags, remaining args:`, this.claudeArgs);
     };
+
+    /**
+     * Consume an explicit one-shot startup `--resume-session-at` boundary so
+     * subsequent respawns never re-truncate the session.
+     */
+    consumeStartupResumeSessionAt = (): void => {
+        if (this.startupResumeSessionAt !== undefined) {
+            logger.debug('[Session] Consumed startup --resume-session-at boundary');
+            this.startupResumeSessionAt = undefined;
+        }
+    }
 }

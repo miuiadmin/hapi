@@ -63,7 +63,8 @@ function getAgentConfigDir(flavor?: string): string {
             return process.env.HERMES_HOME || join(getHomeDirectory(), '.hermes');
         case 'berry':
             // Berry resolves its data dir from $BERRY_AGENT_DATA_DIR, then ~/.berry-agent.
-            return process.env.BERRY_AGENT_DATA_DIR || join(getHomeDirectory(), '.berry-agent');
+            return process.env.BERRY_AGENT_DATA_DIR || join(getHomeDirectory(), '.berry-agent');        case 'agy':
+            return join(getHomeDirectory(), '.gemini', 'config');
         default:
             return join(getHomeDirectory(), `.${normalizedFlavor}`);
     }
@@ -95,7 +96,9 @@ function getUserSkillsRoots(flavor?: string): string[] {
             break;
         case 'berry':
             // Mirrors Berry's user skills layer: <data dir>/skills.
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));        case 'agy':
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            roots.push(join(home, '.gemini', 'antigravity-cli', 'skills'));
             break;
     }
     return roots;
@@ -127,7 +130,10 @@ function getProjectSkillsRoots(directory: string, flavor?: string): string[] {
             break;
         case 'hermes':
             // Hermes loads trusted-root skills from <project>/.hermes/skills.
-            roots.push(join(directory, '.hermes', 'skills'));
+            roots.push(join(directory, '.hermes', 'skills'));        case 'agy':
+            roots.push(join(directory, '.agent', 'skills'));
+            roots.push(join(directory, '_agents', 'skills'));
+            roots.push(join(directory, '_agent', 'skills'));
             break;
     }
     return roots;

@@ -67,7 +67,7 @@ describe('older-page load residual momentum kill', () => {
 
     it('kills the in-flight fling only for user-intent older pages', () => {
         const apply = source.slice(
-            source.indexOf('const restoredByAnchor = pending.anchor'),
+            source.indexOf('const loaderState = historyLoaderRef.current'),
             source.indexOf('settlePendingLoad(\'loaded\')')
         )
         expect(apply).toContain('loaderState.source === \'user\'')

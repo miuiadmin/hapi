@@ -405,6 +405,7 @@ private fun LanguageChoiceDialogPreview() {
                 ChoiceOption(value = AppLanguage.ENGLISH, label = "English"),
                 ChoiceOption(value = AppLanguage.SIMPLIFIED_CHINESE, label = "简体中文"),
                 ChoiceOption(value = AppLanguage.RUSSIAN, label = "Русский"),
+                ChoiceOption(value = AppLanguage.JAPANESE, label = "日本語"),
             ),
             selected = AppLanguage.ENGLISH,
             onSelect = {},

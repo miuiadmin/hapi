@@ -5,6 +5,7 @@ import { isObject } from '@hapi/protocol'
 import { randomUUID } from 'node:crypto'
 import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
+import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests'
 import {
     BasePermissionHandler,
     isUnclassifiablePermissionRequest,
@@ -349,6 +350,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         } = {}
     ) {
         super(session)
+        settleRequestsOfPreviousAgentProcess(this.backend, session)
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request))
     }
 
@@ -438,6 +440,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                 ...currentState.completedRequests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: toolInput,
                     createdAt: timestamp,
                     completedAt: timestamp,
@@ -469,15 +472,15 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
      * A question the agent asks the user, shown as `toolName` with `input`.
      * Never answered automatically, whatever the permission mode.
      */
-    askUser(id: string, toolName: string, input: unknown): Promise<UserAnswer>
-    askUser(idOrInput: unknown, toolName?: string, input?: unknown): Promise<AcpAskUserOutcome | UserAnswer> {
+    askUser(id: string, toolName: string, input: unknown, toolCallId?: string): Promise<UserAnswer>
+    askUser(idOrInput: unknown, toolName?: string, input?: unknown, toolCallId?: string): Promise<AcpAskUserOutcome | UserAnswer> {
         if (typeof idOrInput === 'string' && toolName !== undefined) {
             const id = idOrInput
             return new Promise((resolve) => {
                 this.userQuestions.set(id, resolve)
                 this.usedIds.add(id)
                 this.startUserWait(id)
-                this.addPendingRequest(id, toolName, input, { resolve: () => {}, reject: () => {} })
+                this.addPendingRequest(id, toolName, input, { resolve: () => {}, reject: () => {} }, toolCallId)
             })
         }
         return new Promise<AcpAskUserOutcome>((resolve) => {
@@ -525,7 +528,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                     this.askUserResolvers.delete(id)
                     resolve({ status: 'canceled', reason: error.message })
                 }
-            })
+            }, toolCallId)
         })
     }
 
