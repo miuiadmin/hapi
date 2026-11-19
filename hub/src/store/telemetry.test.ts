@@ -160,12 +160,26 @@ describe('insertTelemetryBatch', () => {
         const store = new Store(':memory:')
         try {
             const db = rawDb(store)
-            const events = [uxEvent('same-id', Date.now(), 'sess-1')]
-            insertTelemetryBatch(db, { namespace: 'default', userId: 1, level: 1 }, batch(events))
+            const ts = Date.now()
+            // Mixed batch: telemetry_events dedupes via PRIMARY KEY; perf rows
+            // dedupe via the in-memory recent-id guard (the SDK deliberately
+            // replays pagehide batches — keepalive POST + outbox copy).
+            const events = [uxEvent('same-id', ts, 'sess-1'), httpEvent('perf-same-id', ts, 80)]
+            const first = insertTelemetryBatch(db, { namespace: 'default', userId: 1, level: 1 }, batch(events))
+            expect(first).toEqual({ accepted: 2, rejected: 0, droppedByLevel: 0 })
             const second = insertTelemetryBatch(db, { namespace: 'default', userId: 1, level: 1 }, batch(events))
-            expect(second.accepted).toBe(1)
-            const rows = db.prepare('SELECT COUNT(*) AS n FROM telemetry_events').get() as { n: number }
-            expect(rows.n).toBe(1)
+            expect(second).toEqual({ accepted: 2, rejected: 0, droppedByLevel: 0 })
+            expect(
+                (db.prepare('SELECT COUNT(*) AS n FROM telemetry_events').get() as { n: number }).n
+            ).toBe(1)
+            expect(
+                (db.prepare('SELECT COUNT(*) AS n FROM perf_samples').get() as { n: number }).n
+            ).toBe(1)
+            // A different perf event id still lands normally.
+            insertTelemetryBatch(db, { namespace: 'default', userId: 1, level: 1 }, batch([httpEvent('perf-other', ts, 90)]))
+            expect(
+                (db.prepare('SELECT COUNT(*) AS n FROM perf_samples').get() as { n: number }).n
+            ).toBe(2)
         } finally {
             store.close()
         }

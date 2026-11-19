@@ -226,6 +226,17 @@ export interface HubPerfSampleInput {
 
 type RollupBucketKey = string // JSON.stringify([day, source, pathTpl, method, statusClass, version, originKind])
 
+/**
+ * Recent client event ids for perf rows. telemetry_events dedupes via its
+ * PRIMARY KEY, but the perf tables are rowid-per-report DDL — and the web SDK
+ * deliberately re-delivers pagehide batches (keepalive POST + the same events
+ * sitting in the outbox for the next load). Without this guard every replay
+ * would double-count perf samples. Bounded and in-memory only: a replay after
+ * a hub restart still double-counts (accepted — statistical noise, and the
+ * alternative is a dedup column the report DDL explicitly omits).
+ */
+const RECENT_PERF_ID_CAP = 65_536
+
 interface TelemetryDbState {
     queue: HubPerfSampleInput[]
     queueDropped: number
@@ -236,6 +247,7 @@ interface TelemetryDbState {
     lastPerfSweepAt: number
     lastEventsSweepAt: number
     lastL3CheckAt: number
+    recentPerfIds: Set<string>
 }
 
 const states = new WeakMap<Database, TelemetryDbState>()
@@ -252,7 +264,8 @@ function stateFor(db: Database): TelemetryDbState {
             lastRollupAt: 0,
             lastPerfSweepAt: 0,
             lastEventsSweepAt: 0,
-            lastL3CheckAt: 0
+            lastL3CheckAt: 0,
+            recentPerfIds: new Set()
         }
         states.set(db, state)
     }
@@ -409,6 +422,10 @@ export function insertTelemetryBatch(
     const num = (v: unknown): number | null =>
         (typeof v === 'number' && Number.isFinite(v)) ? v : null
     const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+    // Perf rows have no PK on the client id, so replay dedup happens against
+    // the in-memory recent-id set. Ids are only recorded AFTER the insert
+    // transaction commits — a failed transaction must not poison the set.
+    const batchPerfIds = new Set<string>()
 
     for (const event of batch.events) {
         try {
@@ -437,7 +454,13 @@ export function insertTelemetryBatch(
                     fingerprint: event.fingerprint ?? null,
                     dataJson: JSON.stringify(data)
                 })
+            } else if (isRecentPerfEventId(db, event.id) || batchPerfIds.has(event.id)) {
+                // Deliberate pagehide re-delivery (keepalive + outbox both fire):
+                // the first copy already landed — count processed, insert nothing.
+                result.accepted++
+                continue
             } else if (event.kind === 'http') {
+                batchPerfIds.add(event.id)
                 const originKind = str(data.originKind) ?? batch.device.origin
                 sampleRows.push({
                     ts: event.ts,
@@ -461,6 +484,7 @@ export function insertTelemetryBatch(
                     sessionId: event.sessionId ?? null
                 })
             } else if (event.kind === 'sse_episode') {
+                batchPerfIds.add(event.id)
                 episodeRows.push({
                     ts: event.ts,
                     subscriptionId: str(data.subscriptionId),
@@ -476,6 +500,7 @@ export function insertTelemetryBatch(
                     originKind: batch.device.origin
                 })
             } else if (event.kind === 'web_vital') {
+                batchPerfIds.add(event.id)
                 // page_kind is NOT NULL in the DDL but the P0 web SDK does not
                 // emit a page split yet — stamp a constant until it lands.
                 vitalRows.push({
@@ -506,8 +531,7 @@ export function insertTelemetryBatch(
         return result
     }
 
-    db.transaction(() => {
-        for (const row of eventRows) {
+    db.transaction(() => {        for (const row of eventRows) {
             prepareCached(db, `
                 INSERT OR IGNORE INTO telemetry_events (
                     id, ts, received_at, namespace, user_id, device_id, device_kind,
@@ -651,7 +675,30 @@ export function insertTelemetryBatch(
         }
     })()
 
+    // Committed: only now are the perf ids eligible for replay dedup.
+    recordRecentPerfEventIds(db, batchPerfIds)
+
     return result
+}
+
+/** Read-only recent-id check (see TelemetryDbState.recentPerfIds). */
+function isRecentPerfEventId(db: Database, id: string): boolean {
+    return states.get(db)?.recentPerfIds.has(id) ?? false
+}
+
+/** Record freshly committed perf ids; evict the oldest quarter at the cap. */
+function recordRecentPerfEventIds(db: Database, ids: Set<string>): void {
+    if (ids.size === 0) return
+    const state = stateFor(db)
+    if (state.recentPerfIds.size + ids.size > RECENT_PERF_ID_CAP) {
+        const drop = Math.max(1, Math.floor(RECENT_PERF_ID_CAP / 4))
+        let dropped = 0
+        for (const key of state.recentPerfIds) {
+            if (dropped++ >= drop) break
+            state.recentPerfIds.delete(key)
+        }
+    }
+    for (const id of ids) state.recentPerfIds.add(id)
 }
 
 // ---------------------------------------------------------------------------
