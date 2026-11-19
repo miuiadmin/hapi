@@ -1,4 +1,5 @@
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { sanitizeTelemetryText } from '@hapi/protocol/telemetry'
 import { getReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
@@ -7,6 +8,7 @@ import { buildVisibleChatBlocks, isEligibleForToolGrouping } from '@/chat/toolGr
 import type { NormalizedMessage } from '@/chat/types'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
+import { telemetryClient } from '@/lib/telemetryClient'
 
 export type MessageViewMode = 'tail' | 'history'
 
@@ -346,6 +348,24 @@ function shouldPersistState(state: InternalState): boolean {
         || state.newestPositionAt !== null
 }
 
+/** The exact persisted payload shape — shared by the persistence writer and
+ * the telemetry inventory's in-memory byte estimate so both use one source
+ * for the raw.length metric. */
+function buildPersistedPayload(state: InternalState): PersistedMessageWindowState {
+    return {
+        messages: state.messages,
+        hasMore: state.hasMore,
+        oldestPositionAt: state.oldestPositionAt,
+        oldestPositionSeq: state.oldestPositionSeq,
+        newestPositionAt: state.newestPositionAt,
+        newestPositionSeq: state.newestPositionSeq,
+        contextNewestAt: state.contextNewestAt,
+        contextNewestSeq: state.contextNewestSeq,
+        epoch: state.epoch,
+        requiresLatestReset: state.requiresLatestReset
+    }
+}
+
 function persistState(sessionId: string, state: InternalState): void {
     if (!isSessionStorageAvailable()) {
         return
@@ -355,19 +375,7 @@ function persistState(sessionId: string, state: InternalState): void {
             removePersistedRaw(sessionId)
             return
         }
-        const persisted: PersistedMessageWindowState = {
-            messages: state.messages,
-            hasMore: state.hasMore,
-            oldestPositionAt: state.oldestPositionAt,
-            oldestPositionSeq: state.oldestPositionSeq,
-            newestPositionAt: state.newestPositionAt,
-            newestPositionSeq: state.newestPositionSeq,
-            contextNewestAt: state.contextNewestAt,
-            contextNewestSeq: state.contextNewestSeq,
-            epoch: state.epoch,
-            requiresLatestReset: state.requiresLatestReset
-        }
-        writePersistedRaw(sessionId, JSON.stringify(persisted))
+        writePersistedRaw(sessionId, JSON.stringify(buildPersistedPayload(state)))
     } catch {
     }
 }
@@ -1141,12 +1149,40 @@ function isCurrentTailSync(sessionId: string, generation: number): boolean {
 }
 
 function finishTailSync(sessionId: string, generation: number, warning: string | null): void {
+    let applied = false
+    let warningWasNull = false
     updateState(sessionId, (previous) => {
         if (previous.syncGeneration !== generation) {
             return previous
         }
+        applied = true
+        warningWasNull = previous.warning === null
         return buildState(previous, { isSyncingTail: false, warning })
     })
+    if (!applied) {
+        return
+    }
+    // Observation only (load_incomplete, diag): a warning appearing where
+    // there was none is the single funnel for every tail-sync failure — the
+    // upstream message can embed a response body, so it must pass the shared
+    // sanitize net. A successful settle over an EMPTY window is surfaced as
+    // the empty-window signal (analysis separates genuinely-new sessions).
+    try {
+        if (warning) {
+            if (warningWasNull) {
+                telemetryClient.capture('diag', 'load_incomplete', {
+                    signal: 'tail-warning',
+                    warningText: sanitizeTelemetryText(warning)
+                }, { sessionId, severity: 'warn' })
+            }
+        } else if (getState(sessionId).messages.length === 0) {
+            telemetryClient.capture('diag', 'load_incomplete', {
+                signal: 'empty-window'
+            }, { sessionId })
+        }
+    } catch {
+        // fail-silent: telemetry must never break the store
+    }
 }
 
 /** A cached tool-call row that can still be enriched in place: its payload is
@@ -1259,6 +1295,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             // ordinary pages pay no extra request.
             const context = await fetchInitialContextPage(api, sessionId, response)
             if (!isCurrentTailSync(sessionId, generation)) return
+            let gapRecoveryArmed = false
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous
                 // Cached re-entry keeps the loaded history: swap-in of the
@@ -1285,6 +1322,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 })
                 if (!context) {
                     if (preferLatestOnActivation && !pendingGapRecovery && !overlapsCached && next.hasMore) {
+                        gapRecoveryArmed = true
                         return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: true })
                     }
                     return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: false })
@@ -1297,6 +1335,18 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                     oldestPositionSeq: context.page.nextBeforeSeq
                 })
             })
+            if (gapRecoveryArmed) {
+                // Observation only (load_incomplete): the fresh tail does not
+                // reach the cached window — a hole will be walked on the next
+                // sync.
+                try {
+                    telemetryClient.capture('diag', 'load_incomplete', {
+                        signal: 'gap-recovery'
+                    }, { sessionId, severity: 'info' })
+                } catch {
+                    // fail-silent
+                }
+            }
             finishTailSync(sessionId, generation, null)
             return
         }
@@ -1702,6 +1752,15 @@ export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): 
         return syncTailMessages(api, sessionId)
     }
     updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
+    // Observation only (load_incomplete): a resume-with-gap handshake armed
+    // the authoritative catch-up + upsert reconciliation.
+    try {
+        telemetryClient.capture('diag', 'load_incomplete', {
+            signal: 'gap-recovery'
+        }, { sessionId, severity: 'info' })
+    } catch {
+        // fail-silent
+    }
     return syncTailMessages(api, sessionId)
 }
 
@@ -2180,6 +2239,71 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
 
 export function getMessageWindowState(sessionId: string): MessageWindowState {
     return getState(sessionId)
+}
+
+export type MessageWindowInventoryWindow = {
+    messageCount: number
+    approxBytes: number
+    persisted: boolean
+    active: boolean
+}
+
+export type MessageWindowInventory = {
+    sessionsHeld: number
+    storageUsedBytes: number
+    windows: MessageWindowInventoryWindow[]
+}
+
+/** Snapshot of the message-window cache for the client_window_inventory
+ * telemetry event (30min + local-midnight cadence). Observation only; never
+ * mutates store or storage. `approxBytes` uses the persisted raw.length
+ * metric (chars); windows still in memory only are estimated from the same
+ * persisted payload shape. `windows` is capped at the schema's 128 entries —
+ * truncation drops the least-recently-touched entries last (Map iteration is
+ * access-ordered). */
+export function collectWindowInventory(): MessageWindowInventory {
+    const windows: MessageWindowInventoryWindow[] = []
+    const inventoryIds = new Set<string>(readLru())
+    let storageUsedBytes = 0
+    for (const sessionId of states.keys()) {
+        inventoryIds.add(sessionId)
+    }
+    for (const sessionId of inventoryIds) {
+        try {
+            const raw = readPersistedRaw(sessionId)
+            if (raw) {
+                storageUsedBytes += raw.length
+            }
+        } catch {
+            // fail-silent: unreadable storage contributes nothing
+        }
+    }
+    for (const [sessionId, state] of states) {
+        try {
+            const raw = readPersistedRaw(sessionId)
+            let approxBytes = raw ? raw.length : 0
+            if (!raw) {
+                try {
+                    approxBytes = JSON.stringify(buildPersistedPayload(state)).length
+                } catch {
+                    approxBytes = 0
+                }
+            }
+            windows.push({
+                messageCount: state.messages.length,
+                approxBytes,
+                persisted: raw !== null,
+                active: (listeners.get(sessionId)?.size ?? 0) > 0
+            })
+        } catch {
+            // fail-silent per window
+        }
+    }
+    return {
+        sessionsHeld: states.size,
+        storageUsedBytes,
+        windows: windows.slice(0, 128)
+    }
 }
 
 export function subscribeMessageWindow(sessionId: string, listener: () => void): () => void {
