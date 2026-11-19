@@ -1512,6 +1512,7 @@ export class ApiClient {
             githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
             prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
         }
+        voiceBackend: { backend: string | null; backends: string[] }
     }> {
         return await this.request('/api/bootstrap')
     }

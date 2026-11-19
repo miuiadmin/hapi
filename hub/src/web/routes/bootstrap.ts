@@ -1,6 +1,8 @@
-import { toSlimSessionSummary, DEFAULT_PR_CHIP_DISPLAY } from '@hapi/protocol'
+import { compareSessionSummaries, toSlimSessionSummary, DEFAULT_PR_CHIP_DISPLAY } from '@hapi/protocol'
 import { Hono } from 'hono'
 import { getConfiguration } from '../../configuration'
+import { getProviderEnvironment } from '../../config/providerCredentials'
+import { listConfiguredVoiceBackends, resolveHubVoiceBackend } from '@hapi/protocol/voice'
 import { loadPrChipDisplayProfile } from '../../config/prChipDisplay'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -35,9 +37,13 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
         // Session list: slim projection, newest-activity order, cap 100.
         // (Same ordering the list surface uses; a cold start never needs
         // more than the visible viewport plus the eager-prefetch top rows.)
+        // Same ordering as GET /api/sessions (pinned/globalPinned first,
+        // then lastUserMessageAt??createdAt desc): the seeded first paint
+        // must match what the standalone GET resolves to, or pinned rows
+        // jump when the GET lands.
         const sessionRecords = engine
             .getSessionsByNamespace(namespace)
-            .sort((a, b) => b.updatedAt - a.updatedAt)
+            .sort(compareSessionSummaries)
             .slice(0, 100)
         const sessionIds = sessionRecords.map((session) => session.id)
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionIds)
@@ -84,7 +90,16 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
             }
         }
 
-        return c.json({ sessions, machines, features })
+        // Voice backend selection: same payload as GET /api/voice/backend.
+        // The realtime voice session refetches this on every mount; seeding
+        // it removes the last cold-start leg the composer path still pays.
+        const voiceEnv = getProviderEnvironment()
+        const voiceBackend = {
+            backend: resolveHubVoiceBackend(voiceEnv),
+            backends: listConfiguredVoiceBackends(voiceEnv)
+        }
+
+        return c.json({ sessions, machines, features, voiceBackend })
     })
 
     return app

@@ -243,9 +243,15 @@ function AppInner() {
         let cancelled = false
         void api.getBootstrap().then((payload) => {
             if (cancelled) return
-            queryClient.setQueryData(['sessions'], { sessions: payload.sessions })
-            queryClient.setQueryData(['machines'], { machines: payload.machines })
-            queryClient.setQueryData(['features'], payload.features)
+            // Seed only into EMPTY caches: bootstrap is a large cold payload
+            // that can land after the standalone GETs or live SSE patches
+            // already resolved — a full replace would roll the cache back
+            // and flash away applied patches/read states until the next
+            // refetch. An empty-only seed keeps the warm-write direction
+            // one-way (network/SSE always wins over the snapshot).
+            queryClient.setQueryData(['sessions'], (prev: unknown) => prev ?? { sessions: payload.sessions })
+            queryClient.setQueryData(['machines'], (prev: unknown) => prev ?? { machines: payload.machines })
+            queryClient.setQueryData(['features'], (prev: unknown) => prev ?? payload.features)
         }).catch(() => {
             // A failed bootstrap leg is not fatal: the per-key queries fall
             // back to their own network fetches exactly as before.

@@ -57,6 +57,7 @@ describe('bootstrap routes', () => {
             sessions: Array<{ id: string; metadata?: unknown; model?: unknown }>
             machines: Array<{ id: string }>
             features: { githubPrAwareness: { enabled: boolean }; prChipDisplay: unknown }
+            voiceBackend: { backend: string | null; backends: string[] }
         }
         expect(body.sessions).toHaveLength(1)
         expect(body.sessions[0].id).toBe('sess-1')
@@ -65,10 +66,11 @@ describe('bootstrap routes', () => {
         expect(body.machines).toHaveLength(1)
         expect((body.machines[0] as { id: string }).id).toBe('machine-1')
         expect(typeof body.features.githubPrAwareness.enabled).toBe('boolean')
+        expect(Array.isArray(body.voiceBackend.backends)).toBe(true)
     })
 
     it('caps the session list at 100 newest-first', async () => {
-        const many = Array.from({ length: 150 }, (_, i) => ({ id: `s-${i}`, updatedAt: i }))
+        const many = Array.from({ length: 150 }, (_, i) => ({ id: `s-${i}`, updatedAt: i, createdAt: i }))
         const engine = makeEngine({
             getSessionsByNamespace: () => many as never
         })
@@ -76,7 +78,8 @@ describe('bootstrap routes', () => {
         const response = await app.request('/api/bootstrap')
         const body = await response.json() as { sessions: Array<{ id: string }> }
         expect(body.sessions).toHaveLength(100)
-        // Newest activity first: s-149 (highest updatedAt) leads.
+        // Same ordering as the standalone list (compareSessionSummaries):
+        // lastUserMessageAt??createdAt desc — s-149 (highest createdAt) leads.
         expect(body.sessions[0].id).toBe('s-149')
     })
 

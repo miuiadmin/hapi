@@ -226,7 +226,23 @@ function isVoiceBackendType(value: string): value is VoiceBackendType {
     return value === 'elevenlabs' || value === 'gemini-live' || value === 'qwen-realtime'
 }
 
+// Voice backend detection runs on every realtime session mount; the list
+// changes at credential/deploy cadence. A module-level TTL cache keeps
+// session switches from re-fetching it (mirrors the transcription-providers
+// cache in useVoiceInputPreferences).
+let voiceBackendCache: { at: number; data: VoiceBackendResponse } | null = null
+const VOICE_BACKEND_TTL_MS = 5 * 60_000
+
+/** Test-only: clear the module-level voice backend cache between cases. */
+export function __resetVoiceBackendCacheForTests(): void {
+    voiceBackendCache = null
+}
+
 export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendResponse> {
+    const cached = voiceBackendCache
+    if (cached && Date.now() - cached.at < VOICE_BACKEND_TTL_MS) {
+        return cached.data
+    }
     const result = await api.fetchVoiceBackend()
     const { backend } = result
     if (backend !== null && !isVoiceBackendType(backend)) {
@@ -237,7 +253,9 @@ export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendRes
     if (backend !== null && backends.length === 0) {
         backends.push(backend)
     }
-    return { backend, backends }
+    const data = { backend, backends }
+    voiceBackendCache = { at: Date.now(), data }
+    return data
 }
 
 /**
