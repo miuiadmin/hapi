@@ -50,6 +50,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -68,6 +70,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -78,6 +82,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -98,6 +104,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -116,6 +124,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: true,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -126,6 +136,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: true,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -141,6 +153,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -230,6 +244,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: true,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -254,6 +270,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: {
                 agent: 'cursor',
                 permissionMode: 'yolo',
@@ -297,6 +315,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: {
                 agent: 'codex',
                 permissionMode: 'default',
@@ -372,6 +392,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -400,6 +422,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: true,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -410,6 +434,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: true,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -426,6 +452,8 @@ describe('GET/PUT /api/hub-settings', () => {
             autoTitlePerTurn: false,
             disablePeerTools: false,
             autoBridgeTransientModelErrors: true,
+            telemetryLevel: 1,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })

@@ -4,6 +4,7 @@ import { getConfiguration } from '../../configuration'
 import { getProviderEnvironment } from '../../config/providerCredentials'
 import { listConfiguredVoiceBackends, resolveHubVoiceBackend } from '@hapi/protocol/voice'
 import { loadPrChipDisplayProfile } from '../../config/prChipDisplay'
+import { readTelemetryLevelState } from '../../config/telemetryLevel'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSyncEngine } from './guards'
@@ -73,20 +74,27 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
         let features: {
             githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
             prChipDisplay: ReturnType<typeof loadPrChipDisplayProfile>
+            telemetry: boolean
+            telemetryLevel: number
         }
         try {
             const configuration = getConfiguration()
+            const telemetryLevelState = await readTelemetryLevelState(configuration.dataDir)
             features = {
                 githubPrAwareness: {
                     enabled: configuration.githubPrAwareness,
                     source: configuration.sources.githubPrAwareness
                 },
-                prChipDisplay: loadPrChipDisplayProfile(configuration.dataDir)
+                prChipDisplay: loadPrChipDisplayProfile(configuration.dataDir),
+                telemetry: true,
+                telemetryLevel: telemetryLevelState.level
             }
         } catch {
             features = {
                 githubPrAwareness: { enabled: false, source: 'default' },
-                prChipDisplay: DEFAULT_PR_CHIP_DISPLAY
+                prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
+                telemetry: true,
+                telemetryLevel: 1
             }
         }
 
