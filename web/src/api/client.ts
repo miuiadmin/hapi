@@ -1500,6 +1500,22 @@ export class ApiClient {
         return await this.request('/api/features')
     }
 
+    /**
+     * Cold-start consolidator: sessions (slim) + machines + features in one
+     * round trip. Payloads are byte-compatible with their standalone
+     * endpoints so the caller can seed the per-key query caches directly.
+     */
+    async getBootstrap(): Promise<{
+        sessions: unknown[]
+        machines: MachinesResponse['machines']
+        features: {
+            githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
+            prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile
+        }
+    }> {
+        return await this.request('/api/bootstrap')
+    }
+
     async patchFeatures(patch: { githubPrAwareness?: boolean }): Promise<{
         githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
         prChipDisplay: import('@hapi/protocol').PrChipDisplayProfile

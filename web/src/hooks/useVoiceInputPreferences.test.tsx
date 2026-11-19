@@ -1,7 +1,7 @@
 import { renderHook, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
-import { useVoiceInputPreferences } from './useVoiceInputPreferences'
+import { useVoiceInputPreferences, __resetTranscriptionProvidersCacheForTests } from './useVoiceInputPreferences'
 
 function installPartialSpeechRecognition(available = vi.fn(() => Promise.resolve('available'))) {
     class MockSpeechRecognition {
@@ -14,6 +14,9 @@ function installPartialSpeechRecognition(available = vi.fn(() => Promise.resolve
 }
 
 describe('useVoiceInputPreferences', () => {
+    beforeEach(() => {
+        __resetTranscriptionProvidersCacheForTests()
+    })
     afterEach(() => vi.unstubAllGlobals())
 
     it('discovers browser-local support from its shape without probing available on mount', async () => {

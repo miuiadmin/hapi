@@ -230,6 +230,32 @@ function AppInner() {
         queryClient.clear()
     }, [baseUrl, queryClient])
 
+    // Cold-start consolidator: one GET /api/bootstrap seeds the three
+    // first-paint query caches (sessions slim list, machines, features) so
+    // their mounted queries resolve from cache with zero extra round trips.
+    // Each seed uses the exact payload shape of its standalone endpoint;
+    // the queries' own fetches still run per their staleness rules and
+    // simply find warm data instead of a cold network leg.
+    const bootstrappedBaseUrlRef = useRef<string | null>(null)
+    useEffect(() => {
+        if (!api || !token || bootstrappedBaseUrlRef.current === baseUrlRef.current) return
+        bootstrappedBaseUrlRef.current = baseUrlRef.current
+        let cancelled = false
+        void api.getBootstrap().then((payload) => {
+            if (cancelled) return
+            queryClient.setQueryData(['sessions'], { sessions: payload.sessions })
+            queryClient.setQueryData(['machines'], { machines: payload.machines })
+            queryClient.setQueryData(['features'], payload.features)
+        }).catch(() => {
+            // A failed bootstrap leg is not fatal: the per-key queries fall
+            // back to their own network fetches exactly as before.
+            bootstrappedBaseUrlRef.current = null
+        })
+        return () => {
+            cancelled = true
+        }
+    }, [api, token, queryClient])
+
     // Clean up URL params after successful auth (for direct access links)
     useEffect(() => {
         if (!token || !api) return
