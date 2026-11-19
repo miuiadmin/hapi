@@ -17,6 +17,8 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi.push.vapidKey',
     'hapi-sidebar-width',
     'hapi.sessionLastSeen.v1', // stack: device-local per-session read watermark
+    'hapi:telemetry:device:v1', // telemetry SDK device identity (device-local, non-credential)
+    'hapi:telemetry:outbox:v1', // telemetry SDK failed-delivery outbox (device-local buffer)
     // Trust grant: an imported file must not be able to allow link schemes
     'hapi-allowed-schemes',
     // Data, drafts, history, last-used values
