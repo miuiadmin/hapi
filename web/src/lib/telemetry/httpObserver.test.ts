@@ -1,9 +1,9 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { HTTP_BODY_READ_TIMEOUT_MS, state } from './state'
 import { TELEMETRY_SELF_HEADER, TELEMETRY_TRACE_HEADER } from '@hapi/protocol/telemetry'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { noteBearerFromHeaders } from './httpObserver'
 import { queuedEventsForTest } from './queue'
-import { state } from './state'
 import {
     installForTest,
     resetTelemetryForTest,
@@ -180,6 +180,50 @@ describe('attempt counting (opaqueredirect retry)', () => {
         const traceIds = wireCalls.map((c) => new Headers(c.init?.headers).get(TELEMETRY_TRACE_HEADER))
         expect(traceIds[0]).toBeTruthy()
         expect(traceIds[1]).toBe(traceIds[0])
+    })
+})
+
+describe('trace header negotiation gating', () => {
+    it('does not inject the trace header while telemetry is un-negotiated/disabled (old hub safety)', async () => {
+        // A new web build pointed at an old hub must not attach the custom
+        // header at all — the CORS preflight would reject it and every fetch
+        // (hence the whole app) would fail.
+        state.enabled = false
+        state.level = 0
+        useCustomFetch(() => new Response('{}', { status: 200 }))
+        const res = await fetchThroughAuthProxy('/api/sessions')
+        await res.json()
+        await settle()
+        const sentInit = wireCalls[0]?.init as RequestInit
+        expect(new Headers(sentInit.headers).has(TELEMETRY_TRACE_HEADER)).toBe(false)
+    })
+
+    it('injects the trace header once negotiated (enabled && level > 0)', async () => {
+        useCustomFetch(() => new Response('{}', { status: 200 }))
+        const res = await fetchThroughAuthProxy('/api/sessions')
+        await res.json()
+        await settle()
+        const sentInit = wireCalls[0]?.init as RequestInit
+        expect(new Headers(sentInit.headers).has(TELEMETRY_TRACE_HEADER)).toBe(true)
+    })
+})
+
+describe('unread response body', () => {
+    it('reports totalMs = ttfb with code body-unread instead of the 15s fallback', async () => {
+        vi.useFakeTimers()
+        try {
+            useCustomFetch(() => new Response('{}', { status: 200 }))
+            const res = await fetchThroughAuthProxy('/api/sessions')
+            void res // body deliberately never consumed (304 images, first-401 of a refresh retry)
+            await vi.advanceTimersByTimeAsync(HTTP_BODY_READ_TIMEOUT_MS + 100)
+            const row = httpEvents()[0]!
+            expect(row.code).toBe('body-unread')
+            expect(row.phase).toBe('http')
+            expect(row.totalMs).toBe(row.ttfbMs)
+            expect(row.totalMs as number).toBeLessThan(HTTP_BODY_READ_TIMEOUT_MS)
+        } finally {
+            vi.useRealTimers()
+        }
     })
 })
 

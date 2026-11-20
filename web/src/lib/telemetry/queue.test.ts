@@ -129,6 +129,18 @@ describe('flush thresholds', () => {
         expect(kit.batches[0]?.events).toHaveLength(64)
         expect(kit.batches[1]?.events).toHaveLength(36)
     })
+
+    it('normal flush sends a plain (non-keepalive) POST — keepalive bodies cap at ~64 KiB', async () => {
+        // A ≤200 KiB batch on a keepalive fetch throws TypeError at the engine
+        // level → the whole batch would park in the outbox in an infinite
+        // offline-recovery loop. Only the pagehide slices (≤48 KiB) keepalive.
+        await settle()
+        captureSlow(32)
+        await settle()
+        expect(eventPosts()).toBe(1)
+        const init = kit.requests.find((r) => r.url.includes('/api/telemetry/events'))?.init as RequestInit
+        expect(init.keepalive ?? false).toBe(false)
+    })
 })
 
 describe('queue cap', () => {
@@ -229,6 +241,45 @@ describe('backoff and outbox', () => {
     })
 })
 
+describe('client size gate (UTF-8) and hub honesty counters', () => {
+    it('rejects CJK events whose UTF-8 bytes exceed the hub data cap — before the wire', async () => {
+        await settle()
+        // 1300 CJK chars = 3900 UTF-8 bytes: passes any UTF-16 length count,
+        // exceeds the 3900-byte whole-event ceiling (hub would 200+reject it).
+        captureEvent('diag', 'load_slow', { phase: 'session-detail', durationMs: 1, fromCache: false, pad: '中'.repeat(1300) })
+        expect(queuedEventsForTest()).toHaveLength(0)
+        // Same code-unit count in ASCII is well under the cap and flows.
+        captureEvent('diag', 'load_slow', { phase: 'session-detail', durationMs: 1, fromCache: false, pad: 'a'.repeat(1300) })
+        expect(queuedEventsForTest()).toHaveLength(1)
+    })
+
+    it('accumulates hub-reported rejected/droppedByLevel counts and surfaces them in the next batch meta', async () => {
+        await settle()
+        captureSlow(32)
+        await settle()
+        expect(eventPosts()).toBe(1)
+        expect(state.serverRejected).toBe(0)
+
+        kit.setIngestResult({ accepted: 30, rejected: 2, droppedByLevel: 1 })
+        captureSlow(32)
+        await settle()
+        expect(eventPosts()).toBe(2)
+        expect(state.serverRejected).toBe(2)
+        expect(state.serverDroppedByLevel).toBe(1)
+        // learned from response #2 — carried by batch #3's meta, not #2's
+        expect(kit.batches[1]?.meta?.serverRejected).toBeUndefined()
+
+        captureSlow(32)
+        await settle()
+        expect(eventPosts()).toBe(3)
+        expect(kit.batches[2]?.meta?.serverRejected).toBe(2)
+        expect(kit.batches[2]?.meta?.serverDroppedByLevel).toBe(1)
+        // schema rejections are permanent: nothing is parked for retry
+        expect(readOutbox().events).toHaveLength(0)
+        expect(queuedEventsForTest()).toHaveLength(0)
+    })
+})
+
 describe('pagehide', () => {
     it('slices keepalive POSTs at 64 events and writes everything to the outbox', async () => {
         await settle()
@@ -247,6 +298,20 @@ describe('pagehide', () => {
         // Everything is parked for idempotent redelivery; memory queue is empty.
         expect(readOutbox().events).toHaveLength(70)
         expect(queuedEventsForTest()).toHaveLength(0)
+    })
+
+    it('captures arriving after pagehide go straight to the outbox (late-listener ordering)', async () => {
+        // SessionPage's tracker listens AFTER the SDK, so its session_close
+        // ('pagehide') capture lands after the flush — the memory queue would
+        // never deliver it. The outbox must catch it.
+        await settle()
+        window.dispatchEvent(new Event('pagehide'))
+        captureEvent('ux', 'session_close', { wallDwellMs: 1_500, visibleDwellMs: 1_000, exit: 'pagehide' })
+        expect(queuedEventsForTest()).toHaveLength(0)
+        const outbox = readOutbox().events
+        expect(outbox).toHaveLength(1)
+        expect(outbox[0]?.kind).toBe('session_close')
+        expect((outbox[0]?.data as { exit?: string }).exit).toBe('pagehide')
     })
 
     it('keeps each slice under 48 KiB for large payloads', async () => {

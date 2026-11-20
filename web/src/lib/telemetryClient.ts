@@ -30,6 +30,9 @@ export interface TelemetryCaptureOptions {
 export interface TelemetryApi {
     capture(domain: TelemetryDomain, kind: string, data: Record<string, unknown>, opts?: TelemetryCaptureOptions): void
     setTrigger(trigger: string | null): void
+    /** Read-only current negotiated level (0 = off / not installed). Optional
+     *  so existing bound stubs stay valid; the facade defaults to 0. */
+    getLevel?(): 0 | 1 | 2 | 3
 }
 
 /** Optional explicit override (highest precedence); used by tests and by any
@@ -70,7 +73,12 @@ export function bindTelemetryClient(api: TelemetryApi | null): void {
     bound = api
 }
 
-export const telemetryClient: TelemetryApi = {
+/** The facade's concrete shape: capture/setTrigger per TelemetryApi plus a
+ *  required read-only getLevel (the SDK singleton always provides it; bound
+ *  test stubs may omit it — the facade defaults to 0). */
+export type TelemetryClient = TelemetryApi & { getLevel(): 0 | 1 | 2 | 3 }
+
+export const telemetryClient: TelemetryClient = {
     capture(domain, kind, data, opts) {
         try {
             resolveSdk()?.capture(domain, kind, data, opts)
@@ -83,6 +91,14 @@ export const telemetryClient: TelemetryApi = {
             resolveSdk()?.setTrigger(trigger)
         } catch {
             // fail-silent
+        }
+    },
+    getLevel() {
+        try {
+            const level = resolveSdk()?.getLevel?.()
+            return typeof level === 'number' && level >= 0 ? level : 0
+        } catch {
+            return 0
         }
     },
 }

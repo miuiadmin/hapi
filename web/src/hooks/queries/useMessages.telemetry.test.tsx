@@ -7,13 +7,14 @@ import { clearMessageWindow } from '@/lib/message-window-store'
 import { useMessages } from './useMessages'
 
 vi.mock('@/lib/telemetryClient', () => ({
-    telemetryClient: { capture: vi.fn(), setTrigger: vi.fn() },
+    telemetryClient: { capture: vi.fn(), setTrigger: vi.fn(), getLevel: vi.fn(() => 1) },
     bindTelemetryClient: vi.fn(),
 }))
 
 import { telemetryClient } from '@/lib/telemetryClient'
 
 const captureMock = vi.mocked(telemetryClient.capture)
+const getLevelMock = vi.mocked(telemetryClient.getLevel)
 
 function agentMessage(id: string, seq: number, at: number): DecryptedMessage {
     return {
@@ -72,6 +73,7 @@ beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-11-20T10:00:00Z'))
     captureMock.mockClear()
+    getLevelMock.mockReturnValue(1)
     localStorage.clear()
     sessionIdCounter += 1
     sessionId = `telemetry-use-messages-${sessionIdCounter}`
@@ -166,5 +168,29 @@ describe('useMessages telemetry', () => {
         expect(slow).toHaveLength(1)
         expect(slow[0]).toMatchObject({ phase: 'session-detail', durationMs: 3_500, fromCache: false })
         expectSchemaValid('load_slow', slow[0])
+    })
+
+    it('level 0 (telemetry off): the session-detail observation never starts a poll interval', async () => {
+        getLevelMock.mockReturnValue(0)
+        const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+        const api = makeApi(async () => latestResponse([agentMessage('m1', 1, 1_000)]))
+        renderHook(() => useMessages(api, sessionId))
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1_000)
+        })
+        expect(setIntervalSpy).not.toHaveBeenCalled()
+        setIntervalSpy.mockRestore()
+    })
+
+    it('confirmed-empty session: the poll stops after the sync settles with zero messages', async () => {
+        const api = makeApi(async () => latestResponse([]))
+        renderHook(() => useMessages(api, sessionId))
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1_600)
+        })
+        // no session-detail metric fires for an empty window, and the poll
+        // has torn itself down (no pending timers left behind)
+        expect(eventsOf('load_slow')).toHaveLength(0)
+        expect(vi.getTimerCount()).toBe(0)
     })
 })

@@ -40,10 +40,17 @@ export async function observeFetchThrough(
     }
 
     const traceId = randomTelemetryId()
-    try {
-        headerBag.set(TELEMETRY_TRACE_HEADER, traceId)
-    } catch {
-        // fail-silent — observation continues without the trace key
+    // Trace header injection is gated on the NEGOTIATED state (enabled &&
+    // level > 0), not on installation: a new web build pointed at an old hub
+    // (custom-hub flow) would otherwise attach a non-safelisted custom header
+    // to every request — the preflight rejects it, every fetch throws and the
+    // whole app fails to load. Un-negotiated / disabled ⇒ zero extra headers.
+    if (state.enabled && state.level > 0) {
+        try {
+            headerBag.set(TELEMETRY_TRACE_HEADER, traceId)
+        } catch {
+            // fail-silent — observation continues without the trace key
+        }
     }
     const observedInit: RequestInit = init !== undefined ? { ...init, headers: headerBag } : { headers: headerBag }
 
@@ -108,8 +115,9 @@ function observeResponseRead(res: Response, ctx: HttpCtx): void {
     let settled = false
     let safety: ReturnType<typeof setTimeout> | undefined
     let bodyText: string | undefined
+    let bodyReadStarted = false
 
-    const finish = (outcome?: ReadOutcome): void => {
+    const finish = (outcome?: ReadOutcome, totalMsOverride?: number): void => {
         if (settled) return
         settled = true
         if (safety !== undefined) {
@@ -128,7 +136,7 @@ function observeResponseRead(res: Response, ctx: HttpCtx): void {
                 pathTpl: ctx.pathTpl,
                 status: typeof res.status === 'number' ? res.status : 0,
                 ttfbMs: roundMs(ctx.ttfbMs),
-                totalMs: roundMs(performance.now() - ctx.t0),
+                totalMs: totalMsOverride !== undefined ? totalMsOverride : roundMs(performance.now() - ctx.t0),
                 ...(ctx.reqBytes !== undefined ? { reqBytes: ctx.reqBytes } : {}),
                 ...responseBytes(res),
                 ...(cacheHit !== undefined ? { cacheHit } : {}),
@@ -157,6 +165,7 @@ function observeResponseRead(res: Response, ctx: HttpCtx): void {
             Object.defineProperty(res, name, {
                 configurable: true,
                 value: async (...args: unknown[]) => {
+                    bodyReadStarted = true
                     try {
                         const value = await bound(...args)
                         if (name === 'text' && typeof value === 'string') bodyText = value
@@ -179,7 +188,19 @@ function observeResponseRead(res: Response, ctx: HttpCtx): void {
         // fail-silent
     }
     try {
-        safety = setTimeout(() => finish(), HTTP_BODY_READ_TIMEOUT_MS)
+        safety = setTimeout(() => {
+            // The caller never consumed the body (first 401 of a refresh
+            // retry, 304 images, …): the request itself finished when the
+            // headers arrived — report that moment as totalMs with a
+            // body-unread marker instead of polluting p95/p99 with the 15s
+            // fallback duration. A read that started but hangs keeps the
+            // old fallback (the read genuinely is the request's tail).
+            if (!bodyReadStarted) {
+                finish({ phase: 'http', code: 'body-unread' }, roundMs(ctx.ttfbMs))
+                return
+            }
+            finish()
+        }, HTTP_BODY_READ_TIMEOUT_MS)
     } catch {
         finish()
     }

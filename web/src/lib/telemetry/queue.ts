@@ -37,7 +37,25 @@ import {
  */
 
 const ENVELOPE_OVERHEAD_BYTES = 512
-const EVENT_TOTAL_BYTES_CEILING = 4 * 1024 + ENVELOPE_OVERHEAD_BYTES
+
+/**
+ * Whole-event serialized size gate, in UTF-8 BYTES. The hub enforces
+ * TELEMETRY_MAX_EVENT_DATA_BYTES (4 KiB) on the wire encoding; counting
+ * UTF-16 code units here let CJK events (3 bytes/char vs 1 unit) land in the
+ * gap between the client cap and the hub rejection. 3900 leaves room for the
+ * envelope (id/ts/seq/domain/kind/level ≈ 200 B) under the 4096 data cap.
+ */
+const EVENT_TOTAL_BYTES_CEILING = 3900
+
+const utf8 = new TextEncoder()
+
+function utf8Bytes(s: string): number {
+    try {
+        return utf8.encode(s).byteLength
+    } catch {
+        return s.length
+    }
+}
 
 class RetryableFlushError extends Error {}
 
@@ -54,6 +72,8 @@ function buildBatch(events: readonly TelemetryEvent[]): TelemetryBatch {
     const meta: TelemetryBatch['meta'] = {}
     if (state.droppedOldest > 0) meta.droppedOldest = state.droppedOldest
     if (state.flushFailures > 0) meta.flushFailures = state.flushFailures
+    if (state.serverRejected > 0) meta.serverRejected = state.serverRejected
+    if (state.serverDroppedByLevel > 0) meta.serverDroppedByLevel = state.serverDroppedByLevel
     return {
         schema: 1,
         device: currentDevice(),
@@ -90,9 +110,18 @@ export function captureEvent(domain: TelemetryDomain, kind: string, data: Record
         } catch {
             return // unserializable payload — never let it near the queue
         }
-        if (!serialized || serialized.length > EVENT_TOTAL_BYTES_CEILING) return
-        state.queue.push({ ev: event, bytes: serialized.length })
-        state.queueBytes += serialized.length
+        const bytes = utf8Bytes(serialized)
+        if (!serialized || bytes > EVENT_TOTAL_BYTES_CEILING) return
+        if (state.unloading) {
+            // pagehide already flushed: a capture arriving in the same event
+            // loop (SessionPage's tracker listens AFTER the SDK) would sit in
+            // the memory queue forever — park it in the outbox for the next
+            // load's negotiated flush instead.
+            appendOutbox([event])
+            return
+        }
+        state.queue.push({ ev: event, bytes })
+        state.queueBytes += bytes
         while (state.queue.length > MAX_QUEUE_EVENTS) {
             const dropped = state.queue.shift()
             if (!dropped) break
@@ -198,7 +227,7 @@ function removeFromMemory(ids: readonly string[]): void {
 function estimateEventBytes(ev: TelemetryEvent): number {
     try {
         const s = JSON.stringify(ev)
-        return s ? s.length : 1024
+        return s ? utf8Bytes(s) : 1024
     } catch {
         return 1024
     }
@@ -218,12 +247,24 @@ function takeBatch(pending: readonly TelemetryEvent[]): TelemetryEvent[] {
     return events
 }
 
-async function readLevelFromResponse(res: Response): Promise<unknown> {
+interface IngestResult {
+    level?: unknown
+    accepted?: number
+    rejected?: number
+    droppedByLevel?: number
+}
+
+async function readIngestResult(res: Response): Promise<IngestResult> {
     try {
-        const body = (await res.json()) as { level?: unknown }
-        return body?.level
+        const body = (await res.json()) as { level?: unknown; accepted?: unknown; rejected?: unknown; droppedByLevel?: unknown }
+        return {
+            level: body?.level,
+            accepted: typeof body?.accepted === 'number' ? body.accepted : 0,
+            rejected: typeof body?.rejected === 'number' ? body.rejected : 0,
+            droppedByLevel: typeof body?.droppedByLevel === 'number' ? body.droppedByLevel : 0,
+        }
     } catch {
-        return undefined
+        return {}
     }
 }
 
@@ -251,17 +292,30 @@ export async function flushQueue(reason: string): Promise<void> {
                 state.inFlight = events
                 let res: Response
                 try {
-                    res = await postTelemetryBatch(buildBatch(events), true)
+                    // Normal flush: plain fetch — the page is alive, a failure
+                    // retries with backoff. keepalive bodies cap at ~64 KiB at
+                    // the engine level, which a ≤200 KiB batch would violate
+                    // (TypeError → the whole batch parks in the outbox in an
+                    // infinite offline-recovery loop). Only the pagehide
+                    // slices (≤48 KiB) below use keepalive.
+                    res = await postTelemetryBatch(buildBatch(events), false)
                 } catch {
                     throw new RetryableFlushError()
                 }
                 if (res.ok) {
+                    const ingest = await readIngestResult(res)
                     removeFromMemory(ids)
                     removeFromOutbox(ids)
                     state.inFlight = []
                     state.droppedOldest = 0
                     state.flushFailures = 0
-                    onFlushSuccessMaybeRefreshLevel(await readLevelFromResponse(res))
+                    // Server-side honesty counters: events the hub rejected
+                    // (schema) or dropped (level) inside a 200 are permanent —
+                    // they are counted and surfaced in the next batch meta,
+                    // never re-sent.
+                    state.serverRejected += ingest.rejected ?? 0
+                    state.serverDroppedByLevel += ingest.droppedByLevel ?? 0
+                    onFlushSuccessMaybeRefreshLevel(ingest.level)
                     continue
                 }
                 if (res.status === 400 || res.status === 413 || res.status === 404 || res.status === 410) {
@@ -324,6 +378,10 @@ export function drainPendingHttpObservations(): void {
  */
 export function flushPageHideNow(): void {
     try {
+        // Terminal lifetime marker: captures arriving after this point (same
+        // event loop — e.g. SessionPage's tracker, registered later than the
+        // SDK) are written straight to the outbox by captureEvent.
+        state.unloading = true
         if (!state.installed || !state.enabled) return
         drainPendingHttpObservations()
         const pending = mergedPendingEvents()

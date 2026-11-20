@@ -155,23 +155,48 @@ export function useMessages(
     // effect: observes the same publications the layout effects produce. A
     // small poll backs the store subscription (publications are throttled
     // and coalesced, so the settle moment would otherwise smear up to the
-    // throttle window).
+    // throttle window). Level 0 (telemetry off / old hub) skips the whole
+    // effect — the poll would be pure observational overhead; the poll also
+    // stops itself once the metric settles or the window is confirmed empty.
     useEffect(() => {
         if (!sessionId) {
             return
         }
+        if (telemetryClient.getLevel() <= 0) {
+            return
+        }
         const startedAt = Date.now()
         let settled = false
+        let poll: ReturnType<typeof setInterval> | null = null
+        const stopPoll = () => {
+            if (poll !== null) {
+                clearInterval(poll)
+                poll = null
+            }
+        }
         const check = () => {
             if (settled) {
                 return
             }
             try {
                 const state = getMessageWindowState(sessionId)
-                if (state.isSyncingTail || state.messages.length === 0) {
+                if (state.isSyncingTail) {
+                    return
+                }
+                if (state.messages.length === 0) {
+                    if (state.epoch !== null) {
+                        // Confirmed empty window: the authoritative sync
+                        // completed with zero messages — nothing further can
+                        // arrive on its own, stop watching. (epoch null means
+                        // no sync ran yet, e.g. a search-target open whose
+                        // context load is still pending — keep watching.)
+                        settled = true
+                        stopPoll()
+                    }
                     return
                 }
                 settled = true
+                stopPoll()
                 const durationMs = Date.now() - startedAt
                 if (durationMs > SESSION_DETAIL_SLOW_MS) {
                     telemetryClient.capture('diag', 'load_slow', {
@@ -182,15 +207,13 @@ export function useMessages(
                 }
             } catch {
                 settled = true
+                stopPoll()
                 // fail-silent
             }
         }
         check()
         const unsubscribe = subscribeMessageWindow(sessionId, check)
-        const poll = setInterval(check, 500)
-        const stopPoll = () => {
-            clearInterval(poll)
-        }
+        poll = setInterval(check, 500)
         return () => {
             stopPoll()
             settled = true

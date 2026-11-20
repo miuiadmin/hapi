@@ -77,7 +77,7 @@ export class TelemetryErrorBoundary extends React.Component<Props, State> {
         const summary = `${error.name || 'Error'}: ${sanitizeTelemetryText(error.message, 160)}`
         return (
             <div style={shellStyle}>
-                <div style={{ fontSize: '18px', fontWeight: 600 }}>页面渲染出错</div>
+                <div style={{ fontSize: '18px', fontWeight: 600 }}>Page rendering error</div>
                 <div style={{ maxWidth: '560px', fontSize: '13px', opacity: 0.7, wordBreak: 'break-word', textAlign: 'center' }}>
                     {summary}
                 </div>
@@ -100,7 +100,7 @@ export class TelemetryErrorBoundary extends React.Component<Props, State> {
                         cursor: 'pointer',
                     }}
                 >
-                    重新加载
+                    Reload
                 </button>
             </div>
         )
