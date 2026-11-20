@@ -60,7 +60,14 @@ export function createPerfTimingMiddleware(
                     }
                 }
                 const path = c.req.path
-                if (!c.req.header(TELEMETRY_SELF_HEADER) && isHubPerfRecordablePath(path)) {
+                // OPTIONS is the CORS preflight, not a business request —
+                // recording it would pollute the perf statistics (review
+                // finding #5). The trace echo above stays unconditional.
+                if (
+                    c.req.method !== 'OPTIONS'
+                    && !c.req.header(TELEMETRY_SELF_HEADER)
+                    && isHubPerfRecordablePath(path)
+                ) {
                     record({
                         ts: startedTs,
                         method: c.req.method,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
@@ -12,7 +12,7 @@ import { Store } from '../../store'
 import { createTelemetryRoutes } from './telemetry'
 import { createHubSettingsRoutes } from './hubSettings'
 import { writeTelemetryLevel } from '../../config/telemetryLevel'
-import { getSettingsFile } from '../../config/settings'
+import { __resetSettingsReadCacheForTests, getSettingsFile } from '../../config/settings'
 
 const JWT_SECRET = new TextEncoder().encode('test-secret')
 const directories: string[] = []
@@ -183,6 +183,58 @@ describe('POST /api/telemetry/events', () => {
                 rejected: 0,
                 droppedByLevel: 2,
                 level: 0
+            })
+        } finally {
+            store.close()
+        }
+    })
+
+    it('still answers 200 when settings.json is unreadable (review finding #3)', async () => {
+        const store = new Store(':memory:')
+        try {
+            const { app, dataDir } = await createApp(store)
+            await writeFile(getSettingsFile(dataDir), '{corrupted', 'utf8')
+            // Force a cold read: the write-through cache still holds the
+            // fresh snapshot from createApp's writeTelemetryLevel.
+            __resetSettingsReadCacheForTests()
+            const response = await postBatch(app, batch([uxEvent(), httpEvent(50)]), await authHeaders())
+            expect(response.status).toBe(200)
+            // Degraded to level 0 = off: the batch is accepted (200) so the
+            // SDK drains its outbox, everything lands in droppedByLevel.
+            expect(await response.json()).toEqual({
+                ok: true,
+                accepted: 0,
+                rejected: 0,
+                droppedByLevel: 2,
+                level: 0
+            })
+        } finally {
+            store.close()
+        }
+    })
+
+    it('rejects a poisoned ts (1e300) per event without 500ing the batch (review finding #2)', async () => {
+        const store = new Store(':memory:')
+        try {
+            const { app } = await createApp(store)
+            const good = Array.from({ length: 63 }, (_, i) => httpEvent(i + 1))
+            const poisoned: TelemetryEvent = {
+                id: 'evt-poison',
+                ts: 1e300,
+                seq: 99,
+                domain: 'perf',
+                kind: 'http',
+                level: 1,
+                data: { method: 'GET', pathTpl: '/api/sessions', status: 200, totalMs: 10 }
+            }
+            const response = await postBatch(app, batch([...good, poisoned]), await authHeaders())
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({
+                ok: true,
+                accepted: 63,
+                rejected: 1,
+                droppedByLevel: 0,
+                level: 1
             })
         } finally {
             store.close()
@@ -368,6 +420,49 @@ describe('telemetry level via hub-settings patch', () => {
                 body: JSON.stringify({ telemetryLevel: 7 })
             })
             expect(invalid.status).toBe(400)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('flips the hub-plane perf level gate immediately after the PUT (review finding #1)', async () => {
+        const store = new Store(':memory:')
+        try {
+            // Fresh dataDir, default level 0: the hub-plane gate is closed.
+            const dataDir = await mkdtemp(join(tmpdir(), 'hapi-telemetry-routes-'))
+            directories.push(dataDir)
+            const settingsApp = new Hono<WebAppEnv>()
+            settingsApp.use('*', async (c, next) => {
+                c.set('namespace', 'default')
+                c.set('userId', 1)
+                await next()
+            })
+            settingsApp.route('/api', createHubSettingsRoutes(dataDir, undefined, store))
+
+            const sample = {
+                ts: Date.now(),
+                method: 'GET',
+                path: '/api/sessions',
+                status: 200,
+                totalMs: 4_000,
+                namespace: 'default'
+            }
+            store.telemetry.recordHubSample(sample)
+            expect(store.telemetry.hubQueueStats().queued).toBe(0)
+
+            const patch = await settingsApp.request('/api/hub-settings', {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ telemetryLevel: 1 })
+            })
+            expect(patch.status).toBe(200)
+
+            // Same tick cadence as the engine would run: without the eager
+            // route-side refresh this would still be gated at the stale 0.
+            store.telemetry.recordHubSample(sample)
+            expect(store.telemetry.hubQueueStats().queued).toBe(1)
+            store.telemetry.tick(Date.now() + 1_000)
+            expect(store.telemetry.hubQueueStats().queued).toBe(0)
         } finally {
             store.close()
         }

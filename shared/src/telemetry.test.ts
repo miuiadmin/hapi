@@ -188,6 +188,30 @@ describe('validateTelemetryEvent', () => {
         // 128 entries × ~60B ≈ 7.7KB > 4KB → data-oversize;若 schema 层已拒同样 ok=false
         expect(r.ok).toBe(false)
     })
+    test('ts 毒丸防御(评审 #2):1e300 这类越界墙钟值按事件拒绝,不进事务', () => {
+        // 1e300 有限,zod v4 的 z.number() 挡不住;曾把 hub 侧 utcDay(ts)
+        // 在 ingest 事务内炸成 RangeError → 整批回滚 + 500。
+        const ev = (ts: number) => validateTelemetryEvent({
+            ...baseEvent, ts, domain: 'ux', kind: 'session_open', data: { entry: 'list-click', openedAt: 1 }
+        })
+        expect(ev(1e300).ok).toBe(false)
+        // 同样拒绝:过老的墙钟(2000-01-01 之前)与未来超过 1 年
+        expect(ev(Date.UTC(1999, 11, 31)).ok).toBe(false)
+        expect(ev(Date.now() + 400 * 86_400_000).ok).toBe(false)
+        // 边界内照常接受:现在 / 过去一周 / 未来一个月
+        expect(ev(Date.now()).ok).toBe(true)
+        expect(ev(Date.now() - 7 * 86_400_000).ok).toBe(true)
+        expect(ev(Date.now() + 30 * 86_400_000).ok).toBe(true)
+        // 整批 schema 刻意不拒毒 ts(拒整批 = 400 → SDK outbox 无限重试);
+        // 逐事件防线在 validateTelemetryEvent。
+        const poisonedBatch = TelemetryBatchSchema.safeParse({
+            schema: 1,
+            device: { id: 'dev-1', kind: 'pwa' as const, origin: 'cf-orange' as const },
+            appVersion: '0.36.5',
+            events: [{ ...baseEvent, ts: 1e300, domain: 'ux', kind: 'session_open', data: { entry: 'list-click', openedAt: 1 } }]
+        })
+        expect(poisonedBatch.success).toBe(true)
+    })
 })
 
 // ---------------------------------------------------------------------------

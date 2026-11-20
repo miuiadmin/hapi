@@ -133,4 +133,29 @@ describe('createPerfTimingMiddleware', () => {
         expect(recorded).toHaveLength(1)
         expect(recorded[0]).toMatchObject({ path: '/cli/machines', namespace: 'cli' })
     })
+
+    it('skips CORS preflight OPTIONS requests but still echoes the trace header (review finding #5)', async () => {
+        const recorded: HubPerfSampleInput[] = []
+        const app = new Hono<WebAppEnv>()
+        app.use('*', createPerfTimingMiddleware((sample) => {
+            recorded.push(sample)
+        }))
+        app.options('/api/sessions', (c) => c.json({ ok: true }))
+        app.get('/api/sessions', (c) => c.json({ ok: true }))
+
+        const preflight = await app.request('/api/sessions', {
+            method: 'OPTIONS',
+            headers: { origin: 'https://web.example', 'x-hapi-trace-id': 'trace-opt-1' }
+        })
+        expect(preflight.status).toBe(200)
+        // Preflight is not a business request: no perf row, but the harmless
+        // pairing key is still echoed.
+        expect(recorded).toHaveLength(0)
+        expect(preflight.headers.get('x-hapi-trace-id')).toBe('trace-opt-1')
+
+        // The next real request still records normally.
+        await app.request('/api/sessions')
+        expect(recorded).toHaveLength(1)
+        expect(recorded[0]).toMatchObject({ method: 'GET', path: '/api/sessions' })
+    })
 })

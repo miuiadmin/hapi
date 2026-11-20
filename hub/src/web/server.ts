@@ -420,7 +420,9 @@ export function createWebApp(options: {
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
-    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))
+    // Store wired in for the telemetryLevel PUT: the route eagerly refreshes
+    // the hub-plane perf level cache after the write (review finding #1).
+    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine, options.store))
     app.route('/api', createUsageRoutes(options.store, options.getSyncEngine))
     app.route('/api', createActivityRoutes(options.store))
     app.route('/api', createGitRoutes(options.getSyncEngine))

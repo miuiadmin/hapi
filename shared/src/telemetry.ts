@@ -326,6 +326,24 @@ export const TelemetryDeviceSchema = z.object({
 })
 export type TelemetryDevice = z.infer<typeof TelemetryDeviceSchema>
 
+/** 事件 ts 合理墙钟下限(2000-01-01 UTC)。 */
+export const TELEMETRY_TS_MIN_MS = Date.UTC(2000, 0, 1)
+
+/**
+ * 事件 ts 合理性检查:有限且落在 [2000-01-01, now+1 年] 墙钟窗口内
+ * (上界按校验时刻求值)。防的是 1e300 这类有限但越界的毒值:zod v4 的
+ * z.number() 只挡 NaN/Infinity,挡不住它;而 hub 侧
+ * bucketKey(utcDay(ts)) 会对它抛 RangeError,把整个 ingest 事务炸回滚
+ * (评审发现 #2)。刻意放在 validateTelemetryEvent(逐事件)而非
+ * TelemetryEventSchema(整批):毒 ts 必须只拒该事件走 rejected 计数,
+ * 不能把整批 400 掉让 SDK outbox 无限重试。
+ */
+export function isPlausibleTelemetryTs(ts: number): boolean {
+    return Number.isFinite(ts)
+        && ts >= TELEMETRY_TS_MIN_MS
+        && ts <= Date.now() + 366 * 86_400_000
+}
+
 export const TelemetryEventSchema = z.object({
     /** crypto.randomUUID() = 幂等键(INSERT OR IGNORE,重复投递无害)。 */
     id: shortStr(64),
@@ -375,6 +393,11 @@ export function validateTelemetryEvent(event: unknown): TelemetryEventValidation
         return { ok: false, reason: `envelope:${issue?.path.join('.') ?? '?'}:${issue?.code ?? '?'}` }
     }
     const e = parsed.data
+    // 毒 ts 防线(评审发现 #2):1e300 会让 hub 侧 utcDay(ts) 在 ingest
+    // 事务内抛 RangeError;这里按事件拒绝,其余事件照常入库。
+    if (!isPlausibleTelemetryTs(e.ts)) {
+        return { ok: false, reason: `ts-range:${e.ts}` }
+    }
     const spec = TELEMETRY_KINDS[e.kind]
     if (!spec) return { ok: false, reason: `unknown-kind:${e.kind}` }
     if (spec.domain !== e.domain) return { ok: false, reason: `domain-mismatch:${e.kind}:${e.domain}` }

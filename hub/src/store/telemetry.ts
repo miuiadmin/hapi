@@ -248,6 +248,14 @@ interface TelemetryDbState {
     lastEventsSweepAt: number
     lastL3CheckAt: number
     recentPerfIds: Set<string>
+    /**
+     * Hub-plane level gate (review finding #1): settings telemetryLevel as
+     * of the last refresh, 0 until proven otherwise (privacy-first — the
+     * opt-in default records nothing). Refreshed from the engine tick and
+     * eagerly by the PUT /hub-settings telemetryLevel route; see
+     * refreshHubTelemetryLevel for the staleness window.
+     */
+    cachedLevel: number
 }
 
 const states = new WeakMap<Database, TelemetryDbState>()
@@ -265,7 +273,8 @@ function stateFor(db: Database): TelemetryDbState {
             lastPerfSweepAt: 0,
             lastEventsSweepAt: 0,
             lastL3CheckAt: 0,
-            recentPerfIds: new Set()
+            recentPerfIds: new Set(),
+            cachedLevel: 0
         }
         states.set(db, state)
     }
@@ -564,54 +573,64 @@ export function insertTelemetryBatch(
             })
         }
         for (const row of sampleRows) {
-            prepareCached(db, `
-                INSERT INTO perf_samples (
-                    ts, source, trace_id, device_id, origin_kind, method, path_tpl,
-                    status, phase, code, attempt, trigger, ttfb_ms, total_ms,
-                    req_bytes, res_bytes, res_bytes_source, cache_hit, session_id,
-                    hub_version, web_version, namespace
-                ) VALUES (
-                    @ts, @source, @trace_id, @device_id, @origin_kind, @method, @path_tpl,
-                    @status, @phase, @code, @attempt, @trigger, @ttfb_ms, @total_ms,
-                    @req_bytes, @res_bytes, @res_bytes_source, @cache_hit, @session_id,
-                    @hub_version, @web_version, @namespace
+            // Defense-in-depth (review finding #2): a row that somehow slips
+            // past the schema ts range check must not throw inside this
+            // transaction — that would roll back and 500 the whole batch.
+            // The schema guard makes this unreachable; if it ever fires the
+            // row degrades to the rejected count instead.
+            try {
+                prepareCached(db, `
+                    INSERT INTO perf_samples (
+                        ts, source, trace_id, device_id, origin_kind, method, path_tpl,
+                        status, phase, code, attempt, trigger, ttfb_ms, total_ms,
+                        req_bytes, res_bytes, res_bytes_source, cache_hit, session_id,
+                        hub_version, web_version, namespace
+                    ) VALUES (
+                        @ts, @source, @trace_id, @device_id, @origin_kind, @method, @path_tpl,
+                        @status, @phase, @code, @attempt, @trigger, @ttfb_ms, @total_ms,
+                        @req_bytes, @res_bytes, @res_bytes_source, @cache_hit, @session_id,
+                        @hub_version, @web_version, @namespace
+                    )
+                `).run({
+                    ts: row.ts,
+                    source: row.source,
+                    trace_id: row.traceId,
+                    device_id: row.deviceId,
+                    origin_kind: row.originKind,
+                    method: row.method,
+                    path_tpl: row.pathTpl,
+                    status: row.status,
+                    phase: row.phase,
+                    code: row.code,
+                    attempt: row.attempt,
+                    trigger: row.trigger,
+                    ttfb_ms: row.ttfbMs,
+                    total_ms: row.totalMs,
+                    req_bytes: row.reqBytes,
+                    res_bytes: row.resBytes,
+                    res_bytes_source: row.resBytesSource,
+                    cache_hit: row.cacheHit,
+                    session_id: row.sessionId,
+                    hub_version: hubVersion,
+                    web_version: batch.appVersion,
+                    namespace: options.namespace
+                })
+                markBucketDirty(
+                    db,
+                    bucketKey(
+                        utcDay(row.ts),
+                        'web',
+                        row.pathTpl,
+                        row.method,
+                        statusClass(row.status),
+                        rollupVersion('web', batch.appVersion, hubVersion),
+                        row.originKind ?? 'any'
+                    )
                 )
-            `).run({
-                ts: row.ts,
-                source: row.source,
-                trace_id: row.traceId,
-                device_id: row.deviceId,
-                origin_kind: row.originKind,
-                method: row.method,
-                path_tpl: row.pathTpl,
-                status: row.status,
-                phase: row.phase,
-                code: row.code,
-                attempt: row.attempt,
-                trigger: row.trigger,
-                ttfb_ms: row.ttfbMs,
-                total_ms: row.totalMs,
-                req_bytes: row.reqBytes,
-                res_bytes: row.resBytes,
-                res_bytes_source: row.resBytesSource,
-                cache_hit: row.cacheHit,
-                session_id: row.sessionId,
-                hub_version: hubVersion,
-                web_version: batch.appVersion,
-                namespace: options.namespace
-            })
-            markBucketDirty(
-                db,
-                bucketKey(
-                    utcDay(row.ts),
-                    'web',
-                    row.pathTpl,
-                    row.method,
-                    statusClass(row.status),
-                    rollupVersion('web', batch.appVersion, hubVersion),
-                    row.originKind ?? 'any'
-                )
-            )
+            } catch {
+                result.accepted--
+                result.rejected++
+            }
         }
         for (const row of episodeRows) {
             prepareCached(db, `
@@ -705,9 +724,39 @@ function recordRecentPerfEventIds(db: Database, ids: Set<string>): void {
 // Hub-plane middleware queue (bounded, drop-oldest) + flusher
 // ---------------------------------------------------------------------------
 
+/**
+ * Refresh the hub-plane level gate from settings (review finding #1).
+ *
+ * Cheap by design: readTelemetryLevelState rides the write-through settings
+ * read cache (readSettingsOrThrowCached), so a level just written by this
+ * process is a memory hit and external settings.json edits converge within
+ * that cache's 5s TTL. Staleness window summary:
+ * - PUT /hub-settings telemetryLevel → immediate (the route awaits this
+ *   after writeTelemetryLevel; the write-through cache makes it synchronous).
+ * - External settings.json edits / other processes → next engine tick (5s)
+ *   sees them via the shared TTL cache.
+ * - Any read failure → level 0 (off): a hub that cannot prove telemetry is
+ *   opted in must not record (privacy-first, same degradation as ingest).
+ * - Cold start → 0 until the first engine tick (~5s after boot); the boot
+ *   deploy mark is unaffected (recorded once, outside this gate).
+ */
+export async function refreshHubTelemetryLevel(db: Database, dataDir: string): Promise<void> {
+    const state = stateFor(db)
+    try {
+        const { readTelemetryLevelState } = await import('../config/telemetryLevel')
+        state.cachedLevel = (await readTelemetryLevelState(dataDir)).level
+    } catch {
+        state.cachedLevel = 0
+    }
+}
+
 /** Middleware entry point: enqueue one hub-plane sample (never throws). */
 export function recordHubPerfSample(db: Database, sample: HubPerfSampleInput): void {
     const state = stateFor(db)
+    // Level 0 = telemetry opted out: the sample never even enters the
+    // in-memory queue (opt-in contract, review finding #1). The trace-header
+    // echo stays unconditional — it lives in the middleware, not here.
+    if (state.cachedLevel === 0) return
     if (state.queue.length >= PERF_QUEUE_CAP) {
         // Drop-oldest: fresh tail matters more than the head of the window.
         state.queue.shift()
@@ -730,6 +779,10 @@ export function hubPerfQueueStats(db: Database): HubPerfQueueStats {
 function flushHubPerfQueue(db: Database, now: number): void {
     const state = stateFor(db)
     if (state.queue.length === 0) return
+    // Second gate (review finding #1): nothing may be written to perf_samples
+    // while telemetry is off. Samples queued under an earlier level >= 1 stay
+    // queued (bounded, drop-oldest) and flush if the level comes back.
+    if (state.cachedLevel === 0) return
     if (state.queue.length < PERF_FLUSH_MIN_BATCH && now - state.lastFlushAt < PERF_FLUSH_INTERVAL_MS) {
         return
     }
@@ -969,6 +1022,13 @@ export interface TelemetryTickOptions {
     dataDir?: string | null
     /** Injected to avoid an import cycle config ⇄ store in tests. */
     fallbackL3?: (dataDir: string, now: number) => Promise<boolean>
+    /** Injected level reader for the hub-plane gate (same cycle avoidance). */
+    readTelemetryLevel?: (dataDir: string) => Promise<TelemetryLevel>
+}
+
+async function defaultReadTelemetryLevel(dataDir: string): Promise<TelemetryLevel> {
+    const { readTelemetryLevelState } = await import('../config/telemetryLevel')
+    return (await readTelemetryLevelState(dataDir)).level
 }
 
 export function tickTelemetry(db: Database, now: number, options?: TelemetryTickOptions): void {
@@ -984,6 +1044,16 @@ export function tickTelemetry(db: Database, now: number, options?: TelemetryTick
     const dataDir = options?.dataDir
     if (!dataDir) return
     const state = stateFor(db)
+    // Hub-plane level gate refresh rides the same 5s tick (review finding
+    // #1): fire-and-forget, cheap (write-through settings read cache) and
+    // fail-silent — a failed refresh keeps the last value.
+    const readLevel = options?.readTelemetryLevel ?? defaultReadTelemetryLevel
+    try {
+        void readLevel(dataDir).then(
+            (level) => { state.cachedLevel = level },
+            () => undefined
+        )
+    } catch { }
     if (now - state.lastL3CheckAt < L3_CHECK_INTERVAL_MS) return
     state.lastL3CheckAt = now
     const fallback = options?.fallbackL3 ?? defaultL3Fallback
@@ -1205,6 +1275,12 @@ export class TelemetryStore {
 
     recordHubSample(sample: HubPerfSampleInput): void {
         recordHubPerfSample(this.db, sample)
+    }
+
+    /** Awaited level-gate refresh; the PUT /hub-settings telemetryLevel route
+     * calls this so the hub plane flips immediately after a write. */
+    async refreshLevel(dataDir: string): Promise<void> {
+        await refreshHubTelemetryLevel(this.db, dataDir)
     }
 
     hubQueueStats(): HubPerfQueueStats {
