@@ -48,12 +48,13 @@ function defaultDeps(): FeaturesRouteDeps {
 
 const OWNER_ONLY_ERROR = 'Feature settings are only available to the hub owner'
 
-/** Telemetry leg with total tolerance: omitted dep or config hiccup → L1. */
+/** Telemetry leg with total tolerance: omitted dep or config hiccup → the
+ * opt-in default (0 = off) — never silently upgrade sharing on a read error. */
 async function resolveTelemetry(deps: FeaturesRouteDeps): Promise<TelemetryFeatureState> {
     try {
-        return (await deps.getTelemetry?.()) ?? { enabled: true, level: 1, source: 'default' }
+        return (await deps.getTelemetry?.()) ?? { enabled: true, level: 0, source: 'default' }
     } catch {
-        return { enabled: true, level: 1, source: 'default' }
+        return { enabled: true, level: 0, source: 'default' }
     }
 }
 

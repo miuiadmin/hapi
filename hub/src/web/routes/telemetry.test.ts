@@ -33,6 +33,9 @@ async function authHeaders(namespace = 'default', userId = 1) {
 async function createApp(store: Store) {
     const dataDir = await mkdtemp(join(tmpdir(), 'hapi-telemetry-routes-'))
     directories.push(dataDir)
+    // Product default is now 0 (opt-in developer mode); pin L1 explicitly so
+    // these ingest tests keep exercising the accepting path.
+    await writeTelemetryLevel(dataDir, 1)
     const app = new Hono<WebAppEnv>()
     app.use('/api/*', createAuthMiddleware(JWT_SECRET))
     app.route('/api', createTelemetryRoutes(store, dataDir))

@@ -35,7 +35,7 @@ describe('features routes', () => {
             githubPrAwareness: { enabled: false, source: 'default' },
             prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
             telemetry: true,
-            telemetryLevel: 1
+            telemetryLevel: 0
         })
     })
 
@@ -61,7 +61,7 @@ describe('features routes', () => {
             githubPrAwareness: { enabled: true, source: 'file' },
             prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
             telemetry: true,
-            telemetryLevel: 1
+            telemetryLevel: 0
         })
         expect(enabled).toBe(true)
     })

@@ -7,16 +7,21 @@ import {
 } from './settings'
 
 /**
- * Detailed-logging level switch (research report §3.2 item 4).
+ * Developer-mode telemetry switch (research report §3.2 item 4; default
+ * flipped to 0 / opt-in on 2026-11-20 — privacy-first: users must explicitly
+ * enable "developer mode" before any diagnostic data is collected or uploaded;
+ * always-on telemetry would also be unacceptable to upstream review).
  *
- * Single source of truth: settings.json `telemetryLevel` (0-3, default 1).
+ * Single source of truth: settings.json `telemetryLevel` (0-3, default 0).
  * `HAPI_TELEMETRY_LEVEL` env hard-overrides at read time (ops pin — wins for
  * the whole process lifetime, and the L3 auto-fallback deliberately does not
  * fight it). `telemetryLevelChangedAt` is internal bookkeeping: the timestamp
  * the level last changed, driving the 24h L3 auto-fallback.
  */
 
-/** L3 is a temporary debug state: fall back to L1 after 24h (ruling §3.4 #5). */
+/** L3 is a temporary debug state: fall back to OFF after 24h (ruling §3.4 #5;
+ * target changed 1 → 0 together with the opt-in default — expiring debug
+ * grants must not silently leave sharing on). */
 export const TELEMETRY_LEVEL_L3_FALLBACK_MS = 24 * 60 * 60_000
 
 const VALID_LEVELS: readonly number[] = [0, 1, 2, 3]
@@ -47,7 +52,7 @@ export function resolveTelemetryLevel(
     if (envLevel !== null) return { level: envLevel, source: 'env' }
     const stored = settings?.telemetryLevel
     if (isTelemetryLevel(stored)) return { level: stored, source: 'file' }
-    return { level: 1, source: 'default' }
+    return { level: 0, source: 'default' }
 }
 
 export async function readTelemetryLevelState(dataDir: string): Promise<TelemetryLevelState> {
@@ -71,11 +76,11 @@ export async function writeTelemetryLevel(
 
 /**
  * L3 auto-fallback: settings says 3 and the last change is older than 24h →
- * write back 1. Skipped entirely while the env pin holds (env wins, and we
- * must not rewrite the user's settings.json out from under the operator).
- * A level-3 value without a timestamp (hand-edited file) gets stamped now so
- * the countdown starts from the first observation instead of instantly
- * knocking a freshly pinned L3 back down.
+ * write back 0 (off — the opt-in default). Skipped entirely while the env pin
+ * holds (env wins, and we must not rewrite the user's settings.json out from
+ * under the operator). A level-3 value without a timestamp (hand-edited file)
+ * gets stamped now so the countdown starts from the first observation instead
+ * of instantly knocking a freshly pinned L3 back down.
  */
 export async function maybeFallbackTelemetryLevel(
     dataDir: string,
@@ -95,7 +100,7 @@ export async function maybeFallbackTelemetryLevel(
     }
     if (now - changedAt < TELEMETRY_LEVEL_L3_FALLBACK_MS) return false
     await updateSettings(settingsFile, (current) => ({
-        settings: { ...current, telemetryLevel: 1, telemetryLevelChangedAt: now },
+        settings: { ...current, telemetryLevel: 0, telemetryLevelChangedAt: now },
         result: true
     }))
     return true

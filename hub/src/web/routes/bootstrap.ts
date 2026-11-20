@@ -94,7 +94,7 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
                 githubPrAwareness: { enabled: false, source: 'default' },
                 prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
                 telemetry: true,
-                telemetryLevel: 1
+                telemetryLevel: 0
             }
         }
 

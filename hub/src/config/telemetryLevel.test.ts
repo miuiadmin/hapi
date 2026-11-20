@@ -41,11 +41,11 @@ describe('parseTelemetryLevel / resolveTelemetryLevel', () => {
         expect(parseTelemetryLevel('yes')).toBeNull()
     })
 
-    it('resolves env > file > default(1)', () => {
+    it('resolves env > file > default(0, opt-in developer mode)', () => {
         expect(resolveTelemetryLevel({ telemetryLevel: 2 }, null)).toEqual({ level: 2, source: 'file' })
         expect(resolveTelemetryLevel({ telemetryLevel: 2 }, 3)).toEqual({ level: 3, source: 'env' })
-        expect(resolveTelemetryLevel({}, null)).toEqual({ level: 1, source: 'default' })
-        expect(resolveTelemetryLevel({ telemetryLevel: 9 as unknown as 2 }, null)).toEqual({ level: 1, source: 'default' })
+        expect(resolveTelemetryLevel({}, null)).toEqual({ level: 0, source: 'default' })
+        expect(resolveTelemetryLevel({ telemetryLevel: 9 as unknown as 2 }, null)).toEqual({ level: 0, source: 'default' })
     })
 })
 
@@ -61,9 +61,9 @@ describe('readTelemetryLevelState', () => {
         expect(await readTelemetryLevelState(dir)).toEqual({ level: 0, source: 'file' })
     })
 
-    it('defaults to 1 on a fresh data dir', async () => {
+    it('defaults to 0 (off) on a fresh data dir — sharing is opt-in only', async () => {
         const dir = await newDataDir()
-        expect(await readTelemetryLevelState(dir)).toEqual({ level: 1, source: 'default' })
+        expect(await readTelemetryLevelState(dir)).toEqual({ level: 0, source: 'default' })
     })
 })
 
@@ -82,11 +82,11 @@ describe('writeTelemetryLevel', () => {
 })
 
 describe('maybeFallbackTelemetryLevel (24h L3 auto-fallback)', () => {
-    it('falls back to 1 once the change is older than 24h', async () => {
+    it('falls back to 0 (off) once the change is older than 24h', async () => {
         const now = Date.now()
         const dir = await newDataDir({ telemetryLevel: 3, telemetryLevelChangedAt: now - 25 * HOUR })
         expect(await maybeFallbackTelemetryLevel(dir, now)).toBe(true)
-        expect(await readTelemetryLevelState(dir)).toEqual({ level: 1, source: 'file' })
+        expect(await readTelemetryLevelState(dir)).toEqual({ level: 0, source: 'file' })
     })
 
     it('keeps a fresh L3 but falls back exactly at the 24h boundary (>= semantics)', async () => {
