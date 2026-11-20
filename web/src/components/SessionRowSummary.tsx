@@ -326,18 +326,6 @@ export function SessionRowSummary(props: {
                                 <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
                             </span>
                         ) : null}
-                        {hasRunningWork ? (
-                            <span data-testid="session-activity" data-activity={hasForegroundWork ? 'foreground' : 'background'} role="img" aria-label={activityLabel} title={activityLabel} className="inline-flex shrink-0">
-                                <LoaderIcon ref={activityRef} className={`h-3.5 w-3.5 ${isUnread ? 'text-blue-500' : 'text-[var(--app-hint)]'}`} />
-                            </span>
-                        ) : isUnread && !requestKind ? (
-                            <span data-testid="session-unread" className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-fg)]" aria-hidden="true" />
-                        ) : null}
-                        {isUnread ? (
-                            <span id={attention?.kind === 'unread' && nestedTooltips ? attentionId : undefined} className="sr-only">
-                                {t('session.item.newActivity')}
-                            </span>
-                        ) : null}
                         {requestKind && urgentAttention && nestedTooltips && attentionId ? (
                             <SessionAttentionIndicator
                                 attention={attention}
@@ -400,6 +388,22 @@ export function SessionRowSummary(props: {
                                 interactive={prChipInteractive}
                                 nested={prChipInteractive}
                             />
+                        ) : null}
+                        {/* Read/unread status indicators ride the trailing cluster,
+                            right of the PR chip — the right-hand side reads as one
+                            metadata group ([PR][●][time]) instead of dots floating
+                            next to the title. */}
+                        {hasRunningWork ? (
+                            <span data-testid="session-activity" data-activity={hasForegroundWork ? 'foreground' : 'background'} role="img" aria-label={activityLabel} title={activityLabel} className="inline-flex shrink-0">
+                                <LoaderIcon ref={activityRef} className={`h-3.5 w-3.5 ${isUnread ? 'text-blue-500' : 'text-[var(--app-hint)]'}`} />
+                            </span>
+                        ) : isUnread && !requestKind ? (
+                            <span data-testid="session-unread" className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-fg)]" aria-hidden="true" />
+                        ) : null}
+                        {isUnread ? (
+                            <span id={attention?.kind === 'unread' && nestedTooltips ? attentionId : undefined} className="sr-only">
+                                {t('session.item.newActivity')}
+                            </span>
                         ) : null}
                         {timeLabel ? (
                             <span className={`min-w-0 translate-y-[0.5px] truncate whitespace-nowrap tabular-nums ${
