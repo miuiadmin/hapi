@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 import { Database } from 'bun:sqlite'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { TelemetryBatch, TelemetryEvent } from '@hapi/protocol/telemetry'
 import { Store } from './index'
+import { writeTelemetryLevel } from '../config/telemetryLevel'
+import { __resetSettingsReadCacheForTests, getSettingsFile } from '../config/settings'
 import {
     insertTelemetryBatch,
     nearestRankPercentile,
@@ -9,6 +14,7 @@ import {
     hubPerfQueueStats,
     perfRawWindowHours,
     recordDeployMark,
+    refreshHubTelemetryLevel,
     sweepTelemetry,
     seedTodayDirtyBuckets,
     tickTelemetry,
@@ -90,6 +96,22 @@ function batch(events: TelemetryEvent[]): TelemetryBatch {
 function rawDb(store: Store): Database {
     return (store as unknown as { db: Database }).db
 }
+
+// Hub-plane level gate (review finding #1): temp settings roots used to prime
+// the cached level; cleaned up in afterEach.
+const levelDirs: string[] = []
+
+async function primeLevel(db: Database, level: 0 | 1 | 2 | 3): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'hapi-tel-level-'))
+    levelDirs.push(dir)
+    await writeTelemetryLevel(dir, level)
+    await refreshHubTelemetryLevel(db, dir)
+    return dir
+}
+
+afterEach(async () => {
+    await Promise.all(levelDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
 
 describe('insertTelemetryBatch', () => {
     it('splits events into the right tables and stamps server fields', () => {
@@ -218,6 +240,34 @@ describe('insertTelemetryBatch', () => {
             store.close()
         }
     })
+
+    it('rejects a poisoned ts (1e300) per event without rolling back the batch (review finding #2)', () => {
+        const store = new Store(':memory:')
+        try {
+            const db = rawDb(store)
+            const ts = Date.now()
+            // 63 well-formed http samples + 1 poisoned ts=1e300 in the same
+            // transaction: the schema range guard rejects just the poisoned
+            // event; the batch must not throw, must not roll back.
+            const events: TelemetryEvent[] = Array.from({ length: 63 }, (_, i) =>
+                httpEvent(`ok-${i}`, ts, i + 1))
+            events.push({
+                id: 'poison',
+                ts: 1e300,
+                seq: 99,
+                domain: 'perf',
+                kind: 'http',
+                level: 1,
+                data: { method: 'GET', pathTpl: '/api/sessions', status: 200, totalMs: 10 }
+            })
+            const result = insertTelemetryBatch(db, { namespace: 'default', userId: 1, level: 1 }, batch(events))
+            expect(result).toEqual({ accepted: 63, rejected: 1, droppedByLevel: 0 })
+            const rows = db.prepare('SELECT COUNT(*) AS n FROM perf_samples').get() as { n: number }
+            expect(rows.n).toBe(63)
+        } finally {
+            store.close()
+        }
+    })
 })
 
 describe('nearestRankPercentile', () => {
@@ -244,10 +294,11 @@ describe('nearestRankPercentile', () => {
 })
 
 describe('hub-plane queue + flusher + rollup', () => {
-    it('flushes the queue into perf_samples with normalized paths and hub stamps', () => {
+    it('flushes the queue into perf_samples with normalized paths and hub stamps', async () => {
         const store = new Store(':memory:')
         try {
             const db = rawDb(store)
+            await primeLevel(db, 1)
             const now = Date.now()
             recordHubPerfSample(db, {
                 ts: now,
@@ -282,10 +333,11 @@ describe('hub-plane queue + flusher + rollup', () => {
         }
     })
 
-    it('enforces the bounded queue (drop-oldest with a drop counter)', () => {
+    it('enforces the bounded queue (drop-oldest with a drop counter)', async () => {
         const store = new Store(':memory:')
         try {
             const db = rawDb(store)
+            await primeLevel(db, 1)
             const cap = PERF_QUEUE_CAP_FOR_TESTS
             for (let i = 0; i < cap + 10; i++) {
                 recordHubPerfSample(db, {
@@ -300,6 +352,74 @@ describe('hub-plane queue + flusher + rollup', () => {
             const stats = hubPerfQueueStats(db)
             expect(stats.queued).toBe(cap)
             expect(stats.dropped).toBe(10)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('gates the hub plane on the telemetry level (review finding #1)', async () => {
+        const store = new Store(':memory:')
+        try {
+            const db = rawDb(store)
+            const now = Date.now()
+            const sample = {
+                ts: now,
+                method: 'GET',
+                path: '/api/sessions',
+                status: 200,
+                totalMs: 5,
+                namespace: 'default'
+            }
+            // Default level 0 (opt-in off): the sample never even queues and
+            // a flush writes zero rows.
+            recordHubPerfSample(db, sample)
+            expect(hubPerfQueueStats(db).queued).toBe(0)
+            tickTelemetry(db, now + 1_000)
+            expect((db.prepare('SELECT COUNT(*) AS n FROM perf_samples').get() as { n: number }).n).toBe(0)
+
+            // Level 1 via refresh → queue + flush work again.
+            await primeLevel(db, 1)
+            recordHubPerfSample(db, sample)
+            expect(hubPerfQueueStats(db).queued).toBe(1)
+            tickTelemetry(db, now + 2_000)
+            expect(hubPerfQueueStats(db).queued).toBe(0)
+            expect((db.prepare('SELECT COUNT(*) AS n FROM perf_samples').get() as { n: number }).n).toBe(1)
+
+            // Unreadable settings on refresh → gate falls back closed (0)
+            // and the flusher writes nothing either.
+            const dir = await mkdtemp(join(tmpdir(), 'hapi-tel-level-'))
+            levelDirs.push(dir)
+            await writeFile(getSettingsFile(dir), '{not json', 'utf8')
+            __resetSettingsReadCacheForTests()
+            await refreshHubTelemetryLevel(db, dir)
+            recordHubPerfSample(db, sample)
+            expect(hubPerfQueueStats(db).queued).toBe(0)
+            tickTelemetry(db, now + 3_000)
+            expect((db.prepare('SELECT COUNT(*) AS n FROM perf_samples').get() as { n: number }).n).toBe(1)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('tickTelemetry refreshes the cached level every tick (wiring)', async () => {
+        const store = new Store(':memory:')
+        try {
+            const db = rawDb(store)
+            tickTelemetry(db, Date.now(), {
+                dataDir: '/tmp/whatever',
+                readTelemetryLevel: async () => 1
+            })
+            // Fire-and-forget refresh: let the microtask chain land.
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            recordHubPerfSample(db, {
+                ts: Date.now(),
+                method: 'GET',
+                path: '/api/sessions',
+                status: 200,
+                totalMs: 5,
+                namespace: 'default'
+            })
+            expect(hubPerfQueueStats(db).queued).toBe(1)
         } finally {
             store.close()
         }
@@ -355,10 +475,11 @@ describe('hub-plane queue + flusher + rollup', () => {
 })
 
 describe('sweepTelemetry retention', () => {
-    it('deletes by age window, keeps slow/error tails, and trims to the row cap', () => {
+    it('deletes by age window, keeps slow/error tails, and trims to the row cap', async () => {
         const store = new Store(':memory:')
         try {
             const db = rawDb(store)
+            await primeLevel(db, 1)
             const now = Date.now()
 
             // telemetry_events: one fresh, one 15d old (past the 14d fence).

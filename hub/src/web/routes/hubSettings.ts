@@ -84,6 +84,12 @@ export function createHubSettingsRoutes(
                 }, 409)
             }
             await writeTelemetryLevel(dataDir, fields.telemetryLevel)
+            // Flip the hub-plane perf gate immediately (review finding #1):
+            // without this the middleware keeps (not) recording at the old
+            // level until the next engine tick refreshes the cached value.
+            // Optional-chained twice: lighter test harnesses pass partial
+            // stores without the telemetry facade.
+            await store?.telemetry?.refreshLevel(dataDir)
             const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
             c.header('Cache-Control', 'no-store')
             return c.json(await toHubSettings(settings, dataDir))

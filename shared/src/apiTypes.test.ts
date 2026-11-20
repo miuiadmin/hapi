@@ -163,6 +163,8 @@ describe('disablePeerTools hub setting wire shapes', () => {
             autoTitlePerTurn: false,
             disablePeerTools: true,
             autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
             peerSpawnDefaults: { agent: 'cursor', permissionMode: 'default', models: {} }
         })
         expect(parsed.success).toBe(true)
@@ -171,6 +173,17 @@ describe('disablePeerTools hub setting wire shapes', () => {
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
+            autoBridgeTransientModelErrors: false,
+            telemetryLevel: 0,
+            telemetryLevelSource: 'default',
+            peerSpawnDefaults: { agent: 'cursor', permissionMode: 'default', models: {} }
+        }).success).toBe(false)
+        // telemetry fields are required on the response (developer-mode switch state)
+        expect(HubSettingsResponseSchema.safeParse({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            autoTitlePerTurn: false,
+            disablePeerTools: false,
             autoBridgeTransientModelErrors: false,
             peerSpawnDefaults: { agent: 'cursor', permissionMode: 'default', models: {} }
         }).success).toBe(false)

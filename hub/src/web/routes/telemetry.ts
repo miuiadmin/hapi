@@ -1,6 +1,10 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
-import { TELEMETRY_BODY_LIMIT_BYTES, TelemetryBatchSchema } from '@hapi/protocol/telemetry'
+import {
+    TELEMETRY_BODY_LIMIT_BYTES,
+    TelemetryBatchSchema,
+    type TelemetryLevel
+} from '@hapi/protocol/telemetry'
 import { readTelemetryLevelState } from '../../config/telemetryLevel'
 import { perfRawWindowHours, type Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
@@ -44,7 +48,16 @@ export function createTelemetryRoutes(store: Store, dataDir: string): Hono<WebAp
     // Ingest: any authenticated client may upload; namespace/userId are
     // stamped server-side from the JWT (never trusted from the body).
     app.post('/telemetry/events', telemetryBodyLimit, async (c) => {
-        const levelState = await readTelemetryLevelState(dataDir)
+        // Review finding #3: an unreadable settings.json must not 500 every
+        // telemetry POST (features and bootstrap tolerate the same read).
+        // Degrade to level 0 = collection off: the batch still gets a 200 so
+        // the SDK drains its outbox, with every event in droppedByLevel.
+        let level: TelemetryLevel = 0
+        try {
+            level = (await readTelemetryLevelState(dataDir)).level
+        } catch {
+            // keep 0
+        }
         const json = await c.req.json().catch(() => null)
         const parsed = TelemetryBatchSchema.safeParse(json)
         if (!parsed.success) {
@@ -57,7 +70,7 @@ export function createTelemetryRoutes(store: Store, dataDir: string): Hono<WebAp
             {
                 namespace: c.get('namespace'),
                 userId: c.get('userId'),
-                level: levelState.level
+                level
             },
             parsed.data
         )
@@ -66,7 +79,7 @@ export function createTelemetryRoutes(store: Store, dataDir: string): Hono<WebAp
             accepted: result.accepted,
             rejected: result.rejected,
             droppedByLevel: result.droppedByLevel,
-            level: levelState.level
+            level
         })
     })
 

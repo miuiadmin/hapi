@@ -79,7 +79,6 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
         }
         try {
             const configuration = getConfiguration()
-            const telemetryLevelState = await readTelemetryLevelState(configuration.dataDir)
             features = {
                 githubPrAwareness: {
                     enabled: configuration.githubPrAwareness,
@@ -87,7 +86,9 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
                 },
                 prChipDisplay: loadPrChipDisplayProfile(configuration.dataDir),
                 telemetry: true,
-                telemetryLevel: telemetryLevelState.level
+                // Placeholder until the telemetry-only try below resolves;
+                // stays 0 if that read fails.
+                telemetryLevel: 0
             }
         } catch {
             features = {
@@ -96,6 +97,16 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
                 telemetry: true,
                 telemetryLevel: 0
             }
+        }
+        // Telemetry level in its own try (review finding #4, mirrors the
+        // resolveTelemetry tolerance in features.ts): an unreadable
+        // settings.json must only reset the telemetry fields — the shared
+        // catch above used to drag githubPrAwareness/prChipDisplay back to
+        // their defaults with it.
+        try {
+            features.telemetryLevel = (await readTelemetryLevelState(getConfiguration().dataDir)).level
+        } catch {
+            // keep 0 (off — never silently upgrade sharing on a read error)
         }
 
         // Voice backend selection: same payload as GET /api/voice/backend.
