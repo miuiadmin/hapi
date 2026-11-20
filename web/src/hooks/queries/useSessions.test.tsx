@@ -81,4 +81,49 @@ describe('eagerRefetchInterval', () => {
     it('returns idle cadence when all sessions are idle', () => {
         expect(eagerRefetchInterval({ sessions: [{ active: false, thinking: false }, { active: false, thinking: false }] })).toBe(EAGER_REFETCH_INTERVAL_MS)
     })
+    it('holds the idle floor while SSE is connected, even with active sessions', () => {
+        // SSE delivers active/thinking patches sub-second; the poll is only a
+        // disconnection fallback and must not accelerate to the fast cadence.
+        expect(eagerRefetchInterval({ sessions: [{ active: true, thinking: true }] }, true)).toBe(EAGER_REFETCH_INTERVAL_MS)
+        expect(eagerRefetchInterval(undefined, true)).toBe(EAGER_REFETCH_INTERVAL_MS)
+    })
+    it('accelerates for active sessions once SSE is dark', () => {
+        expect(eagerRefetchInterval({ sessions: [{ active: true, thinking: false }] }, false)).toBe(EAGER_ACTIVE_REFETCH_INTERVAL_MS)
+    })
+})
+
+describe('useSessions eager polling cadence with live SSE', () => {
+    it('polls at the idle floor while connected and accelerates only after SSE drops', async () => {
+        vi.useFakeTimers()
+        try {
+            const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+            const getSessions = vi.fn(async () => ({
+                sessions: [{ ...row('active', 100), active: true, thinking: true }]
+            }) as SessionsResponse)
+            const api = { getSessions } as unknown as ApiClient
+            const wrapper = ({ children }: { children: ReactNode }) =>
+                createElement(QueryClientProvider, { client }, children)
+            const { rerender } = renderHook(
+                ({ sseConnected }: { sseConnected: boolean }) =>
+                    useSessions(api, { eagerInterval: true, sseConnected }),
+                { wrapper, initialProps: { sseConnected: true } }
+            )
+
+            // Initial fetch only.
+            await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+            expect(getSessions).toHaveBeenCalledTimes(1)
+
+            // 30s with SSE live: idle floor only → refetch at 15s and 30s
+            // (2 more), never the 5s active cadence (which would give 6).
+            await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+            expect(getSessions).toHaveBeenCalledTimes(3)
+
+            // SSE drops: the active-session fast cadence takes over.
+            rerender({ sseConnected: false })
+            await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+            expect(getSessions).toHaveBeenCalledTimes(6)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
 })

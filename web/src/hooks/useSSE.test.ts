@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { isSubscriptionTornDown, resetSubscriptionLivenessForTests } from '@/lib/sseSubscriptionLiveness'
 import {
     applySessionDetailPatch,
     canApplyVersionedSummaryPatch,
@@ -172,6 +173,131 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
         act(() => { vi.advanceTimersByTime(10_100) })
         expect(onDisconnect).toHaveBeenCalledWith('connect-timeout')
         expect(FakeEventSource.instances[1]?.readyState).toBe(FakeEventSource.CLOSED)
+
+        unmount()
+    })
+})
+
+describe('useSSE visibility-recovery REST discipline (wake load)', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+        resetSubscriptionLivenessForTests()
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    function handshake(source: FakeEventSource, subscriptionId: string, resume: 'ok' | 'gap') {
+        act(() => { source.simulateOpen() })
+        act(() => {
+            source.simulateMessage({
+                type: 'connection-changed',
+                data: { status: 'open', subscriptionId, resume }
+            })
+        })
+    }
+
+    /** Wake the tab past the 45s resume-staleness threshold: the common
+     * mobile-PWA resume path that used to fire REST invalidations up front. */
+    function wakeStale() {
+        act(() => { vi.advanceTimersByTime(50_000) })
+        act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+    }
+
+    it('skips preemptive invalidation when the resume handshake replays the gap', () => {
+        const onDisconnect = vi.fn()
+        const { queryClient, result, unmount } = renderUseSSE({ onDisconnect })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+        handshake(FakeEventSource.instances[0]!, 'sub-1', 'ok')
+        expect(result.current.subscriptionId).toBe('sub-1')
+        // The connection URL declared the (jsdom-default) visible state, so
+        // the hub already applies it for this subscription.
+        expect(result.current.subscriptionVisibility).toBe('visible')
+
+        wakeStale()
+        expect(onDisconnect).toHaveBeenCalledWith('visibility-recovery')
+        // Before this change the wake fired sessions+machines invalidations
+        // immediately, duplicating what the replay delivers.
+        expect(invalidate).not.toHaveBeenCalled()
+
+        act(() => { vi.advanceTimersByTime(600) })
+        expect(FakeEventSource.instances).toHaveLength(2)
+        handshake(FakeEventSource.instances[1]!, 'sub-2', 'ok')
+        expect(result.current.subscriptionId).toBe('sub-2')
+
+        // The handshake disarmed the delayed REST fallback: zero invalidations
+        // across the whole wake when the hub replayed the gap.
+        act(() => { vi.advanceTimersByTime(10_000) })
+        expect(invalidate).not.toHaveBeenCalled()
+
+        unmount()
+    })
+
+    it('falls back to REST invalidations when the handshake never lands', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+        handshake(FakeEventSource.instances[0]!, 'sub-1', 'ok')
+        wakeStale()
+
+        // Reconnect opens the socket but the hub never handshakes (pooled
+        // black hole). The fallback fires 5s after the wake — sessions and
+        // machines, the old up-front freshness floor, now only on demand.
+        act(() => { vi.advanceTimersByTime(600) })
+        const second = FakeEventSource.instances[1]!
+        act(() => { second.simulateOpen() })
+        expect(invalidate).not.toHaveBeenCalled()
+
+        act(() => { vi.advanceTimersByTime(5_000) })
+        expect(invalidate).toHaveBeenCalledTimes(2)
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.machines })
+
+        unmount()
+    })
+
+    it('keeps the machines freshness floor when the handshake verdict is a gap', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+        handshake(FakeEventSource.instances[0]!, 'sub-1', 'ok')
+        wakeStale()
+
+        act(() => { vi.advanceTimersByTime(600) })
+        handshake(FakeEventSource.instances[1]!, 'sub-2', 'gap')
+
+        // Sessions/details are App's onConnect resync's job; machines is not
+        // covered there and the gap verdict means replay did not cover it
+        // either — exactly one machines invalidation, no sessions duplicate.
+        expect(invalidate).toHaveBeenCalledTimes(1)
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.machines })
+
+        act(() => { vi.advanceTimersByTime(10_000) })
+        expect(invalidate).toHaveBeenCalledTimes(1)
+
+        unmount()
+    })
+
+    it('marks the dying subscription torn down and revives the replacement', () => {
+        const { unmount } = renderUseSSE()
+
+        handshake(FakeEventSource.instances[0]!, 'sub-1', 'ok')
+        expect(isSubscriptionTornDown('sub-1')).toBe(false)
+
+        wakeStale()
+        // requestReconnect closed the socket synchronously; the visibility
+        // reporter must be able to see the subscription is already dead.
+        expect(isSubscriptionTornDown('sub-1')).toBe(true)
+
+        act(() => { vi.advanceTimersByTime(600) })
+        handshake(FakeEventSource.instances[1]!, 'sub-2', 'ok')
+        expect(isSubscriptionTornDown('sub-2')).toBe(false)
+        expect(isSubscriptionTornDown('sub-1')).toBe(true)
 
         unmount()
     })
