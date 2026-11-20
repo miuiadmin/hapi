@@ -123,28 +123,32 @@ describe('visit dwell accounting', () => {
 })
 
 describe('hidden > 15min visit semantics (PWA long background)', () => {
-    it('emits exactly one close(hidden-timeout) and one open(resume-after-timeout), with a fresh visit', () => {
+    it('suspended runtime (timer frozen): timestamp check on visible emits the close+open pair', () => {
+        // Mobile long-background: the JS runtime is suspended while hidden, so
+        // the 15min setTimeout NEVER fires — only the wall-clock comparison at
+        // the visible transition can produce the close+open pair. Simulated
+        // with setSystemTime (moves the clock without firing timers).
         const tracker = createVisitTracker({ sessionId: 's1', capture: makeCaptureLog(log) })
         tracker.open('list-click')
         vi.advanceTimersByTime(2_000)
 
         setVisibility('hidden')
         tracker.onVisibleChange() // pause at visible dwell 2000
-        vi.advanceTimersByTime(VISIT_HIDDEN_TIMEOUT_MS + 60_000) // 16min hidden
-        // timeout fired while hidden: close(hidden-timeout)
+        vi.setSystemTime(new Date('2026-11-20T10:16:02Z')) // +16min, timers NOT fired
+        expect(log.filter((e) => e.kind === 'session_close')).toHaveLength(0)
 
         setVisibility('visible')
-        tracker.onVisibleChange() // synthetic re-open
+        tracker.onVisibleChange() // timestamp check → close + synthetic re-open
 
         const closes = log.filter((e) => e.kind === 'session_close')
         const opens = log.filter((e) => e.kind === 'session_open')
         expect(closes).toHaveLength(1)
         expect(opens).toHaveLength(2)
         expect(closes[0]!.data.exit).toBe('hidden-timeout')
-        // wall dwell at timeout includes the hidden span (挂载至今);
-        // visible dwell stops at the hide moment.
         expect(closes[0]!.data.visibleDwellMs).toBe(2_000)
-        expect(closes[0]!.data.wallDwellMs).toBe(VISIT_HIDDEN_TIMEOUT_MS + 2_000)
+        // wall dwell runs until the close is emitted — the return moment
+        // (16min + 2s), i.e. it includes the whole suspended span
+        expect(closes[0]!.data.wallDwellMs).toBe(VISIT_HIDDEN_TIMEOUT_MS + 60_000 + 2_000)
         expectSchemaValid('session_close', closes[0]!.data)
         expect(opens[1]!.data.entry).toBe('resume-after-timeout')
         expectSchemaValid('session_open', opens[1]!.data)
@@ -157,6 +161,31 @@ describe('hidden > 15min visit semantics (PWA long background)', () => {
         expect(finalClose).toBeDefined()
         expect(finalClose!.data.wallDwellMs).toBe(5_000)
         expect(finalClose!.data.visibleDwellMs).toBe(5_000)
+    })
+
+    it('timer backstop (desktop hidden tab): the timeout fires while hidden, visible then re-opens', () => {
+        const tracker = createVisitTracker({ sessionId: 's1', capture: makeCaptureLog(log) })
+        tracker.open('list-click')
+        vi.advanceTimersByTime(2_000)
+
+        setVisibility('hidden')
+        tracker.onVisibleChange() // pause at visible dwell 2000
+        vi.advanceTimersByTime(VISIT_HIDDEN_TIMEOUT_MS + 60_000) // timer fires while hidden
+
+        // close already emitted by the timer, before any visible transition
+        const closesWhileHidden = log.filter((e) => e.kind === 'session_close')
+        expect(closesWhileHidden).toHaveLength(1)
+        expect(closesWhileHidden[0]!.data.exit).toBe('hidden-timeout')
+        expect(closesWhileHidden[0]!.data.visibleDwellMs).toBe(2_000)
+        expect(closesWhileHidden[0]!.data.wallDwellMs).toBe(VISIT_HIDDEN_TIMEOUT_MS + 2_000)
+
+        setVisibility('visible')
+        tracker.onVisibleChange() // synthetic re-open
+
+        const opens = log.filter((e) => e.kind === 'session_open')
+        expect(opens).toHaveLength(2)
+        expect(opens[1]!.data.entry).toBe('resume-after-timeout')
+        expect(log.filter((e) => e.kind === 'session_close')).toHaveLength(1)
     })
 
     it('a return to visible before the timeout keeps the same visit (no close/open)', () => {

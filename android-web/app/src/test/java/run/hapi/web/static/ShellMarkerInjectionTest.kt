@@ -38,4 +38,26 @@ class ShellMarkerInjectionTest {
         assertEquals(once, ShellMarkerInjection.injectIntoIndexHtml(once))
         assertFalse(once.replaceFirst(ShellMarkerInjection.MARKER_SCRIPT, "").contains(ShellMarkerInjection.MARKER_SCRIPT))
     }
+
+    @Test
+    fun markerScriptEmbedsTheRawEvaluateJavascriptMarker() {
+        // Channel 2 (SW-shadowing-proof re-assertion via evaluateJavascript)
+        // must set exactly the same flag the interceptor script sets.
+        assertTrue(ShellMarkerInjection.MARKER_SCRIPT.contains(ShellMarkerInjection.MARKER_JS))
+        assertTrue(ShellMarkerInjection.MARKER_JS.endsWith("__HAPI_WEB_SHELL__=true;"))
+    }
+
+    @Test
+    fun shouldAssertMarkerOnlyForSameOriginHubDocuments() {
+        val hub = "https://hub.example"
+        assertTrue(ShellMarkerInjection.shouldAssertMarker("https://hub.example/?hub=x", hub))
+        assertTrue(ShellMarkerInjection.shouldAssertMarker("HTTPS://hub.example/sessions/abc?token=t", hub))
+        assertTrue(ShellMarkerInjection.shouldAssertMarker("https://hub.example:8443/x", "https://hub.example:8443"))
+        // different origin / non-document schemes / blank
+        assertFalse(ShellMarkerInjection.shouldAssertMarker("https://other.example/", hub))
+        assertFalse(ShellMarkerInjection.shouldAssertMarker("about:blank", hub))
+        assertFalse(ShellMarkerInjection.shouldAssertMarker("data:text/html,x", hub))
+        assertFalse(ShellMarkerInjection.shouldAssertMarker(null, hub))
+        assertFalse(ShellMarkerInjection.shouldAssertMarker("", hub))
+    }
 }

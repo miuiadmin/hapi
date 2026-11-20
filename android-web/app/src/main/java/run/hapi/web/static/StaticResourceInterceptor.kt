@@ -44,7 +44,8 @@ class StaticResourceInterceptor(
         // classification). Non-document responses stream as-is.
         if (hit.rel == StaticPath.INDEX_HTML) {
             try {
-                val html = stream.readBytes().toString(Charsets.UTF_8)
+                // .use closes the stream — readBytes() alone leaks the fd.
+                val html = stream.use { it.readBytes().toString(Charsets.UTF_8) }
                 val injected = ShellMarkerInjection.injectIntoIndexHtml(html)
                 return WebResourceResponse(
                     Mime.mimeFor(hit.rel),

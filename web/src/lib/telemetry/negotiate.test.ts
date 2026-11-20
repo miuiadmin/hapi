@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
-import { extractTelemetryCapability } from './negotiate'
+import { extractTelemetryCapability, probeCapability } from './negotiate'
 import { captureEvent, queuedEventsForTest } from './queue'
 import { state } from './state'
 import {
@@ -122,6 +122,74 @@ describe('level gating', () => {
         captureEvent('diag', 'js_error', { name: 'x', messageHead: 'y' }) // ok
         expect(queuedEventsForTest()).toHaveLength(1)
         expect(queuedEventsForTest()[0]?.kind).toBe('js_error')
+    })
+})
+
+describe('refresh failures: transient vs deterministic', () => {
+    it('a 5xx during a level refresh keeps the negotiated state — capture keeps working (hub restart)', async () => {
+        installForTest(kit, 1)
+        await settle()
+        expect(state.enabled).toBe(true)
+        kit.setFeaturesStatus(503)
+        await probeCapability()
+        await settle()
+        expect(state.enabled).toBe(true)
+        expect(state.level).toBe(1)
+        captureEvent('diag', 'load_slow', { phase: 'session-detail', durationMs: 1, fromCache: false })
+        expect(queuedEventsForTest()).toHaveLength(1)
+    })
+
+    it('a network failure during a level refresh keeps the negotiated state', async () => {
+        installForTest(kit, 1)
+        await settle()
+        kit.failFeatures('network')
+        await probeCapability()
+        await settle()
+        expect(state.enabled).toBe(true)
+        expect(state.level).toBe(1)
+        kit.failFeatures('off')
+    })
+
+    it('a 404 during refresh still disables (deterministic old hub / endpoint gone)', async () => {
+        installForTest(kit, 1)
+        await settle()
+        kit.setFeaturesStatus(404)
+        await probeCapability()
+        await settle()
+        expect(state.enabled).toBe(false)
+        expect(state.level).toBe(0)
+    })
+})
+
+describe('30min re-probe self-continuation', () => {
+    it('keeps probing every 30min while disabled, and stops the chain once enabled', async () => {
+        kit.setCapability(false)
+        installForTest(kit)
+        await settle()
+        await settle()
+        const featureRequests = () => kit.requests.filter((r) => r.url.includes('/api/features')).length
+        const afterInstall = featureRequests()
+
+        await vi.advanceTimersByTimeAsync(30 * 60_000)
+        await settle()
+        await settle()
+        expect(featureRequests()).toBe(afterInstall + 1)
+        await vi.advanceTimersByTimeAsync(30 * 60_000)
+        await settle()
+        await settle()
+        expect(featureRequests()).toBe(afterInstall + 2)
+
+        // the hub upgrades: the next round enables and the chain stops
+        kit.setCapability(true)
+        await vi.advanceTimersByTimeAsync(30 * 60_000)
+        await settle()
+        await settle()
+        expect(state.enabled).toBe(true)
+        const whenEnabled = featureRequests()
+        await vi.advanceTimersByTimeAsync(60 * 60_000)
+        await settle()
+        await settle()
+        expect(featureRequests()).toBe(whenEnabled)
     })
 })
 

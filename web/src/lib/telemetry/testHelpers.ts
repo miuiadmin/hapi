@@ -47,8 +47,12 @@ export interface TelemetryFetchKit {
     setCapability: (present: boolean) => void
     /** Make GET /api/features respond with this status (404 = old hub). */
     setFeaturesStatus: (status: number) => void
+    /** Make GET /api/features reject (network failure). */
+    failFeatures: (mode: 'off' | 'network') => void
     /** Make /api/telemetry/events respond with this status instead of 200. */
     setEventsStatus: (status: number | (() => number)) => void
+    /** Counts the hub 200 ingest response reports (accepted/rejected/droppedByLevel). */
+    setIngestResult: (result: { accepted?: number; rejected?: number; droppedByLevel?: number }) => void
     /** Make /api/telemetry/events reject (network failure). */
     failEvents: (mode: 'off' | 'network') => void
     restore: () => void
@@ -59,8 +63,10 @@ export function stubTelemetryFetch(options?: { level?: number; status?: number }
     let level = options?.level ?? 1
     let capability = true
     let featuresStatus = 200
+    let featuresNetwork: 'off' | 'network' = 'off'
     let eventsStatus: number | (() => number) = options?.status ?? 200
     let networkMode: 'off' | 'network' = 'off'
+    let ingest = { accepted: 0, rejected: 0, droppedByLevel: 0 }
     const batches: TelemetryBatch[] = []
     const requests: { url: string; init: RequestInit }[] = []
 
@@ -76,8 +82,18 @@ export function stubTelemetryFetch(options?: { level?: number; status?: number }
         setFeaturesStatus(status: number) {
             featuresStatus = status
         },
+        failFeatures(mode: 'off' | 'network') {
+            featuresNetwork = mode
+        },
         setEventsStatus(status: number | (() => number)) {
             eventsStatus = status
+        },
+        setIngestResult(result: { accepted?: number; rejected?: number; droppedByLevel?: number }) {
+            ingest = {
+                accepted: result.accepted ?? 0,
+                rejected: result.rejected ?? 0,
+                droppedByLevel: result.droppedByLevel ?? 0,
+            }
         },
         failEvents(mode: 'off' | 'network') {
             networkMode = mode
@@ -91,6 +107,7 @@ export function stubTelemetryFetch(options?: { level?: number; status?: number }
         const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
         requests.push({ url, init: init ?? {} })
         if (url.includes('/api/features')) {
+            if (featuresNetwork === 'network') throw new TypeError('Failed to fetch (test)')
             if (featuresStatus !== 200) return new Response(JSON.stringify({ error: 'test' }), { status: featuresStatus })
             if (!capability) return new Response(JSON.stringify({ githubPrAwareness: { enabled: false, source: 'default' } }), { status: 200 })
             return new Response(JSON.stringify({ telemetry: true, telemetryLevel: level }), { status: 200 })
@@ -105,7 +122,7 @@ export function stubTelemetryFetch(options?: { level?: number; status?: number }
                 } catch {
                     // ignore malformed test bodies
                 }
-                return new Response(JSON.stringify({ ok: true, accepted: 0, rejected: 0, droppedByLevel: 0, level }), { status: 200 })
+                return new Response(JSON.stringify({ ok: true, ...ingest, level }), { status: 200 })
             }
             return new Response(JSON.stringify({ error: 'test' }), { status })
         }

@@ -50,7 +50,12 @@ function onWindowError(event: ErrorEvent): void {
             {
                 name: described.name,
                 messageHead: described.messageHead,
-                ...(typeof event.filename === 'string' && event.filename ? { source: event.filename.slice(0, 256) } : {}),
+                // Red line: the URL query is dropped wholesale (never stored,
+                // even for a static asset path) — event.filename carries
+                // whatever query the failing script URL had.
+                ...(typeof event.filename === 'string' && event.filename
+                    ? { source: event.filename.split('?')[0]!.slice(0, 256) }
+                    : {}),
                 ...(typeof event.lineno === 'number' && event.lineno > 0 ? { line: event.lineno } : {}),
                 ...(typeof event.colno === 'number' && event.colno > 0 ? { col: event.colno } : {}),
                 ...(stackTop ? { stackTop } : {}),

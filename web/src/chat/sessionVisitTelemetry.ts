@@ -8,7 +8,10 @@
  *     and marks the visit timed out; when the page becomes visible again and
  *     SessionPage is still mounted (no navigation, no session switch), a
  *     synthetic session_open(entry='resume-after-timeout') starts a NEW visit
- *     whose dwell excludes the background span.
+ *     whose dwell excludes the background span. The timeout is detected BOTH
+ *     by a setTimeout backstop AND on the visible transition by comparing
+ *     timestamps — mobile suspends the runtime (timers freeze) for the whole
+ *     background span, so the timer alone would never fire there.
  *
  * Two halves:
  *   1. an entry registry — handleSelectSession / SW notification clicks
@@ -143,6 +146,7 @@ export function createVisitTracker(options: {
     let closed = false
     let timedOut = false
     let paused = false
+    let hiddenSince: number | null = null
     let hiddenTimer: ReturnType<typeof setTimeout> | null = null
 
     const cancelHiddenTimer = () => {
@@ -159,7 +163,29 @@ export function createVisitTracker(options: {
         closed = false
         timedOut = false
         paused = false
+        hiddenSince = null
         cancelHiddenTimer()
+    }
+
+    /** shared hidden-timeout semantics: close the visit (exit='hidden-timeout')
+     *  and arm the synthetic re-open — used by BOTH the setTimeout backstop
+     *  (desktop hidden tab) and the visible-transition check (mobile, where
+     *  the timer is frozen for the whole suspended runtime and would never
+     *  fire). */
+    const emitTimeoutClose = () => {
+        cancelHiddenTimer()
+        paused = false
+        closed = true
+        timedOut = true
+        const seenTail = getSeenTail?.()
+        const data: Record<string, unknown> = {
+            wallDwellMs: Math.max(0, now() - visitStart),
+            visibleDwellMs: Math.max(0, visibleDwell),
+            exit: 'hidden-timeout'
+        }
+        if (seenTail !== undefined) data.seenTail = seenTail
+        capture('session_close', data)
+        telemetryClient.setTrigger(null)
     }
 
     return {
@@ -187,6 +213,7 @@ export function createVisitTracker(options: {
                 if (visibility === 'hidden') {
                     if (paused || closed) return
                     paused = true
+                    hiddenSince = now()
                     if (visibleSince !== null) {
                         visibleDwell += now() - visibleSince
                         visibleSince = null
@@ -198,18 +225,7 @@ export function createVisitTracker(options: {
                         try {
                             if (closed || !paused) return
                             if (getVisibilityState() !== 'hidden') return
-                            paused = false
-                            closed = true
-                            timedOut = true
-                            const seenTail = getSeenTail?.()
-                            const data: Record<string, unknown> = {
-                                wallDwellMs: Math.max(0, now() - visitStart),
-                                visibleDwellMs: Math.max(0, visibleDwell),
-                                exit: 'hidden-timeout'
-                            }
-                            if (seenTail !== undefined) data.seenTail = seenTail
-                            capture('session_close', data)
-                            telemetryClient.setTrigger(null)
+                            emitTimeoutClose()
                         } catch {
                             // fail-silent
                         }
@@ -223,8 +239,20 @@ export function createVisitTracker(options: {
                     this.open('resume-after-timeout')
                     return
                 }
+                if (paused && !closed
+                    && hiddenSince !== null
+                    && now() - hiddenSince >= hiddenTimeoutMs) {
+                    // Mobile suspended-runtime path: the hiddenTimer never fired
+                    // (timers are frozen while suspended), but wall-clock says
+                    // the visit timed out — same close+open pair as the timer
+                    // path, judged by timestamp instead of the timer.
+                    emitTimeoutClose()
+                    this.open('resume-after-timeout')
+                    return
+                }
                 if (!paused || closed) return
                 paused = false
+                hiddenSince = null
                 cancelHiddenTimer()
                 visibleSince = now()
                 capture('session_pause_resume', { kind: 'resume', dwellSoFarMs: visibleDwell })

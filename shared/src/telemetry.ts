@@ -366,11 +366,14 @@ export const TelemetryBatchSchema = z.object({
     /** __APP_VERSION__(vite 注入;fork 恒上游版本 → version 维兜底见报告 §6.3)。 */
     appVersion: shortStr(64),
     events: z.array(TelemetryEventSchema).max(TELEMETRY_MAX_EVENTS_PER_BATCH),
-    /** 诚实性字段(fresh:false 惯例):丢旧计数 / flush 失败计数。 */
+    /** 诚实性字段(fresh:false 惯例):丢旧计数 / flush 失败计数 / hub 200 响应
+     *  内事件级拒收(schema,永久不重试)与按级丢弃的累计上报。 */
     meta: z
         .object({
             droppedOldest: z.number().int().min(0).optional(),
             flushFailures: z.number().int().min(0).optional(),
+            serverRejected: z.number().int().min(0).optional(),
+            serverDroppedByLevel: z.number().int().min(0).optional(),
         })
         .optional(),
 })

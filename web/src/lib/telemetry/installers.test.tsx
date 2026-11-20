@@ -60,8 +60,8 @@ describe('TelemetryErrorBoundary', () => {
             )
             await settle()
 
-            expect(screen.getByText('页面渲染出错')).toBeInTheDocument()
-            expect(screen.getByRole('button', { name: '重新加载' })).toBeInTheDocument()
+            expect(screen.getByText('Page rendering error')).toBeInTheDocument()
+            expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument()
             expect(screen.getByText(/renderer went boom/)).toBeInTheDocument()
 
             const events = diagEvents('render_error')
@@ -132,6 +132,20 @@ describe('window error installers', () => {
             'at ComponentC (http://localhost/src/z.tsx:90:12)',
         ])
         expect(events[0]!.severity).toBe('error')
+    })
+
+    it('js_error: the source URL drops its query string wholesale (red line)', async () => {
+        window.dispatchEvent(new ErrorEvent('error', {
+            error: new Error('chunk load failure'),
+            message: 'chunk load failure',
+            filename: 'https://hub.example/assets/index-B1b2C3.js?token=secret&v=2',
+            lineno: 1,
+            colno: 1,
+        }))
+        await settle()
+        const events = diagEvents('js_error')
+        expect(events).toHaveLength(1)
+        expect(events[0]!.data.source).toBe('https://hub.example/assets/index-B1b2C3.js')
     })
 
     it('promise_rejection: unhandledrejection with sanitized messageHead', async () => {

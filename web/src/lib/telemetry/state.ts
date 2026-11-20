@@ -103,6 +103,14 @@ export interface TelemetryState {
     deviceId: string | null
     handlersInstalled: boolean
     pendingHttp: Set<PendingHttpObservation>
+    /** pagehide handling started: late captures (same event loop) are written
+     *  straight to the outbox — the memory queue would never be flushed. */
+    unloading: boolean
+    /** Cumulative events the hub 200-response reported as rejected (schema) —
+     *  reported in batch meta next to flushFailures; never retried. */
+    serverRejected: number
+    /** Cumulative events the hub 200-response reported dropped by level. */
+    serverDroppedByLevel: number
 }
 
 function freshState(): TelemetryState {
@@ -131,6 +139,9 @@ function freshState(): TelemetryState {
         deviceId: null,
         handlersInstalled: false,
         pendingHttp: new Set(),
+        unloading: false,
+        serverRejected: 0,
+        serverDroppedByLevel: 0,
     }
 }
 
