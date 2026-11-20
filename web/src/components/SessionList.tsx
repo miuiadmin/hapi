@@ -158,7 +158,7 @@ import {
     getPrimaryGithubPrRef,
     resolveGithubPrChipDisplay
 } from '@hapi/protocol'
-import { formatGithubPrChipDetailParts, SessionPrChip } from '@/components/SessionPrChip'
+import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
@@ -1537,8 +1537,8 @@ const SessionItem = memo(function SessionItem(props: {
                         lastSeenVersion={lastSeenVersion}
                         scheduleTooltipId={scheduleId}
                         githubPrAwarenessEnabled={githubPrAwarenessEnabled}
-                        showPrChip={!(githubPrAwarenessEnabled && primaryPrRef)}
                         prChipDisplay={prChipDisplay}
+                        prChipInteractive={githubPrAwarenessEnabled && Boolean(primaryPrRef)}
                         prNowMs={prNowMs}
                         inRunningSection={inRunningSection}
                         projectLabel={projectLabel}
@@ -1548,22 +1548,6 @@ const SessionItem = memo(function SessionItem(props: {
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
                     />
                 </button>
-                {githubPrAwarenessEnabled && primaryPrRef ? (
-                    <div
-                        data-testid="session-pr-chip-wrap"
-                        className="flex shrink-0 items-center self-start py-2 pr-2"
-                        style={hasQuickAction
-                            ? { paddingRight: 'calc(var(--session-row-action-span, 2rem) + 0.5rem)' }
-                            : undefined}
-                    >
-                        <SessionPrChip
-                            refs={s.metadata?.externalRefs}
-                            displayProfile={prChipDisplay}
-                            nowMs={prNowMs}
-                            interactive
-                        />
-                    </div>
-                ) : null}
                 {hasQuickAction ? (
                     <div className="session-row-quick-action absolute right-1 top-1.5 items-center gap-0.5">
                         {showQuickUnpin ? (

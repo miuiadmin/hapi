@@ -113,11 +113,18 @@ export function SessionRowSummary(props: {
     /** When enabled, show primary GitHub PR chip left of the time column (ADR D8). */
     githubPrAwarenessEnabled?: boolean
     /**
-     * When false, omit the inline PR chip (parent renders an interactive chip
-     * beside the row button to avoid nesting `<a>` inside `<button>`).
+     * When false, omit the inline PR chip entirely.
      */
     showPrChip?: boolean
     prChipDisplay?: PrChipDisplayProfile
+    /**
+     * Render the inline PR chip as an interactive span-link (opens the PR in a
+     * new tab; keyboard accessible) instead of a passive glyph. Used for the
+     * awareness-enabled rows so the chip keeps its tap target while living in
+     * the trailing cluster — left of the time column, per ADR D8 — instead of
+     * a far-right block that pushed the time cluster off the card edge.
+     */
+    prChipInteractive?: boolean
     /** Shared minute clock from the session list (avoids per-row timers). */
     prNowMs?: number
     /** Rows inside the pinned "in progress" section skip the pending text label. */
@@ -146,6 +153,7 @@ export function SessionRowSummary(props: {
         githubPrAwarenessEnabled = false,
         showPrChip = true,
         prChipDisplay,
+        prChipInteractive = false,
         prNowMs,
         inRunningSection = false,
         projectLabel,
@@ -389,7 +397,8 @@ export function SessionRowSummary(props: {
                                 refs={s.metadata?.externalRefs}
                                 displayProfile={prChipDisplay}
                                 nowMs={prNowMs}
-                                interactive={false}
+                                interactive={prChipInteractive}
+                                nested={prChipInteractive}
                             />
                         ) : null}
                         {timeLabel ? (
