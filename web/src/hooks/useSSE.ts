@@ -25,6 +25,7 @@ import type {
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
+import { markSubscriptionTornDown, reviveSubscription } from '@/lib/sseSubscriptionLiveness'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import {
     armSessionStall,
@@ -121,6 +122,13 @@ const RECONNECT_JITTER_MS = 500
 const RECONNECT_SLOW_AFTER_ATTEMPTS = 8
 const RECONNECT_SLOW_MAX_DELAY_MS = 300_000
 const INVALIDATION_BATCH_MS = 16
+// After a visibility-recovery reconnect, the connection-changed handshake
+// (subscription id + resume verdict) normally lands within a round-trip or
+// two. If it has not arrived within this window the handshake is stuck on a
+// dead pooled socket and the reconnect ladder may keep churning — fall back
+// to the REST freshness floor (sessions + machines invalidation) so the UI
+// converges through whichever path eventually delivers.
+const WAKE_HANDSHAKE_FALLBACK_MS = 5_000
 
 function isSessionRecord(value: unknown): value is Session {
     return SessionSchema.safeParse(value).success
@@ -301,7 +309,7 @@ export function useSSE(options: {
     onDisconnect?: (reason: string) => void
     onError?: (error: unknown) => void
     onToast?: (event: ToastEvent) => void
-}): { subscriptionId: string | null } {
+}): { subscriptionId: string | null; subscriptionVisibility: VisibilityState | null } {
     const queryClient = useQueryClient()
     const onEventRef = useRef(options.onEvent)
     const onConnectRef = useRef(options.onConnect)
@@ -328,8 +336,20 @@ export function useSSE(options: {
     // the hub replay against the wrong filter set, hence the key check.
     const lastEventCursorRef = useRef<{ key: string; id: string } | null>(null)
     const lastActivityAtRef = useRef(0)
+    // Mirror of the subscriptionId React state, readable synchronously from
+    // teardown paths (requestReconnect / effect cleanup) that must mark the
+    // dying subscription before React flushes the null state.
+    const subscriptionIdRef = useRef<string | null>(null)
+    // REST fallback armed by a visibility-recovery reconnect: fires only if
+    // no connection-changed handshake lands within WAKE_HANDSHAKE_FALLBACK_MS.
+    const wakeFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const [reconnectNonce, setReconnectNonce] = useState(0)
     const [subscriptionId, setSubscriptionId] = useState<string | null>(null)
+    // The visibility state this connection's URL declared at the hub (the
+    // `visibility` query param the hub applies as the subscription's initial
+    // state). Exposed so useVisibilityReporter can seed its "last reported"
+    // state and skip a redundant first POST after a reconnect.
+    const [subscriptionVisibility, setSubscriptionVisibility] = useState<VisibilityState | null>(null)
 
     useEffect(() => {
         onEventRef.current = options.onEvent
@@ -376,18 +396,30 @@ export function useSSE(options: {
             }
             reconnectAttemptRef.current = 0
             reconnectDeferredRef.current = false
+            if (wakeFallbackTimerRef.current) {
+                clearTimeout(wakeFallbackTimerRef.current)
+                wakeFallbackTimerRef.current = null
+            }
+            markSubscriptionTornDown(subscriptionIdRef.current)
+            subscriptionIdRef.current = null
             setSubscriptionId(null)
+            setSubscriptionVisibility(null)
             return
         }
 
         setSubscriptionId(null)
+        setSubscriptionVisibility(null)
         const resumeCursor = lastEventCursorRef.current?.key === subscriptionKey
             ? lastEventCursorRef.current.id
             : null
+        // The visibility declared on this connection's URL becomes the
+        // hub-side subscription's initial state, so the reporter must not
+        // re-POST it after the handshake.
+        const connectVisibility = getVisibilityState()
         const url = buildEventsUrl(options.baseUrl, options.token, {
             ...subscription,
             sessionId: subscription.sessionId ?? undefined
-        }, getVisibilityState(), resumeCursor)
+        }, connectVisibility, resumeCursor)
         const eventSource = new EventSource(url)
         let disconnectNotified = false
         let reconnectRequested = false
@@ -465,7 +497,14 @@ export function useSSE(options: {
             if (eventSourceRef.current === eventSource) {
                 eventSourceRef.current = null
             }
+            // The hub-side subscription this connection carried is dying with
+            // the socket; mark it synchronously so the visibility reporter
+            // (whose visibilitychange listener runs in the same dispatch as
+            // the visibility-recovery path) skips its doomed POST.
+            markSubscriptionTornDown(subscriptionIdRef.current)
+            subscriptionIdRef.current = null
             setSubscriptionId(null)
+            setSubscriptionVisibility(null)
             scheduleReconnect()
         }
 
@@ -538,6 +577,44 @@ export function useSSE(options: {
         const queueMachinesInvalidation = () => {
             pendingInvalidationsRef.current.machines = true
             scheduleInvalidationFlush()
+        }
+
+        const disarmWakeRestFallback = (invalidateMachines: boolean) => {
+            if (!wakeFallbackTimerRef.current) {
+                return
+            }
+            clearTimeout(wakeFallbackTimerRef.current)
+            wakeFallbackTimerRef.current = null
+            if (invalidateMachines) {
+                // A gap verdict means the hub could not replay machine
+                // events either, and App's resync (sessions / details / agy)
+                // does not cover the machines query — keep that one REST
+                // freshness floor.
+                try {
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.machines })
+                } catch { /* mock/test environments */ }
+            }
+        }
+
+        const armWakeRestFallback = () => {
+            if (wakeFallbackTimerRef.current) {
+                return
+            }
+            wakeFallbackTimerRef.current = setTimeout(() => {
+                wakeFallbackTimerRef.current = null
+                if (getVisibilityState() !== 'visible') {
+                    // The tab hid again before the handshake landed; nobody
+                    // is watching, and the next wake re-arms a fresh
+                    // fallback through onVisibilityChange.
+                    return
+                }
+                // Handshake blackhole: REST freshness floor while the
+                // reconnect ladder keeps retrying in the background.
+                try {
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.machines })
+                } catch { /* mock/test environments */ }
+            }, WAKE_HANDSHAKE_FALLBACK_MS)
         }
 
         const upsertSessionSummary = (session: Session) => {
@@ -752,6 +829,8 @@ export function useSSE(options: {
                     if (typeof nextId === 'string' && nextId.length > 0) {
                         handshakeSubscriptionId = nextId
                         setSubscriptionId(nextId)
+                        subscriptionIdRef.current = nextId
+                        reviveSubscription(nextId)
                     }
                 }
                 // The connect callback fires here, not on EventSource open:
@@ -760,6 +839,11 @@ export function useSSE(options: {
                 // the field, which safely reads as a full resync.
                 const resumed = data && typeof data === 'object'
                     && (data as { resume?: unknown }).resume === 'ok'
+                setSubscriptionVisibility(connectVisibility)
+                // The wake reconnect's handshake landed: cancel the REST
+                // fallback. Only a non-replayed gap still needs a (machines
+                // only) invalidation — sessions/details are App's job.
+                disarmWakeRestFallback(!resumed)
                 episode.noteConnect(handshakeSubscriptionId, Boolean(resumed))
                 onConnectRef.current?.({ resumed: Boolean(resumed) })
             }
@@ -1041,17 +1125,14 @@ export function useSSE(options: {
             }
             if (eventSourceRef.current !== eventSource) return
             if (Date.now() - lastActivityAtRef.current >= VISIBILITY_RESUME_STALE_MS) {
-                // Belt-and-suspenders freshness floor: the SSE reconnect takes
-                // a full TLS handshake + subscription round-trip. In parallel,
-                // invalidate the active queries so React Query refetches from
-                // REST immediately — the UI converges via whichever path
-                // delivers first.
-                try {
-                    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-                } catch { /* mock/test environments */ }
-                try {
-                    void queryClient.invalidateQueries({ queryKey: queryKeys.machines })
-                } catch { /* mock/test environments */ }
+                // No preemptive REST invalidation: the reconnect's
+                // connection-changed handshake decides everything. With
+                // `resume: 'ok'` the hub replayed the gap (refetching would
+                // duplicate it); otherwise App's onConnect resync already
+                // invalidates sessions/details/agy. The REST floor survives
+                // only as a delayed fallback for a handshake that never
+                // lands (WAKE_HANDSHAKE_FALLBACK_MS).
+                armWakeRestFallback()
                 requestReconnect('visibility-recovery')
             }
         }
@@ -1078,13 +1159,20 @@ export function useSSE(options: {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null
             }
+            // The wake REST fallback timer deliberately survives this
+            // cleanup: a visibility-recovery reconnect re-runs this effect
+            // immediately, and the fallback must stay armed until the new
+            // connection's handshake disarms it (or it fires).
+            markSubscriptionTornDown(subscriptionIdRef.current)
+            subscriptionIdRef.current = null
             eventSource.close()
             if (eventSourceRef.current === eventSource) {
                 eventSourceRef.current = null
             }
             setSubscriptionId(null)
+            setSubscriptionVisibility(null)
         }
     }, [options.baseUrl, options.enabled, options.scope, options.token, scope, subscriptionKey, queryClient, reconnectNonce])
 
-    return { subscriptionId }
+    return { subscriptionId, subscriptionVisibility }
 }

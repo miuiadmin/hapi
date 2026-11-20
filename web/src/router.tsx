@@ -164,7 +164,9 @@ function SessionsPage() {
     // trustworthy even when the user never touched the settings toggle).
     const sseFallbackPolling = !sseConnected && isSseDownFor(30_000)
     const eagerLoading = sessionListView.eagerLoading || sessionListView.baselineMode || sseFallbackPolling
-    const { sessions, isLoading, error, refetch } = useSessions(api, { eagerInterval: eagerLoading })
+    // While SSE is live the poll is only a fallback floor: patches land
+    // sub-second, so the active-session fast cadence never kicks in.
+    const { sessions, isLoading, error, refetch } = useSessions(api, { eagerInterval: eagerLoading, sseConnected })
     useEagerSessionPrefetch(api, sessions, eagerLoading, sessionListView.baselineMode)
     const [initializedHub, setInitializedHub] = useState<string | null>(null)
     const { machines } = useMachines(api, true)

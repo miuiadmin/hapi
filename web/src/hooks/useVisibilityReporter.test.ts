@@ -2,6 +2,11 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type ApiClient } from '@/api/client'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
+import {
+    markSubscriptionTornDown,
+    resetSubscriptionLivenessForTests,
+    reviveSubscription
+} from '@/lib/sseSubscriptionLiveness'
 
 function setVisibilityState(state: DocumentVisibilityState): void {
     Object.defineProperty(document, 'visibilityState', {
@@ -277,5 +282,111 @@ describe('useVisibilityReporter', () => {
         } finally {
             vi.useRealTimers()
         }
+    })
+})
+
+describe('useVisibilityReporter wake discipline (reconnect skipping)', () => {
+    afterEach(() => {
+        resetSubscriptionLivenessForTests()
+    })
+
+    it('seeds from the connection URL declaration and skips the redundant first POST', async () => {
+        const api = {
+            setVisibility: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ApiClient
+
+        // The reconnect's URL carried visibility=visible, which the hub
+        // applied as the fresh subscription's initial state: the reporter's
+        // first report for the new id used to re-POST it anyway.
+        setVisibilityState('visible')
+        renderHook(() => useVisibilityReporter({
+            api,
+            subscriptionId: 'sub-new',
+            declaredVisibility: 'visible'
+        }))
+
+        expect(api.setVisibility).not.toHaveBeenCalled()
+
+        // A real state change still reports.
+        setVisibilityState('hidden')
+        act(() => {
+            document.dispatchEvent(new Event('visibilitychange'))
+        })
+        expect(api.setVisibility).toHaveBeenCalledTimes(1)
+        expect(api.setVisibility).toHaveBeenNthCalledWith(1, {
+            subscriptionId: 'sub-new',
+            visibility: 'hidden',
+        })
+    })
+
+    it('POSTs when the tab state differs from what the URL declared', () => {
+        const api = {
+            setVisibility: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ApiClient
+
+        // URL declared visible, but the tab flipped hidden before the
+        // reporter caught up: the hub's seed is now wrong and must be fixed.
+        setVisibilityState('hidden')
+        renderHook(() => useVisibilityReporter({
+            api,
+            subscriptionId: 'sub-new',
+            declaredVisibility: 'visible'
+        }))
+
+        expect(api.setVisibility).toHaveBeenCalledTimes(1)
+        expect(api.setVisibility).toHaveBeenCalledWith({
+            subscriptionId: 'sub-new',
+            visibility: 'hidden',
+        })
+    })
+
+    it('skips the doomed POST against a subscription useSSE just tore down', () => {
+        const api = {
+            setVisibility: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ApiClient
+
+        // Simulates the wake ordering: useSSE's visibilitychange listener ran
+        // first and closed the stale connection; the reporter's listener runs
+        // in the same dispatch, before React delivers the null subscriptionId.
+        markSubscriptionTornDown('sub-old')
+        setVisibilityState('visible')
+        renderHook(() => useVisibilityReporter({ api, subscriptionId: 'sub-old' }))
+
+        expect(api.setVisibility).not.toHaveBeenCalled()
+
+        // While the id stays marked dead, later transitions stay silent…
+        setVisibilityState('hidden')
+        act(() => {
+            document.dispatchEvent(new Event('visibilitychange'))
+        })
+        expect(api.setVisibility).not.toHaveBeenCalled()
+
+        // …and reporting resumes the moment the id is live again.
+        reviveSubscription('sub-old')
+        setVisibilityState('visible')
+        act(() => {
+            document.dispatchEvent(new Event('visibilitychange'))
+        })
+        expect(api.setVisibility).toHaveBeenCalledTimes(1)
+        expect(api.setVisibility).toHaveBeenCalledWith({
+            subscriptionId: 'sub-old',
+            visibility: 'visible',
+        })
+    })
+
+    it('omits declaredVisibility seeds fall back to reporting (older callers)', () => {
+        const api = {
+            setVisibility: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ApiClient
+
+        setVisibilityState('visible')
+        renderHook(() => useVisibilityReporter({ api, subscriptionId: 'sub-1' }))
+
+        // No declaration → no seed → the first report POSTs as before.
+        expect(api.setVisibility).toHaveBeenCalledTimes(1)
+        expect(api.setVisibility).toHaveBeenCalledWith({
+            subscriptionId: 'sub-1',
+            visibility: 'visible',
+        })
     })
 })

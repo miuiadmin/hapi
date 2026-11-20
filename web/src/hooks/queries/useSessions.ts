@@ -12,6 +12,10 @@ export type UseSessionsOptions = {
      *  keeps hidden tabs idle, so the cost is ~4 lightweight GETs/min only
      *  while the user is actually looking at the list. */
     eagerInterval?: boolean
+    /** When true, the SSE stream is delivering sub-second updates, so the
+     *  eager poll is purely a disconnection fallback and never accelerates
+     *  to the active-session fast cadence. */
+    sseConnected?: boolean
 }
 
 /** Idle poll cadence for eager mode (no active/thinking sessions on screen).
@@ -26,8 +30,14 @@ export const EAGER_REFETCH_INTERVAL_MS = 15_000
 export const EAGER_ACTIVE_REFETCH_INTERVAL_MS = 5_000
 
 /** Adaptive interval: 5s while any listed session is active/thinking (the
- *  spinner must be trustworthy), 15s when the list is all-idle. */
-export function eagerRefetchInterval(data: { sessions: { active: boolean; thinking: boolean }[] } | undefined): number {
+ *  spinner must be trustworthy), 15s when the list is all-idle. While the
+ *  SSE stream is connected the patches arrive sub-second, so the poll stays
+ *  at the idle floor — the fast cadence is a dark-SSE fallback only. */
+export function eagerRefetchInterval(
+    data: { sessions: { active: boolean; thinking: boolean }[] } | undefined,
+    sseConnected = false
+): number {
+    if (sseConnected) return EAGER_REFETCH_INTERVAL_MS
     const sessions = data?.sessions
     if (!sessions || sessions.length === 0) return EAGER_REFETCH_INTERVAL_MS
     for (const session of sessions) {
@@ -72,7 +82,12 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
             return reconcileAttachedJobsFromCache(withClocks, current)
         },
         enabled: Boolean(api) && (options.enabled ?? true),
-        refetchInterval: options.eagerInterval ? (query) => eagerRefetchInterval(query.state.data as { sessions: { active: boolean; thinking: boolean }[] } | undefined) : undefined,
+        refetchInterval: options.eagerInterval
+            ? (query) => eagerRefetchInterval(
+                query.state.data as { sessions: { active: boolean; thinking: boolean }[] } | undefined,
+                options.sseConnected ?? false
+            )
+            : undefined,
     })
 
     return {

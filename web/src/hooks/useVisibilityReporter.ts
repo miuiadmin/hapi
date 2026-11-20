@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { ApiError, type ApiClient } from '@/api/client'
+import { isSubscriptionTornDown } from '@/lib/sseSubscriptionLiveness'
 
 type VisibilityState = 'visible' | 'hidden'
 
@@ -32,6 +33,11 @@ function isPermanentRejection(error: unknown): boolean {
 export function useVisibilityReporter(options: {
     api: ApiClient | null
     subscriptionId: string | null
+    /** Visibility the SSE connection's URL declared for this subscription
+     *  (the hub applies it as the subscription's initial state). When the id
+     *  changes, the reporter seeds its "last reported" state from it so a
+     *  reconnect whose URL already says `visible` does not re-POST it. */
+    declaredVisibility?: VisibilityState | null
     enabled?: boolean
 }): void {
     const lastStateRef = useRef<VisibilityState | null>(null)
@@ -66,7 +72,11 @@ export function useVisibilityReporter(options: {
         const subscriptionId = options.subscriptionId
         if (lastSubscriptionRef.current !== subscriptionId) {
             lastSubscriptionRef.current = subscriptionId
-            lastStateRef.current = null
+            // Seed from the connection URL's declaration: the hub already
+            // knows this state for the fresh subscription, so the first
+            // report only POSTs when the tab has since moved to a different
+            // state (or the caller could not supply the declaration).
+            lastStateRef.current = options.declaredVisibility ?? null
             pendingStateRef.current = null
             retryCountRef.current = 0
             subscriptionAbandonedRef.current = false
@@ -80,6 +90,14 @@ export function useVisibilityReporter(options: {
             // A 4xx rejection is terminal for this subscription id; keep the
             // reporter silent until a new subscription id arrives.
             if (subscriptionAbandonedRef.current) {
+                return
+            }
+            // useSSE has already torn this subscription down (reconnect
+            // cycle). The POST would race the hub reaping the dead socket —
+            // the reconnect's URL re-declares the current state for the
+            // replacement subscription anyway.
+            if (isSubscriptionTornDown(subscriptionId)) {
+                pendingStateRef.current = null
                 return
             }
             const desired = pendingStateRef.current
@@ -178,5 +196,5 @@ export function useVisibilityReporter(options: {
             clearRetry()
             inFlightRef.current = false
         }
-    }, [options.api, options.enabled, options.subscriptionId])
+    }, [options.api, options.enabled, options.subscriptionId, options.declaredVisibility])
 }

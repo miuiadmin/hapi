@@ -502,7 +502,7 @@ function AppInner() {
     const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
     const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
-    const { subscriptionId: globalSubscriptionId } = useSSE({
+    const { subscriptionId: globalSubscriptionId, subscriptionVisibility: globalSubscriptionVisibility } = useSSE({
         enabled: sseEnabled,
         token: token ?? '',
         baseUrl,
@@ -514,7 +514,7 @@ function AppInner() {
         onToast: handleToast
     })
 
-    const { subscriptionId: sessionSubscriptionId } = useSSE({
+    const { subscriptionId: sessionSubscriptionId, subscriptionVisibility: sessionSubscriptionVisibility } = useSSE({
         enabled: sseEnabled && Boolean(sessionEventSubscription),
         token: token ?? '',
         baseUrl,
@@ -528,12 +528,14 @@ function AppInner() {
     useVisibilityReporter({
         api,
         subscriptionId: globalSubscriptionId,
+        declaredVisibility: globalSubscriptionVisibility,
         enabled: sseEnabled
     })
 
     useVisibilityReporter({
         api,
         subscriptionId: sessionSubscriptionId,
+        declaredVisibility: sessionSubscriptionVisibility,
         enabled: sseEnabled && Boolean(sessionEventSubscription)
     })
 
