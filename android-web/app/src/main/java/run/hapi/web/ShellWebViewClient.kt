@@ -3,11 +3,13 @@ package run.hapi.web
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import run.hapi.web.static.ShellMarkerInjection
 
 /**
  * Base WebViewClient for the shell — placeholder, to be extended by the
@@ -51,6 +53,35 @@ open class ShellWebViewClient(
         view: WebView,
         request: WebResourceRequest,
     ): WebResourceResponse? = staticResolver?.invoke(request)
+
+    /**
+     * Berry shell marker, channel 2 (SW-shadowing-proof): the interceptor
+     * injection only hooks the network layer, so once the PWA service worker
+     * precaches index.html the interception stops firing and the marker is
+     * lost. Re-asserting it via evaluateJavascript on EVERY document load
+     * (start + first visible commit) cannot be shadowed by the SW — the SDK
+     * reads the flag lazily (device classification at flush time), so either
+     * moment is comfortably before the first read. Idempotent assignment;
+     * only same-origin hub documents are touched.
+     */
+    private fun assertShellMarker(view: WebView, url: String?) {
+        if (!ShellMarkerInjection.shouldAssertMarker(url, hubUrl)) return
+        try {
+            view.evaluateJavascript(ShellMarkerInjection.MARKER_JS, null)
+        } catch (_: Exception) {
+            // view torn down mid-navigation — the next load re-asserts
+        }
+    }
+
+    override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+        super.onPageStarted(view, url, favicon)
+        assertShellMarker(view, url)
+    }
+
+    override fun onPageCommitVisible(view: WebView, url: String?) {
+        super.onPageCommitVisible(view, url)
+        assertShellMarker(view, url)
+    }
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         val uri: Uri = request.url ?: return false

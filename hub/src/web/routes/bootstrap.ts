@@ -4,6 +4,7 @@ import { getConfiguration } from '../../configuration'
 import { getProviderEnvironment } from '../../config/providerCredentials'
 import { listConfiguredVoiceBackends, resolveHubVoiceBackend } from '@hapi/protocol/voice'
 import { loadPrChipDisplayProfile } from '../../config/prChipDisplay'
+import { readTelemetryLevelState } from '../../config/telemetryLevel'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSyncEngine } from './guards'
@@ -73,6 +74,8 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
         let features: {
             githubPrAwareness: { enabled: boolean; source: 'env' | 'file' | 'default' }
             prChipDisplay: ReturnType<typeof loadPrChipDisplayProfile>
+            telemetry: boolean
+            telemetryLevel: number
         }
         try {
             const configuration = getConfiguration()
@@ -81,13 +84,29 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
                     enabled: configuration.githubPrAwareness,
                     source: configuration.sources.githubPrAwareness
                 },
-                prChipDisplay: loadPrChipDisplayProfile(configuration.dataDir)
+                prChipDisplay: loadPrChipDisplayProfile(configuration.dataDir),
+                telemetry: true,
+                // Placeholder until the telemetry-only try below resolves;
+                // stays 0 if that read fails.
+                telemetryLevel: 0
             }
         } catch {
             features = {
                 githubPrAwareness: { enabled: false, source: 'default' },
-                prChipDisplay: DEFAULT_PR_CHIP_DISPLAY
+                prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
+                telemetry: true,
+                telemetryLevel: 0
             }
+        }
+        // Telemetry level in its own try (review finding #4, mirrors the
+        // resolveTelemetry tolerance in features.ts): an unreadable
+        // settings.json must only reset the telemetry fields — the shared
+        // catch above used to drag githubPrAwareness/prChipDisplay back to
+        // their defaults with it.
+        try {
+            features.telemetryLevel = (await readTelemetryLevelState(getConfiguration().dataDir)).level
+        } catch {
+            // keep 0 (off — never silently upgrade sharing on a read error)
         }
 
         // Voice backend selection: same payload as GET /api/voice/backend.

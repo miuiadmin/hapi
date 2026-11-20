@@ -37,6 +37,25 @@ class StaticResourceInterceptor(
                 StaticRouter.Layer.OTA -> otaLayer.open(hit.rel)
                 StaticRouter.Layer.BUNDLED -> bundledLayer.open(hit.rel)
             } ?: return null // lost a race with pruning — network it is
+        // The document itself carries the berry shell marker (earliest script
+        // in the page, before the app bundle). Best-effort: a failure to read
+        // or rewrite falls back to network passthrough (document loads, the
+        // marker is simply absent and the SDK degrades to pwa/browser
+        // classification). Non-document responses stream as-is.
+        if (hit.rel == StaticPath.INDEX_HTML) {
+            try {
+                // .use closes the stream — readBytes() alone leaks the fd.
+                val html = stream.use { it.readBytes().toString(Charsets.UTF_8) }
+                val injected = ShellMarkerInjection.injectIntoIndexHtml(html)
+                return WebResourceResponse(
+                    Mime.mimeFor(hit.rel),
+                    Mime.encodingFor(hit.rel),
+                    injected.toByteArray(Charsets.UTF_8).inputStream(),
+                )
+            } catch (_: Exception) {
+                return null
+            }
+        }
         return WebResourceResponse(Mime.mimeFor(hit.rel), Mime.encodingFor(hit.rel), stream)
     }
 }
