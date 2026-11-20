@@ -51,6 +51,12 @@ export type SessionPrChipProps = {
      * `<button>`). The session action menu still carries the GitHub link.
      */
     interactive?: boolean
+    /**
+     * Render the interactive chip as a span[role=link] that opens the PR via
+     * window.open — for nesting inside a row `<button>` where a real `<a>`
+     * would be invalid HTML. Only meaningful together with `interactive`.
+     */
+    nested?: boolean
 }
 
 export { formatGithubPrChipLabel, resolveGithubPrChipDisplay }
@@ -145,24 +151,55 @@ export function SessionPrChip(props: SessionPrChipProps) {
         })
         : t('session.item.prChip', { number: primary.number })
 
+    const openPr = () => window.open(primary.url, '_blank', 'noopener,noreferrer')
+
     const chip = interactive ? (
-        <a
-            href={primary.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-testid="session-pr-chip"
-            data-pr-tone={display.tone ?? 'unset'}
-            data-pr-stale={display.stale ? '1' : '0'}
-            aria-describedby={tooltipId}
-            title={detail}
-            aria-label={chipLabel}
-            onClick={(event) => event.stopPropagation()}
-            onMouseDown={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-            className={chipClassName}
-        >
-            {glyph}
-        </a>
+        props.nested ? (
+            <span
+                role="link"
+                tabIndex={0}
+                data-testid="session-pr-chip"
+                data-pr-tone={display.tone ?? 'unset'}
+                data-pr-stale={display.stale ? '1' : '0'}
+                aria-describedby={tooltipId}
+                title={detail}
+                aria-label={chipLabel}
+                onClick={(event) => {
+                    event.stopPropagation()
+                    openPr()
+                }}
+                onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        openPr()
+                    }
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                className={chipClassName}
+            >
+                {glyph}
+            </span>
+        ) : (
+            <a
+                href={primary.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="session-pr-chip"
+                data-pr-tone={display.tone ?? 'unset'}
+                data-pr-stale={display.stale ? '1' : '0'}
+                aria-describedby={tooltipId}
+                title={detail}
+                aria-label={chipLabel}
+                onClick={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                className={chipClassName}
+            >
+                {glyph}
+            </a>
+        )
     ) : (
         <span
             data-testid="session-pr-chip"

@@ -49,8 +49,9 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
 }
 
 describe('SessionList PR chip', () => {
-    it('renders an interactive PR chip beside the row button that opens the PR', async () => {
+    it('renders the interactive PR chip inside the trailing cluster, left of the time label, opening the PR on tap', async () => {
         const onSelect = vi.fn()
+        const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
         render(
             <QueryClientProvider
                 client={new QueryClient({
@@ -95,22 +96,32 @@ describe('SessionList PR chip', () => {
         // Upstream now starts inactive project groups collapsed.
         fireEvent.click(screen.getByTitle('/tmp/demo'))
         const chip = await screen.findByTestId('session-pr-chip')
-        expect(chip.tagName).toBe('A')
-        expect(chip).toHaveAttribute('href', 'https://github.com/tiann/hapi/pull/1163')
+        // Nested span-link (a real <a> inside the row <button> would be invalid HTML).
+        expect(chip.tagName).toBe('SPAN')
+        expect(chip).toHaveAttribute('role', 'link')
         expect(chip).toHaveTextContent(/#1163/)
-        expect(chip.closest('button')).toBeNull()
+        // Lives inside the row button's trailing cluster, before the time label
+        // (ADR D8) — not as a far-right block that pushed the time off the edge.
+        // (The chip sits inside a HoverTooltip wrapper span within the cluster.)
+        const rowButton = screen.getByRole('button', { name: /PR linked session/i })
+        expect(chip.closest('button')).toBe(rowButton)
+        const wrapper = chip.parentElement
+        const trailing = wrapper?.parentElement
+        expect(trailing).not.toBeNull()
+        expect(trailing?.lastElementChild).not.toBe(wrapper)
 
         fireEvent.click(chip)
+        expect(openSpy).toHaveBeenCalledWith('https://github.com/tiann/hapi/pull/1163', '_blank', 'noopener,noreferrer')
         expect(onSelect).not.toHaveBeenCalled()
 
         // Attention/schedule HoverTooltips use group-focus-visible/session-row;
         // the named group must sit on the focusable row button, not a wrapper div.
-        const rowButton = screen.getByRole('button', { name: /PR linked session/i })
         expect(rowButton.className.split(/\s+/)).toContain('group/session-row')
         expect(rowButton.closest('div')?.className.split(/\s+/)).not.toContain('group/session-row')
+        openSpy.mockRestore()
     })
 
-    it('reserves PR chip padding for two quick actions on a pinned active row', async () => {
+    it('keeps quick-action trailing handling on a pinned active row without the old far-right wrapper', async () => {
         render(
             <QueryClientProvider
                 client={new QueryClient({
@@ -158,7 +169,9 @@ describe('SessionList PR chip', () => {
         const chip = await screen.findByTestId('session-pr-chip')
         const row = chip.closest('.session-list-row')
         expect(row).toHaveAttribute('data-quick-action-count', '2')
-        const chipWrap = screen.getByTestId('session-pr-chip-wrap')
-        expect(chipWrap.style.paddingRight).toBe('calc(var(--session-row-action-span, 2rem) + 0.5rem)')
+        // The far-right wrapper is gone; the chip rides the row's trailing
+        // cluster which yields to quick actions via `session-row-trailing`.
+        expect(screen.queryByTestId('session-pr-chip-wrap')).toBeNull()
+        expect(chip.closest('.session-row-trailing')).not.toBeNull()
     })
 })
