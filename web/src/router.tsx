@@ -49,7 +49,7 @@ import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer
 import { ApiError } from '@/api/client'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { queryKeys } from '@/lib/query-keys'
-import { useAddToast } from '@/lib/toast-context'
+import { useAddToast, useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { seedMessageWindowFromSession, syncTailMessages } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'

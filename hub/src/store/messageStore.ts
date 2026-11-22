@@ -44,8 +44,6 @@ import {
     moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
     copyMessagesToSession as copyStoredMessagesToSession,
-    addMessageSweepingLiveSnapshots,
-    deleteLiveTextSnapshots,
     getAllMessages,
     getMessagesAfterSeq,
     getMaxSeq,
@@ -60,7 +58,7 @@ import {
     type LocalMessageState,
     type MessagePosition,
     type UpsertToolCallResult,
-    type AddMessageSweepResult,
+
 } from './messages'
 import {
     hasPotentiallyIncompleteMessageContent,
@@ -98,15 +96,6 @@ export class MessageStore {
         return deleteLiveTextSnapshots(this.db, sessionId, streamId, keepMessageId)
     }
 
-    addMessageSweepingLiveSnapshots(
-        sessionId: string,
-        content: unknown,
-        localId?: string,
-        scheduledAt?: number | null,
-        createdAt?: number
-    ): AddMessageSweepResult {
-        return addMessageSweepingLiveSnapshots(this.db, sessionId, content, localId, scheduledAt, createdAt)
-    }
 
     upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
         return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
@@ -126,9 +115,6 @@ export class MessageStore {
         return deleteLiveReasoningSnapshots(this.db, sessionId, streamId, keepMessageId)
     }
 
-    deleteLiveTextSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
-        return deleteLiveTextSnapshots(this.db, sessionId, streamId, keepMessageId)
-    }
 
     addImportedMessage(sessionId: string, content: unknown, localId: string, createdAt: number): { message: StoredMessage; inserted: boolean } {
         return addImportedMessage(this.db, sessionId, content, localId, createdAt)
