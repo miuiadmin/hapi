@@ -56,10 +56,14 @@ it('loads the runner-side Claude runtime without terminal UI or other launchers'
 })
 
 it('imports the headless OpenCode loop without loading its display or local launcher', () => {
+    // Filter in the child: the full require-cache key list can exceed the
+    // 64KB exec pipe limit on module-graph-heavy trees, and the assertions
+    // only need the opencode family plus react/ink/display/local-launcher.
     const output = execFileSync('bun', ['-e', `
         await import('./src/opencode/loop')
-        console.log(JSON.stringify(Object.keys(require.cache)))
-    `], { cwd: fileURLToPath(new URL('../../', import.meta.url)), encoding: 'utf8' })
+        const keys = Object.keys(require.cache).filter((p) => /opencode|node_modules\\/(?:react|ink)\\/|OpencodeDisplay/.test(p))
+        console.log(JSON.stringify(keys))
+    `], { cwd: fileURLToPath(new URL('../../', import.meta.url)), encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
     const paths = (JSON.parse(output) as string[]).map(path => path.split('\\').join('/'))
     expect(paths.some(path => path.endsWith('/opencode/opencodeRemoteLauncher.ts'))).toBe(true)
     expect(paths.filter(path => /\/node_modules\/(?:react|ink)\/|\/(?:OpencodeDisplay|opencodeLocalLauncher)\./.test(path))).toEqual([])
