@@ -44,6 +44,8 @@ import {
     moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
     copyMessagesToSession as copyStoredMessagesToSession,
+    addMessageSweepingLiveSnapshots,
+    deleteLiveTextSnapshots,
     getAllMessages,
     getMessagesAfterSeq,
     getMaxSeq,
@@ -58,6 +60,7 @@ import {
     type LocalMessageState,
     type MessagePosition,
     type UpsertToolCallResult,
+    type AddMessageSweepResult,
 } from './messages'
 import {
     hasPotentiallyIncompleteMessageContent,
@@ -80,6 +83,19 @@ export class MessageStore {
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+    addMessageSweepingLiveSnapshots(
+        sessionId: string,
+        content: unknown,
+        localId?: string,
+        scheduledAt?: number | null,
+        createdAt?: number
+    ): AddMessageSweepResult {
+        return addMessageSweepingLiveSnapshots(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    deleteLiveTextSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
+        return deleteLiveTextSnapshots(this.db, sessionId, streamId, keepMessageId)
     }
 
     addMessageSweepingLiveSnapshots(

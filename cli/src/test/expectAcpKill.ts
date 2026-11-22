@@ -28,8 +28,8 @@ export async function expectAcpKill(
     })
     const allowDisconnect = Promise.withResolvers<void>()
     const disconnectStarted = vi.fn()
-    let closing: Promise<void> | undefined
-    const close = () => closing ??= transport.close().then(() => undefined)
+    let closing: ReturnType<typeof transport.close> | undefined
+    const close = () => closing ??= transport.close()
     disconnect.mockImplementation(async () => {
         disconnectStarted()
         await allowDisconnect.promise

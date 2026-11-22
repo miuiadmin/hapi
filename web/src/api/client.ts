@@ -41,6 +41,7 @@ import type {
     SessionResponse,
     SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SessionContentSearchResponse
 } from '@/types/api'
@@ -425,6 +426,11 @@ export class ApiClient {
     async getSessions(options?: { view?: 'slim' }): Promise<SessionsResponse> {
         const query = options?.view === 'slim' ? '?view=slim' : ''
         return await this.request<SessionsResponse>(`/api/sessions${query}`)
+    }
+
+    async getScratchlistSessionIds(): Promise<string[]> {
+        const response = await this.request<ScratchlistSessionIdsResponse>('/api/sessions/scratchlist-status')
+        return response.sessionIds
     }
 
     async getHealth(): Promise<HubHealthResponse> {

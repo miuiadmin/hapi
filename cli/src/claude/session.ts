@@ -42,6 +42,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * conversation, so a pending rewind intent pointing into it can be
      * cancelled. */
     onConversationReset: (() => void) | null = null;
+    handleRemoteClearHook: ((sessionId: string) => boolean) | null = null;
     /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
     localTurnStartedAt = 0;
     readonly beforeLocalLaunch?: () => Promise<boolean>;

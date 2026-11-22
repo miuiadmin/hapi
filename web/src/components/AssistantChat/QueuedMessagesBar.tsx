@@ -201,6 +201,7 @@ export function QueuedMessagesBar({
     onEdit,
     canSteer,
     deliveryActive = canSteer,
+    sharedNative,
     compactionPendingMessageIds,
 }: {
     sessionId: string
@@ -223,6 +224,11 @@ export function QueuedMessagesBar({
     canSteer?: boolean
     /** An existing dispatch may still be confirming after new Steer admission closes. */
     deliveryActive?: boolean
+    /**
+     * Shared-native sessions multiplex several clients over one worker; the
+     * hub refuses deliver-now for them, so the affordance stays hidden.
+     */
+    sharedNative?: boolean
 }) {
     const queued = useQueuedMessages(sessionId)
     const assistantApi = useAui()
@@ -408,17 +414,20 @@ export function QueuedMessagesBar({
                         }
 
                         // "Send now" (↑) recovers rows stranded by an abort:
-                        // DSH/Codex drop their in-memory queue when a stop
-                        // begins and the hub's replay is deduped away by the
-                        // CLI, so the row would hang until the session-end
+                        // the hub's session-alive replay is deduped away by
+                        // the CLI, so the row would hang until the session-end
                         // sweep discards it unread. Offered only when no turn
                         // is dispatching (deliveryActive) and Steer cannot run
                         // (canSteerRow covers the mid-turn case).
                         const canDeliverNowRow = Boolean(
                             !canSteerRow
                                 && !deliveryActive
+                                && !sharedNative
                                 && msg.deliveryState !== 'indeterminate'
-                                && msg.scheduledAt == null
+                                // Future-scheduled rows mature through the
+                                // scheduler tick; once matured the hub accepts
+                                // deliver-now for them, so keep ↑ available.
+                                && (msg.scheduledAt == null || msg.scheduledAt <= Date.now())
                                 && canCancel
                         )
                         const deliverNowPending = deliverNowMutation.isPending

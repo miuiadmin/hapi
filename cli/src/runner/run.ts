@@ -925,6 +925,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // always stays high priority.
           lowerPriority: true,
           env: {
+            // Make JSC collect earlier so idle wrappers keep a lower heap
+            // high-water mark. Placed before process.env so users can override it.
+            BUN_JSC_forceRAMSize: String(256 * 1024 * 1024),
             ...process.env,
             ...extraEnv
           }

@@ -1274,6 +1274,10 @@ export class SyncEngine {
         return this.store.scratchlist.count(sessionId)
     }
 
+    getScratchlistSessionIdsByNamespace(namespace: string): string[] {
+        return this.store.scratchlist.listSessionIdsByNamespace(namespace)
+    }
+
     sumScratchlistAttachmentBytes(sessionId: string): number {
         return this.store.scratchlist.sumAttachmentBytes(sessionId)
     }
@@ -2151,6 +2155,14 @@ export class SyncEngine {
             this.automaticTitleSuggestionService.onTurnStarted(sessionId)
         }
         const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
+        const current = this.store.sessions.getSession(actualSessionId)
+        const metadata = current?.metadata as Record<string, unknown> | null | undefined
+        if (current && typeof metadata?.codexImportedAt === 'number') {
+            this.store.sessions.updateSessionMetadata(actualSessionId,
+                { ...metadata, codexImportedAt: null }, current.metadataVersion, current.namespace,
+                { touchUpdatedAt: false })
+            this.sessionCache.refreshSession(actualSessionId)
+        }
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
     }
