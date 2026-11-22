@@ -1091,11 +1091,11 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         if (this.supportsCancelNotification()) {
-            this.transport.sendNotification('session/cancel', { sessionId });        this.toolCallLifetimes.cancel();
-        this.transport.sendNotification('session/cancel', { sessionId });
-        // The agent keeps waiting on an unanswered form until its request is
-        // answered, so cancelling the prompt must settle the form too.
-        this.settlePendingElicitations(sessionId);
+            this.toolCallLifetimes.cancel();
+            this.transport.sendNotification('session/cancel', { sessionId });
+            // The agent keeps waiting on an unanswered form until its request is
+            // answered, so cancelling the prompt must settle the form too.
+            this.settlePendingElicitations(sessionId);
             return;
         }
 
@@ -2123,10 +2123,7 @@ export class AcpSdkBackend implements AgentBackend {
             // the agent treats as viewer-detached, not denied.
             logger.debug('[ACP] No permission handler registered; leaving the request unanswered');
             this.pendingPermissions.delete(toolCallId);
-            return await new Promise<unknown>(() => {});            logger.debug('[ACP] No permission handler registered; cancelling request');
-            this.pendingPermissions.delete(hapiRequestId);
-            this.liveRequestIds.delete(hapiRequestId);
-            return { outcome: { outcome: 'cancelled' } };
+            return await new Promise<unknown>(() => {});
         }
 
         return await responsePromise;

@@ -449,8 +449,11 @@ describe('AcpSdkBackend tool call lifetimes', () => {
 
         const calls = [...new Set(toolIds(messages, 'tool_call'))];
         expect(calls).toHaveLength(2);
-        expect(requests.map((request) => request.id)).toEqual(calls);
-        expect(requests.map((request) => request.toolCallId)).toEqual(calls);
+        // fork parity: permission cards carry the agent's bare toolCallId
+        // (dsh correlates drained tool_call updates by plain id); the
+        // lifetime id stays on the message side, where `calls` shows it.
+        expect(requests.map((request) => request.id)).toEqual(['shell:0', 'shell:0']);
+        expect(requests.map((request) => request.toolCallId)).toEqual(['shell:0', 'shell:0']);
         await expect(Promise.all(agentAnswers)).resolves.toEqual([
             { outcome: { outcome: 'selected', optionId: 'once' } },
             { outcome: { outcome: 'selected', optionId: 'once' } }
@@ -717,9 +720,13 @@ describe('AcpSdkBackend tool call lifetimes', () => {
         await prompt(backend, messages);
 
         const [card] = toolIds(messages, 'tool_call');
-        expect(requests.map((request) => request.toolCallId)).toEqual([card, card]);
-        expect(requests[0].id).toBe(card);
-        expect(requests[1].id).not.toBe(card);
+        // fork parity: both requests correlate to the call's card through the
+        // bare agent id (the lifetime id `card` remains message-side only);
+        // the fork deliberately shares the request id across re-asks so dsh
+        // correlation stays stable.
+        expect(requests.map((request) => request.toolCallId)).toEqual(['edit:1', 'edit:1']);
+        expect(requests[0].id).toBe('edit:1');
+        expect(requests[1].id).toBe('edit:1');
     });
 
     it('starts lifetimes afresh when the connection switches to another ACP session', async () => {
