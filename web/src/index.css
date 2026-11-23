@@ -343,6 +343,16 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Until the first tail rows land there is nothing to scroll. Keeping the
+ * loading viewport out of the scroll chain stops an impatient wheel or touch
+ * gesture from latching to it and dumping its deltas on the rows the moment
+ * they render. A gesture that began on the skeleton and is still running when
+ * the rows land keeps the viewport parked the same way until it is over. */
+.chat-scroll-y[data-hapi-awaiting-tail="true"],
+.chat-scroll-y[data-hapi-gesture-parked="1"] {
+    overflow: hidden;
+}
+
 /* Keep file-preview content aligned to the previous left edge while reserving
  * the scrollbar slot on the right on both touch and pointer devices. */
 .file-preview-scroll-y {

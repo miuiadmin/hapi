@@ -167,6 +167,10 @@ const TOP_PULL_TRIGGER_PX = 64
 // Trackpads emit a burst per swipe; one signal is enough to restart a paused
 // run after its bounded retry budget is exhausted.
 const WHEEL_GESTURE_GAP_MS = 250
+// A swipe that began on the loading skeleton counts as one gesture across a
+// longer silence: the first render of the rows can stall the main thread past
+// the ordinary gesture gap, splitting a single trackpad swipe in two.
+const WHEEL_SKELETON_CONTINUATION_GAP_MS = 600
 const POINTER_CANCEL_INTENT_WINDOW_MS = 750
 const UPWARD_SCROLL_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
 
@@ -941,6 +945,8 @@ export function HappyThread(props: {
     )
     const startHistoryLoadAttemptRef = useRef<(runId: number) => void>(() => {})
     const needsViewportCoverageRef = useRef<(options?: { includePreloadMargin?: boolean }) => boolean>(() => false)
+    /** Re-evaluates the gesture park; assigned by the scroll-tracking effect. */
+    const syncGestureParkRef = useRef<() => void>(() => {})
     useSelectedSessionSeen(props.sessionId,
         !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
         props.session.readState?.version, viewportRef, contentRef)
@@ -1359,6 +1365,59 @@ export function HappyThread(props: {
         let lastWheelAt = 0
         let wheelIntentUntil = 0
         let wheelLatched = false
+        // A gesture that begins while the loading skeleton is the only content
+        // was aimed at the skeleton, not at the conversation. The browser keeps
+        // the wheel ticks / touch pan latched to the not-yet-scrollable viewport
+        // and feeds them to it the moment the rows land, so the tail of such a
+        // gesture arrives right after the initial bottom scroll. It must not
+        // read as "leave the tail": while it is still running the viewport is
+        // parked out of the scroll chain (index.css), and the initial settle
+        // below re-pins whatever movement still gets through instead of
+        // cancelling. Only a gesture that begins after the first rows are shown
+        // is explicit upward intent.
+        let wheelBeganOnSkeleton = false
+        let pointerBeganOnSkeleton = false
+        let touchBeganOnSkeleton = false
+        let skeletonWheelUntil = 0
+        let skeletonTouchUntil = 0
+        let parkTimer: number | null = null
+        const gestureAimedAtSkeleton = (): boolean =>
+            rawMessagesCountRef.current === 0
+            && initialScrollSessionRef.current !== sessionIdRef.current
+            && !searchTargetHistoryLockRef.current
+            && !initialTargetMessageIdRef.current
+
+        const syncGesturePark = () => {
+            if (parkTimer !== null) {
+                window.clearTimeout(parkTimer)
+                parkTimer = null
+            }
+            const now = Date.now()
+            let until = Math.max(skeletonWheelUntil, skeletonTouchUntil)
+            // A parked gesture never outlives the initial settle window. Once
+            // that is over, whatever the user does is deliberate.
+            if (
+                initialScrollSessionRef.current === sessionIdRef.current
+                && initialScrollDeadlineRef.current < until
+            ) {
+                until = initialScrollDeadlineRef.current
+            }
+            if (until <= now) {
+                delete viewport.dataset.hapiGestureParked
+                return
+            }
+            viewport.dataset.hapiGestureParked = '1'
+            if (!Number.isFinite(until)) {
+                // A finger that is still down: the touch end (or the commit,
+                // which caps the park) re-evaluates.
+                return
+            }
+            parkTimer = window.setTimeout(() => {
+                parkTimer = null
+                syncGesturePark()
+            }, until - now)
+        }
+        syncGestureParkRef.current = syncGesturePark
 
         const cancelSearchRecentering = () => {
             for (const timer of searchTargetScrollTimersRef.current) {
@@ -1368,12 +1427,10 @@ export function HappyThread(props: {
         }
 
         const hasExplicitUpwardIntent = (intent: ScrollIntent): boolean => {
-            return intent.isScrollingUp && (
-                pointerResumeActive
-                || pointerResumeUntil >= Date.now()
-                || keyboardResumeActive
-                || wheelIntentUntil >= Date.now()
-            )
+            const now = Date.now()
+            const pointerIntent = (pointerResumeActive || pointerResumeUntil >= now) && !pointerBeganOnSkeleton
+            const wheelIntent = wheelIntentUntil >= now && !wheelBeganOnSkeleton
+            return intent.isScrollingUp && (pointerIntent || keyboardResumeActive || wheelIntent)
         }
 
         const consumeExplicitUpwardIntent = (intent: ScrollIntent): boolean => {
@@ -1583,6 +1640,7 @@ export function HappyThread(props: {
             pointerResumeActive = true
             pointerResumeUntil = 0
             pointerResumeLatched = false
+            pointerBeganOnSkeleton = gestureAimedAtSkeleton()
         }
 
         const handlePointerDown = (event: PointerEvent) => {
@@ -1624,6 +1682,7 @@ export function HappyThread(props: {
             pointerResumeActive = false
             pointerResumeUntil = 0
             pointerResumeLatched = false
+            pointerBeganOnSkeleton = false
         }
 
         const handlePointerCancel = (event: PointerEvent) => {
@@ -1639,6 +1698,7 @@ export function HappyThread(props: {
             }
             pointerResumeUntil = 0
             pointerResumeLatched = false
+            pointerBeganOnSkeleton = false
         }
 
         const handleWheel = (event: WheelEvent) => {
@@ -1647,6 +1707,9 @@ export function HappyThread(props: {
             keyboardResumeActive = false
             if (event.deltaY >= 0) {
                 wheelIntentUntil = 0
+                wheelBeganOnSkeleton = false
+                skeletonWheelUntil = 0
+                syncGesturePark()
                 return
             }
             // One trigger per gesture: a trackpad swipe is a burst of wheel
@@ -1656,9 +1719,27 @@ export function HappyThread(props: {
             const now = Date.now()
             if (now - lastWheelAt > WHEEL_GESTURE_GAP_MS) {
                 wheelLatched = false
+                // Where this gesture began decides whether it is intent at all.
+                // A swipe that started on the skeleton stays one gesture until
+                // the longer continuation gap says it is over.
+                if (gestureAimedAtSkeleton()) {
+                    wheelBeganOnSkeleton = true
+                } else if (
+                    !wheelBeganOnSkeleton
+                    || now - lastWheelAt > WHEEL_SKELETON_CONTINUATION_GAP_MS
+                ) {
+                    wheelBeganOnSkeleton = false
+                }
             }
             lastWheelAt = now
             wheelIntentUntil = now + WHEEL_GESTURE_GAP_MS
+            if (wheelBeganOnSkeleton) {
+                skeletonWheelUntil = now + WHEEL_SKELETON_CONTINUATION_GAP_MS
+                syncGesturePark()
+                // Not a request for older rows either: it was never aimed at
+                // the conversation.
+                return
+            }
             if (!needsViewportCoverageRef.current({ includePreloadMargin: true }) || wheelLatched) {
                 return
             }
@@ -1671,6 +1752,13 @@ export function HappyThread(props: {
             cancelSearchRecentering()
             keyboardResumeActive = false
             updatePullToLoadState('idle')
+            // A finger that comes down on the skeleton owns the pan until it
+            // lifts, wherever the rows land in between.
+            touchBeganOnSkeleton = gestureAimedAtSkeleton()
+            if (touchBeganOnSkeleton) {
+                skeletonTouchUntil = Number.POSITIVE_INFINITY
+                syncGesturePark()
+            }
             pullStartY = (
                 viewport.scrollTop <= 0
                 && hasMoreMessagesRef.current
@@ -1698,6 +1786,17 @@ export function HappyThread(props: {
             }
         }
 
+        const endSkeletonTouch = () => {
+            if (!touchBeganOnSkeleton) {
+                return
+            }
+            touchBeganOnSkeleton = false
+            // The fling a released finger leaves behind belongs to the same
+            // gesture; keep it out for the usual pointer-cancel window.
+            skeletonTouchUntil = Date.now() + POINTER_CANCEL_INTENT_WINDOW_MS
+            syncGesturePark()
+        }
+
         const handleTouchEnd = (event: TouchEvent) => {
             if (isNestedScrollEvent(event)) return
             const shouldLoad = pullStartY !== null
@@ -1705,6 +1804,7 @@ export function HappyThread(props: {
                 && viewport.scrollTop <= 0
             pullStartY = null
             updatePullToLoadState('idle')
+            endSkeletonTouch()
             if (shouldLoad) {
                 void requestOlderRef.current('user')
             }
@@ -1714,6 +1814,7 @@ export function HappyThread(props: {
             if (isNestedScrollEvent(event)) return
             pullStartY = null
             updatePullToLoadState('idle')
+            endSkeletonTouch()
         }
 
         const clearKeyboardIntent = () => {
@@ -1763,6 +1864,12 @@ export function HappyThread(props: {
             window.removeEventListener('pointercancel', handlePointerCancel)
             window.removeEventListener('blur', clearPointerIntent)
             window.removeEventListener('blur', clearKeyboardIntent)
+            if (parkTimer !== null) {
+                window.clearTimeout(parkTimer)
+                parkTimer = null
+            }
+            delete viewport.dataset.hapiGestureParked
+            syncGestureParkRef.current = () => {}
         }
     }, []) // Stable: no dependencies, reads from refs
 
@@ -1932,6 +2039,9 @@ export function HappyThread(props: {
             }
             scrollToBottomInstant()
         }, delay))
+        // The first rows just landed. A gesture that began on the skeleton and
+        // is still running must not dump its remainder on them.
+        syncGestureParkRef.current()
     }, [
         props.sessionId,
         props.initialTargetMessageId,
@@ -2960,6 +3070,7 @@ export function HappyThread(props: {
                 >
                     <div
                         ref={viewportRef}
+                        data-hapi-awaiting-tail={showSkeleton ? 'true' : undefined}
                         className="app-scroll-y chat-scroll-y scrollbar-auto-hide min-h-0 flex-1 overflow-x-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-link)]"
                         tabIndex={0}
                     >

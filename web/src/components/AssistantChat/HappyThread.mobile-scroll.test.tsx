@@ -516,6 +516,267 @@ describe('cached re-entry first frame', () => {
     })
 })
 
+describe('gesture that began on the loading skeleton', () => {
+    type ColdOpenProps = { isSyncingTail: boolean; rawMessagesCount: number; messagesVersion: number }
+
+    // A cold open: the skeleton is the only content until the tail page lands.
+    function renderColdOpenThread() {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const onViewModeChange = vi.fn()
+        let props: ColdOpenProps = { isSyncingTail: true, rawMessagesCount: 0, messagesVersion: 0 }
+        const renderHappyThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
+                        session={{ metadata: {} } as Session}
+                        sessionId="cold-open-session"
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={onViewModeChange}
+                        isSyncingTail={props.isSyncingTail}
+                        messagesWarning={null}
+                        hasMoreMessages={true}
+                        isLoadingMoreMessages={false}
+                        onLoadMore={vi.fn().mockResolvedValue({ status: 'exhausted' })}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={props.rawMessagesCount}
+                        normalizedMessagesCount={props.rawMessagesCount}
+                        messagesVersion={props.messagesVersion}
+                        historyVersion={0}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+        const result = render(renderHappyThread())
+        const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')
+        if (!viewport) {
+            throw new Error('Chat viewport was not rendered')
+        }
+        // The skeleton fits the viewport, so there is nothing to scroll until
+        // the rows land and the transcript becomes taller than the viewport.
+        let scrollHeight = 530
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, get: () => scrollHeight },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        const landRows = () => {
+            scrollHeight = 1_232
+            props = { isSyncingTail: false, rawMessagesCount: 1, messagesVersion: 1 }
+            result.rerender(renderHappyThread())
+            act(() => {
+                vi.advanceTimersByTime(0)
+            })
+        }
+        return {
+            ...result,
+            viewport,
+            onViewModeChange,
+            landRows,
+            rerenderThread: (next: Partial<ColdOpenProps>) => {
+                props = { ...props, ...next }
+                result.rerender(renderHappyThread())
+            }
+        }
+    }
+
+    it('keeps the loading viewport out of the scroll chain until the rows land', () => {
+        const { viewport, landRows } = renderColdOpenThread()
+
+        expect(viewport.getAttribute('data-hapi-awaiting-tail')).toBe('true')
+
+        landRows()
+
+        expect(viewport.getAttribute('data-hapi-awaiting-tail')).toBeNull()
+    })
+
+    it('re-pins a touch swipe that began on the skeleton once the rows land', () => {
+        const { viewport, onViewModeChange, landRows } = renderColdOpenThread()
+
+        const pointerDown = new Event('pointerdown', { bubbles: true })
+        Object.defineProperties(pointerDown, {
+            button: { value: 0 },
+            pointerType: { value: 'touch' }
+        })
+        fireEvent(viewport, pointerDown)
+        const pointerCancel = new Event('pointercancel', { bubbles: true })
+        Object.defineProperty(pointerCancel, 'pointerType', { value: 'touch' })
+        fireEvent(viewport, pointerCancel)
+
+        landRows()
+        expect(viewport.scrollTop).toBe(702)
+
+        // The pan is still in flight: its remaining movement reaches the rows.
+        viewport.scrollTop = 520
+        fireEvent.scroll(viewport)
+        expect(viewport.scrollTop).toBe(702)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(702)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+
+    it('re-pins a wheel burst that began on the skeleton once the rows land', () => {
+        const { viewport, onViewModeChange, landRows } = renderColdOpenThread()
+
+        fireEvent.wheel(viewport, { deltaY: -120 })
+        // Rendering the first rows stalls the main thread past the ordinary
+        // wheel gesture gap; for the trackpad it is still the same swipe.
+        act(() => {
+            vi.advanceTimersByTime(300)
+        })
+
+        landRows()
+        expect(viewport.scrollTop).toBe(702)
+
+        // Ticks of the same burst keep arriving after the initial bottom scroll.
+        fireEvent.wheel(viewport, { deltaY: -60 })
+        viewport.scrollTop = 640
+        fireEvent.scroll(viewport)
+        expect(viewport.scrollTop).toBe(702)
+        fireEvent.wheel(viewport, { deltaY: -40 })
+        viewport.scrollTop = 600
+        fireEvent.scroll(viewport)
+        expect(viewport.scrollTop).toBe(702)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(702)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+
+    it('parks the viewport while a skeleton wheel burst is still running, then releases it', () => {
+        const { viewport, landRows } = renderColdOpenThread()
+
+        fireEvent.wheel(viewport, { deltaY: -120 })
+
+        landRows()
+        expect(viewport.hasAttribute('data-hapi-awaiting-tail')).toBe(false)
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(true)
+
+        // The burst ended: the continuation gap passes and the viewport is
+        // handed back to the user.
+        act(() => {
+            vi.advanceTimersByTime(600)
+        })
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(false)
+    })
+
+    it('keeps the park through the gap between the first rows and the initial tail commit', () => {
+        const { viewport, rerenderThread, landRows } = renderColdOpenThread()
+
+        fireEvent.wheel(viewport, { deltaY: -120 })
+        // Rows are on screen but the tail sync has not settled yet.
+        rerenderThread({ rawMessagesCount: 1, messagesVersion: 1 })
+        expect(viewport.hasAttribute('data-hapi-awaiting-tail')).toBe(false)
+
+        // Ticks of the same swipe keep the viewport parked through that gap.
+        act(() => {
+            vi.advanceTimersByTime(100)
+        })
+        fireEvent.wheel(viewport, { deltaY: -60 })
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(true)
+        act(() => {
+            vi.advanceTimersByTime(500)
+        })
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(true)
+
+        // The commit caps the park by the initial settle window.
+        landRows()
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(true)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(false)
+    })
+
+    it('does not park for a burst that ended before the rows landed', () => {
+        const { viewport, landRows } = renderColdOpenThread()
+
+        fireEvent.wheel(viewport, { deltaY: -120 })
+        act(() => {
+            vi.advanceTimersByTime(700)
+        })
+
+        landRows()
+
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(false)
+    })
+
+    it('parks a touch that is still down when the rows land until it lifts and settles', () => {
+        const { viewport, landRows } = renderColdOpenThread()
+
+        fireEvent.touchStart(viewport, { target: viewport })
+        landRows()
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(true)
+
+        // A parked gesture never outlives the initial settle window.
+        act(() => {
+            vi.advanceTimersByTime(1_000)
+        })
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(true)
+
+        fireEvent.touchEnd(viewport, { target: viewport })
+        act(() => {
+            vi.advanceTimersByTime(400)
+        })
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(true)
+        act(() => {
+            vi.advanceTimersByTime(400)
+        })
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(false)
+    })
+
+    it('never keeps a parked touch past the initial settle window', () => {
+        const { viewport, landRows } = renderColdOpenThread()
+
+        fireEvent.touchStart(viewport, { target: viewport })
+        landRows()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.hasAttribute('data-hapi-gesture-parked')).toBe(false)
+    })
+
+    it('still follows a new upward gesture that begins after the rows land', () => {
+        const { viewport, onViewModeChange, landRows } = renderColdOpenThread()
+
+        fireEvent.wheel(viewport, { deltaY: -120 })
+        landRows()
+        expect(viewport.scrollTop).toBe(702)
+
+        // The burst above has ended (past the skeleton continuation gap): the
+        // next one is aimed at the conversation the user can now see.
+        act(() => {
+            vi.advanceTimersByTime(700)
+        })
+        fireEvent.wheel(viewport, { deltaY: -80 })
+        viewport.scrollTop = 520
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(520)
+        expect(onViewModeChange).toHaveBeenLastCalledWith('history')
+    })
+})
+
 describe('explicit tail scrolling', () => {
     it('renders the unread count inside the compact bottom control', () => {
         const { container } = renderThread(vi.fn(), 7)
