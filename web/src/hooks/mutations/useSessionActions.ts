@@ -1,16 +1,57 @@
 import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
 import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
+import { isAttachedJobDeleteConflict } from '@/lib/deleteSessionError'
 import { isKnownFlavor } from '@hapi/protocol'
 
 export const sessionModelMutationKey = (sessionId: string) => ['session-model', sessionId] as const
 export const sessionArchiveMutationKey = (sessionId: string | null) => ['session-archive', sessionId] as const
 export const sessionPinMutationKey = (sessionId: string | null) => ['session-pin', sessionId] as const
+
+export type DeleteSessionOptions = {
+    /**
+     * Clear every `running` attached job before deleting. The hub refuses the
+     * delete with 409 while a running job outlives the session, so the caller
+     * only sets this once its copy has told the operator about the job.
+     */
+    clearAttachedJobs?: boolean
+}
+
+/**
+ * `deleteSession` is also wired straight through as a dialog's `onConfirm`,
+ * which may hand it a React event or some other object. Only a plain object
+ * carrying a boolean `clearAttachedJobs` counts as options; everything else
+ * means "just delete".
+ */
+export function parseDeleteSessionOptions(input: unknown): DeleteSessionOptions {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+    const { clearAttachedJobs } = input as { clearAttachedJobs?: unknown }
+    return typeof clearAttachedJobs === 'boolean' ? { clearAttachedJobs } : {}
+}
+
+/**
+ * List the session's attached jobs and delete the `running` ones (tiann/hapi
+ * #1404). Terminal jobs are left alone — the hub only blocks on running ones.
+ * A job that vanished between list and delete (404) already reached the goal
+ * state; any other failure aborts before the session delete is attempted.
+ */
+export async function clearRunningAttachedJobs(api: ApiClient, sessionId: string): Promise<void> {
+    const { jobs } = await api.listSessionJobs(sessionId)
+    for (const job of jobs) {
+        if (job.status !== 'running') continue
+        try {
+            await api.deleteSessionJob(sessionId, job.key)
+        } catch (error) {
+            if (error instanceof ApiError && error.status === 404) continue
+            throw error
+        }
+    }
+}
 
 export function useSessionActions(
     api: ApiClient | null,
@@ -37,7 +78,7 @@ export function useSessionActions(
     suggestSessionTitle: () => Promise<string>
     updateSessionSummary: (text: string, titleLocked?: boolean) => Promise<void>
     setPinMode: (mode: 'none' | 'project' | 'global') => Promise<void>
-    deleteSession: () => Promise<void>
+    deleteSession: (options?: DeleteSessionOptions) => Promise<void>
     isPending: boolean
 } {
     const queryClient = useQueryClient()
@@ -316,10 +357,13 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
-    const deleteMutation = useMutation({
-        mutationFn: async () => {
+    const deleteMutation = useMutation<void, Error, DeleteSessionOptions>({
+        mutationFn: async (options) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
+            }
+            if (options.clearAttachedJobs) {
+                await clearRunningAttachedJobs(api, sessionId)
             }
             await api.deleteSession(sessionId)
         },
@@ -328,6 +372,14 @@ export function useSessionActions(
             queryClient.removeQueries({ queryKey: queryKeys.session(sessionId) })
             clearMessageWindow(sessionId)
             await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        },
+        onError: (error) => {
+            // The hub still saw a running attached job, so the summary this
+            // delete was confirmed against did not show it. Refresh the list
+            // so the dialog copy names the job before the operator retries.
+            if (isAttachedJobDeleteConflict(error)) {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+            }
         },
     })
 
@@ -351,7 +403,7 @@ export function useSessionActions(
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,
         updateSessionSummary: (text: string, titleLocked?: boolean) => summaryMutation.mutateAsync({ text, titleLocked }),
         setPinMode: pinMutation.mutateAsync,
-        deleteSession: deleteMutation.mutateAsync,
+        deleteSession: (options?: DeleteSessionOptions) => deleteMutation.mutateAsync(parseDeleteSessionOptions(options)),
         isPending: abortMutation.isPending
             || archiveMutation.isPending
             || reopenMutation.isPending

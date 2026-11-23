@@ -1,3 +1,4 @@
+import type { AttachedJob } from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import type {
     AttachmentMetadata,
@@ -1584,6 +1585,24 @@ export class ApiClient {
 
     async deleteSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+            method: 'DELETE'
+        })
+    }
+
+    /*
+     * Session-attached long-running jobs (tiann/hapi#1404).
+     *
+     * `attachedJob` on a SessionSummary is only the primary (earliest-started)
+     * running job; the full list is needed to clear every running job before
+     * a delete — the hub refuses DELETE /sessions/:id with 409 while any
+     * running job outlives the session.
+     */
+    async listSessionJobs(sessionId: string): Promise<{ jobs: AttachedJob[]; primary: AttachedJob | null }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/jobs`)
+    }
+
+    async deleteSessionJob(sessionId: string, jobKey: string): Promise<{ ok: true }> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(jobKey)}`, {
             method: 'DELETE'
         })
     }

@@ -220,6 +220,24 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/scratchlist-status')
     })
 
+    it('lists a session\'s attached jobs and clears one by key through the session-scoped job routes', async () => {
+        const job = {
+            key: 'import', label: 'Import', status: 'running', heartbeatAt: 1, startedAt: 1, updatedAt: 1
+        }
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ jobs: [job], primary: job }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.listSessionJobs('session 1')).resolves.toEqual({ jobs: [job], primary: job })
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%201/jobs')
+
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+        await expect(api.deleteSessionJob('session 1', 'import')).resolves.toEqual({ ok: true })
+        expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/session%201/jobs/import')
+        expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE' })
+    })
+
     it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
         fetchMock.mockImplementation(() => Promise.resolve(
             new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })

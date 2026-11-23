@@ -9,3 +9,17 @@ describe('question card locale strings', () => {
         }
     })
 })
+
+describe('delete-session attached job copy', () => {
+    const english: Record<string, string> = en
+    const dictionaries: Array<[string, Record<string, string>]> = [['zh-CN', zhCN], ['ru', ru], ['ja', ja]]
+    it.each(['dialog.delete.attachedJob', 'dialog.delete.attachedJobConflict'])(
+        'localizes %s in every shipped locale', (key) => {
+            expect(english[key], 'en should define the key').toBeTruthy()
+            for (const [locale, dict] of dictionaries) {
+                expect(dict[key], `${locale} should define the key`).toBeTruthy()
+                expect(dict[key], `${locale} should not ship the English copy`).not.toBe(english[key])
+            }
+        }
+    )
+})

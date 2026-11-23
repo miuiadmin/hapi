@@ -511,6 +511,8 @@ export default {
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
   'dialog.delete.scratchlist.one': '这也将删除 1 条草稿清单条目。',
   'dialog.delete.scratchlist.other': '这也将删除 {n} 条草稿清单条目。',
+  'dialog.delete.attachedJob': '该会话仍有一个运行中的长时间任务，删除会话将一并清除该任务。',
+  'dialog.delete.attachedJobConflict': '未删除：该会话仍有运行中的长时间任务。会话列表刷新后，删除提示中会出现任务警告，再次确认即可连同任务一并删除。',
   'dialog.delete.confirm': '删除',
   'dialog.delete.confirming': '删除中…',
   'dialog.delete.waitingForArchive': '等待归档完成…',

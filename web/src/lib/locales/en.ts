@@ -508,6 +508,8 @@ export default {
   'dialog.delete.description': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
   'dialog.delete.scratchlist.one': 'This will also delete 1 scratchlist entry.',
   'dialog.delete.scratchlist.other': 'This will also delete {n} scratchlist entries.',
+  'dialog.delete.attachedJob': 'This session still has a long-running job running. Deleting the session will also clear that job.',
+  'dialog.delete.attachedJobConflict': 'Not deleted: this session still has a running job. Once the session list refreshes, the delete prompt will mention the job — confirm again to clear it along with the session.',
   'dialog.delete.confirm': 'Delete',
   'dialog.delete.confirming': 'Deleting…',
   'dialog.delete.waitingForArchive': 'Waiting for archive to finish…',
