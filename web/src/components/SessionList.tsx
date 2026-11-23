@@ -1730,11 +1730,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         onSelect(s.id, undefined, undefined, pendingRequestId)
     }
     const sessionName = getSessionTitle(s)
-    // Same shape as the header's copy: base sentence, then one space-separated
-    // cascade sentence (tiann/hapi#893 scratchlist precedent).
-    const deleteDescription = `${t('dialog.delete.description', { name: sessionName })}${runningAttachedJob
-        ? ` ${t('dialog.delete.attachedJob')}`
-        : ''}`
     const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
     const linkedPr = useMemo(() => {
         if (!githubPrAwarenessEnabled || !primaryPrRef) return null
@@ -1977,7 +1972,13 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     isOpen={true}
                     sessionId={s.id}
                     onClose={() => setDeleteOpen(false)}
-                    description={deleteDescription}
+                    // Same shape as the header's copy: base sentence, then one
+                    // space-separated cascade sentence (#893 scratchlist
+                    // precedent). Built only while the dialog is open so the
+                    // list does not translate it for every row and render.
+                    description={`${t('dialog.delete.description', { name: sessionName })}${runningAttachedJob
+                        ? ` ${t('dialog.delete.attachedJob')}`
+                        : ''}`}
                     onConfirm={handleDelete}
                     isPending={isPending}
                 />
