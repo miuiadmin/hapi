@@ -9,7 +9,12 @@ import { useCallback, useEffect, useState } from 'react'
  * - all  — jobs + agent working/pending (UI: "Working & pending"; storage key
  *          stays `all` for migration). Quiet connected (socket up, idle) never floats.
  *
- * Unset / never configured defaults to `jobs` — the product stand for this capability.
+ * This fork keeps the section opt-in. Unset / never configured defaults to
+ * `off` (upstream stands on `jobs`, tiann/hapi#1424): sessions stay in their
+ * project directory groups and "Running" is only the row status. Devices that
+ * already carry upstream's default are restored once — see
+ * PIN_IN_PROGRESS_RESTORE_MARKER_KEY. After that a stored value is honoured as
+ * written; Settings → Display is the only thing that changes it.
  */
 
 export type PinInProgressMode = 'off' | 'jobs' | 'all'
@@ -17,9 +22,21 @@ export type PinInProgressMode = 'off' | 'jobs' | 'all'
 export const PIN_IN_PROGRESS_MODES: readonly PinInProgressMode[] = ['off', 'jobs', 'all'] as const
 
 /** New default when the preference has never been set. */
-export const DEFAULT_PIN_IN_PROGRESS_MODE: PinInProgressMode = 'jobs'
+export const DEFAULT_PIN_IN_PROGRESS_MODE: PinInProgressMode = 'off'
 
 export const PIN_IN_PROGRESS_STORAGE_KEY = 'hapi-pin-in-progress-sessions'
+
+/**
+ * One-time restore marker.
+ *
+ * Upstream #1424 wrote its own `jobs` default — and its mapping of the legacy
+ * switch's "on", `all` — under the very key a real choice uses, so a device
+ * cannot tell "never chosen" from "chosen". The first load of a build carrying
+ * this marker resets a stored `jobs` / `all` to `off`. From then on the marker
+ * is set and the stored value is honoured as written, including a deliberate
+ * `jobs` / `all` picked in Settings afterwards.
+ */
+export const PIN_IN_PROGRESS_RESTORE_MARKER_KEY = 'hapi-pin-in-progress-restored-v1'
 
 function isBrowser(): boolean {
     return typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -49,7 +66,7 @@ function safeSetItem(key: string, value: string): void {
 
 /**
  * Parse stored value.
- * - absent / null → `jobs` (capability default)
+ * - absent / null → `off` (fork default)
  * - legacy `true` → `all`
  * - legacy `false` → `off`
  * - `off` | `jobs` | `all` → as written
@@ -72,11 +89,20 @@ export function parsePinInProgressMode(raw: string | null): PinInProgressMode {
 
 export function getInitialPinInProgressMode(): PinInProgressMode {
     const raw = safeGetItem(PIN_IN_PROGRESS_STORAGE_KEY)
-    const mode = parsePinInProgressMode(raw)
-    // Persist so explicit Off is distinguishable from never-set→jobs.
-    // Legacy true/false also rewrite to all/off (upstream removed the key on false,
-    // so those users already look like unset — product stand maps them to jobs).
-    if (raw === null || raw === '' || raw === 'true' || raw === 'false') {
+    const stored = parsePinInProgressMode(raw)
+    let mode = stored
+    if (safeGetItem(PIN_IN_PROGRESS_RESTORE_MARKER_KEY) !== '1') {
+        safeSetItem(PIN_IN_PROGRESS_RESTORE_MARKER_KEY, '1')
+        // Reset only once the marker is confirmed stored: a browser that cannot
+        // persist it must not override a choice on every single load.
+        if ((raw === 'jobs' || raw === 'all') && safeGetItem(PIN_IN_PROGRESS_RESTORE_MARKER_KEY) === '1') {
+            mode = 'off'
+        }
+    }
+    // Persist what was resolved: a reset value, and the legacy true/false and
+    // never-set forms (upstream removed the key on false, so those devices
+    // already look like unset).
+    if (mode !== stored || raw === null || raw === '' || raw === 'true' || raw === 'false') {
         safeSetItem(PIN_IN_PROGRESS_STORAGE_KEY, mode)
     }
     return mode

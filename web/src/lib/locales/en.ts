@@ -1190,7 +1190,7 @@ export default {
   'settings.display.activeSessionsOnly': 'Active sessions only',
   'settings.display.activeSessionsOnly.desc': 'Hide inactive sessions except the session you have open and sessions with a running long-running job.',
   'settings.display.pinInProgressSessions': 'Pin in-progress sessions',
-  'settings.display.pinInProgressSessions.desc': 'How loudly sessions float to the top In progress section above project folders. Default is long-running jobs (outliving batch work with a session job meter). Global pins remain above it. Connected-but-idle sessions (hub socket up, agent not working and not waiting on you) stay in project folders in every mode — that is not in-progress work. Off keeps everything in directory groups.',
+  'settings.display.pinInProgressSessions.desc': 'How loudly sessions float to the top In progress section above project folders. Default is Off: every session stays in its directory group and Running is only the row status. Long-running jobs floats only outliving batch work with a session job meter; Working & pending also floats sessions the agent is working in or that wait on you. Global pins remain above it. Connected-but-idle sessions (hub socket up, agent not working and not waiting on you) stay in project folders in every mode — that is not in-progress work.',
   'settings.display.pinInProgressMode.off': 'Off',
   'settings.display.pinInProgressMode.jobs': 'Long-running jobs',
   'settings.display.pinInProgressMode.all': 'Working & pending',

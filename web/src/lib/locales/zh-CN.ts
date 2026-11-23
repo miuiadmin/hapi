@@ -1188,7 +1188,7 @@ export default {
   'settings.display.activeSessionsOnly': '仅显示活跃会话',
   'settings.display.activeSessionsOnly.desc': '隐藏非活跃会话，但当前打开的会话以及带有运行中长时间任务的会话仍会保留显示。',
   'settings.display.pinInProgressSessions': '置顶进行中会话',
-  'settings.display.pinInProgressSessions.desc': '侧边栏顶部「进行中」分区的置顶程度（位于项目目录分组之上）。默认为长时间任务（带会话 job 进度的后台批处理）。全局置顶仍在该分区之上。仅保持连接、智能体未在工作且未等待你操作的会话在任何模式下都留在项目目录中——那不是进行中的工作。关闭后全部保留在目录分组中。',
+  'settings.display.pinInProgressSessions.desc': '侧边栏顶部「进行中」分区的置顶程度（位于项目目录分组之上）。默认关闭：会话都留在各自的目录分组中，「运行中」只作为行内状态显示。「长时间任务」只浮起带会话 job 进度的后台批处理；「工作中与待处理」还会浮起智能体正在工作或等待你操作的会话。全局置顶仍在该分区之上。仅保持连接、智能体未在工作且未等待你操作的会话在任何模式下都留在项目目录中——那不是进行中的工作。',
   'settings.display.pinInProgressMode.off': '关闭',
   'settings.display.pinInProgressMode.jobs': '长时间任务',
   'settings.display.pinInProgressMode.all': '工作中与待处理',

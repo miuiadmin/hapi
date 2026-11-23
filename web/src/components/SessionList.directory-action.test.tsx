@@ -16,9 +16,15 @@ const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
 afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
-    // Explicit off — unset now defaults to `jobs` (session-attached jobs stand).
+    // Explicit off keeps the rest of this file independent of the default.
     localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
     localStorage.removeItem('hapi-session-list-machine-filter')
+})
+
+beforeEach(() => {
+    // This file picks the pin mode explicitly, so every suite here models a
+    // device that already went through the fork's one-time restore.
+    localStorage.setItem('hapi-pin-in-progress-restored-v1', '1')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -1220,7 +1226,7 @@ describe('SessionList collapse behavior', () => {
         expect(screen.queryByRole('button', { name: /Other machine task/ })).toBeNull()
     })
 
-    it('pins idle sessions with a running attachedJob when mode is jobs (default)', () => {
+    it('pins idle sessions with a running attachedJob when mode is jobs', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
         const sessions = [
             makeSession({
@@ -1254,6 +1260,74 @@ describe('SessionList collapse behavior', () => {
         // Thinking agent is not a long-running job — stays in directory under jobs mode.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
+    })
+
+    it('keeps job and working sessions in their directory groups when the preference was never set (fork default)', () => {
+        localStorage.removeItem('hapi-pin-in-progress-sessions')
+        const sessions = [
+            makeSession({
+                id: 'session-beets',
+                active: false,
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Music drain', flavor: 'claude' },
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets import',
+                    status: 'running',
+                    remaining: 12,
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+            makeSession({
+                id: 'session-thinking',
+                active: true,
+                thinking: true,
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Thinking agent', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        // Fork default: no In progress section — every row stays under its own
+        // project group, "Running" is only the row status. An inactive group is
+        // collapsed until opened; the job session lives in /music, not on top.
+        expect(screen.queryByTitle('In progress')).toBeNull()
+        fireEvent.click(screen.getByTitle('/music'))
+        expect(screen.getByRole('button', { name: /Music drain/ })).toBeInTheDocument()
+        expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
+    })
+
+    it.each(['jobs', 'all'] as const)('restores a device stuck on the stored %s: nothing floats on the first load', (stored) => {
+        // Upstream #1424 persisted these under the same key a real choice uses.
+        localStorage.setItem('hapi-pin-in-progress-sessions', stored)
+        localStorage.removeItem('hapi-pin-in-progress-restored-v1')
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Running task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-pending',
+                active: true,
+                pendingRequestsCount: 1,
+                updatedAt: 90,
+                metadata: { path: '/work/other', name: 'Pending task', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.queryByTitle('In progress')).toBeNull()
+        expect(localStorage.getItem('hapi-pin-in-progress-sessions')).toBe('off')
+        expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Running task/ })).toBeInTheDocument()
+        expect(screen.getByTitle('/work/other')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Pending task/ })).toBeInTheDocument()
     })
 
     it('keeps a real agent turn in Running when a job is also attached (#1553)', () => {
