@@ -448,6 +448,8 @@ export default {
   'dialog.delete.description': '「{name}」を削除してもよろしいですか？この操作は元に戻せません。',
   'dialog.delete.scratchlist.one': 'スクラッチリストの項目 1 件も削除されます。',
   'dialog.delete.scratchlist.other': 'スクラッチリストの項目 {n} 件も削除されます。',
+  'dialog.delete.attachedJob': 'このセッションには実行中の長時間ジョブが残っています。セッションを削除すると、そのジョブもクリアされます。',
+  'dialog.delete.attachedJobConflict': '削除できませんでした：このセッションには実行中のジョブが残っています。セッション一覧が更新されると削除確認にジョブの警告が表示されるので、もう一度確認するとジョブごと削除されます。',
   'dialog.delete.confirm': '削除',
   'dialog.delete.confirming': '削除中…',
   'dialog.delete.waitingForArchive': 'アーカイブの完了を待っています…',

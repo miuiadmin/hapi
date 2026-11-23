@@ -138,6 +138,7 @@ import {
 } from '@/lib/sessionLastSeen'
 import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { formatReopenError } from '@/lib/reopenError'
+import { formatDeleteSessionError } from '@/lib/deleteSessionError'
 import { resolveCursorReopenGate } from '@/lib/sessionResume'
 import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
@@ -1547,6 +1548,18 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         return () => holdPanel(false)
     }, [overlayOpen, holdPanel])
 
+    // tiann/hapi#1404: a running attached job outlives the session and makes
+    // the hub refuse the delete (409). The row's summary carries it, so the
+    // confirm copy can name it and the delete can clear it first.
+    const runningAttachedJob = s.attachedJob?.status === 'running'
+    const handleDelete = async () => {
+        try {
+            await deleteSession({ clearAttachedJobs: runningAttachedJob })
+        } catch (error) {
+            throw new Error(formatDeleteSessionError(error, t))
+        }
+    }
+
     const handleSetPinMode = async (mode: 'none' | 'project' | 'global') => {
         try {
             await setPinMode(mode)
@@ -1717,6 +1730,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         onSelect(s.id, undefined, undefined, pendingRequestId)
     }
     const sessionName = getSessionTitle(s)
+    // Same shape as the header's copy: base sentence, then one space-separated
+    // cascade sentence (tiann/hapi#893 scratchlist precedent).
+    const deleteDescription = `${t('dialog.delete.description', { name: sessionName })}${runningAttachedJob
+        ? ` ${t('dialog.delete.attachedJob')}`
+        : ''}`
     const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
     const linkedPr = useMemo(() => {
         if (!githubPrAwarenessEnabled || !primaryPrRef) return null
@@ -1959,8 +1977,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     isOpen={true}
                     sessionId={s.id}
                     onClose={() => setDeleteOpen(false)}
-                    description={t('dialog.delete.description', { name: sessionName })}
-                    onConfirm={deleteSession}
+                    description={deleteDescription}
+                    onConfirm={handleDelete}
                     isPending={isPending}
                 />
             ) : null}

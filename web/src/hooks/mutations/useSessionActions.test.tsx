@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
+import type { AttachedJob } from '@hapi/protocol'
 import { useSessionActions } from './useSessionActions'
 import { ApiError, type ApiClient } from '@/api/client'
 
@@ -259,5 +260,163 @@ describe('useSessionActions - setModelReasoningEffort', () => {
             await result.current.setModelReasoningEffort('high')
         })).rejects.toThrow('Model reasoning effort is only supported for Codex, OpenCode, DSH, and Hermes sessions')
         expect(api.setModelReasoningEffort).not.toHaveBeenCalled()
+    })
+})
+
+describe('useSessionActions - deleteSession', () => {
+    function createAttachedJob(key: string, status: AttachedJob['status']): AttachedJob {
+        return {
+            key,
+            label: `Job ${key}`,
+            status,
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1
+        }
+    }
+
+    function createDeleteApi(jobs: AttachedJob[] = []) {
+        const calls: string[] = []
+        const listSessionJobs = vi.fn(async () => {
+            calls.push('list')
+            return { jobs, primary: jobs.find((job) => job.status === 'running') ?? null }
+        })
+        const deleteSessionJob = vi.fn(async (_sessionId: string, jobKey: string) => {
+            calls.push(`clear:${jobKey}`)
+            return { ok: true as const }
+        })
+        const deleteSession = vi.fn(async () => {
+            calls.push('delete')
+        })
+        const api = { listSessionJobs, deleteSessionJob, deleteSession } as unknown as ApiClient
+        return { api, listSessionJobs, deleteSessionJob, deleteSession, calls }
+    }
+
+    it('deletes without touching attached jobs when not asked', async () => {
+        const state = createDeleteApi([createAttachedJob('import', 'running')])
+        const { result } = renderHook(() => useSessionActions(state.api, 'session-A'), { wrapper: createWrapper() })
+
+        await act(async () => { await result.current.deleteSession() })
+
+        expect(state.deleteSession).toHaveBeenCalledOnce()
+        expect(state.deleteSession).toHaveBeenCalledWith('session-A')
+        expect(state.listSessionJobs).not.toHaveBeenCalled()
+        expect(state.deleteSessionJob).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        ['undefined', undefined],
+        ['a click event', { type: 'click', preventDefault: vi.fn(), stopPropagation: vi.fn() }],
+        ['an unrelated object', { confirm: true, clearAttachedJobs: 'yes' }],
+        ['an array', ['clearAttachedJobs']]
+    ])('ignores %s handed through as onConfirm and just deletes', async (_label, argument) => {
+        const state = createDeleteApi([createAttachedJob('import', 'running')])
+        const { result } = renderHook(() => useSessionActions(state.api, 'session-A'), { wrapper: createWrapper() })
+
+        await act(async () => {
+            await (result.current.deleteSession as (options?: unknown) => Promise<void>)(argument)
+        })
+
+        expect(state.listSessionJobs).not.toHaveBeenCalled()
+        expect(state.deleteSessionJob).not.toHaveBeenCalled()
+        expect(state.deleteSession).toHaveBeenCalledOnce()
+    })
+
+    it('clears only the running jobs, in list order, before deleting the session', async () => {
+        const state = createDeleteApi([
+            createAttachedJob('sync', 'completed'),
+            createAttachedJob('import', 'running'),
+            createAttachedJob('report', 'failed'),
+            createAttachedJob('export', 'running')
+        ])
+        const { result } = renderHook(() => useSessionActions(state.api, 'session-A'), { wrapper: createWrapper() })
+
+        await act(async () => { await result.current.deleteSession({ clearAttachedJobs: true }) })
+
+        expect(state.listSessionJobs).toHaveBeenCalledOnce()
+        expect(state.listSessionJobs).toHaveBeenCalledWith('session-A')
+        expect(state.deleteSessionJob.mock.calls).toEqual([
+            ['session-A', 'import'],
+            ['session-A', 'export']
+        ])
+        expect(state.deleteSession).toHaveBeenCalledOnce()
+        expect(state.deleteSession).toHaveBeenCalledWith('session-A')
+        expect(state.calls).toEqual(['list', 'clear:import', 'clear:export', 'delete'])
+        expect(result.current.isPending).toBe(false)
+    })
+
+    it('skips a job that vanished before it could be cleared', async () => {
+        const state = createDeleteApi([createAttachedJob('import', 'running'), createAttachedJob('export', 'running')])
+        state.deleteSessionJob.mockImplementationOnce(async () => {
+            throw new ApiError('HTTP 404 Not Found: {"error":"Job not found"}', 404, 'Job not found', '{"error":"Job not found"}')
+        })
+        const { result } = renderHook(() => useSessionActions(state.api, 'session-A'), { wrapper: createWrapper() })
+
+        await act(async () => { await result.current.deleteSession({ clearAttachedJobs: true }) })
+
+        // The 404 is tolerated and the remaining running job is still cleared.
+        expect(state.deleteSessionJob.mock.calls).toEqual([
+            ['session-A', 'import'],
+            ['session-A', 'export']
+        ])
+        expect(state.deleteSession).toHaveBeenCalledOnce()
+    })
+
+    it('does not delete the session when clearing a job fails', async () => {
+        const state = createDeleteApi([createAttachedJob('import', 'running')])
+        state.deleteSessionJob.mockImplementationOnce(async () => {
+            throw new ApiError('HTTP 500 Internal Server Error: {"error":"db locked"}', 500, 'db locked', '{"error":"db locked"}')
+        })
+        const { result } = renderHook(() => useSessionActions(state.api, 'session-A'), { wrapper: createWrapper() })
+
+        await expect(act(async () => { await result.current.deleteSession({ clearAttachedJobs: true }) }))
+            .rejects.toThrow('db locked')
+
+        expect(state.deleteSession).not.toHaveBeenCalled()
+        await waitFor(() => expect(result.current.isPending).toBe(false))
+    })
+
+    it('throws when api or sessionId is missing', async () => {
+        const { result } = renderHook(() => useSessionActions(null, null), { wrapper: createWrapper() })
+
+        await expect(result.current.deleteSession({ clearAttachedJobs: true })).rejects.toThrow('Session unavailable')
+    })
+
+    function attachedJobConflict() {
+        const body = '{"error":"Cannot delete a session while an attached job is running. Complete or clear it first."}'
+        return new ApiError(`HTTP 409 Conflict: ${body}`, 409,
+            'Cannot delete a session while an attached job is running. Complete or clear it first.', body)
+    }
+
+    it('marks the session list stale when the hub still rejects the delete for a running job', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+        })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        const api = { deleteSession: vi.fn(async () => { throw attachedJobConflict() }) } as unknown as ApiClient
+        const { result } = renderHook(() => useSessionActions(api, 'session-A'), { wrapper: createWrapper(queryClient) })
+
+        await expect(act(async () => { await result.current.deleteSession() }))
+            .rejects.toBeInstanceOf(ApiError)
+
+        // Nothing is cleared behind the operator's back; the list is refreshed
+        // so the confirm copy can name the job before a retry.
+        expect(api.listSessionJobs).toBeUndefined()
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    })
+
+    it('does not refresh the list for other delete failures', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+        })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        const api = { deleteSession: vi.fn(async () => {
+            throw new ApiError('HTTP 500 Internal Server Error: {"error":"boom"}', 500, 'boom', '{"error":"boom"}')
+        }) } as unknown as ApiClient
+        const { result } = renderHook(() => useSessionActions(api, 'session-A'), { wrapper: createWrapper(queryClient) })
+
+        await expect(act(async () => { await result.current.deleteSession() })).rejects.toThrow('boom')
+
+        expect(invalidate).not.toHaveBeenCalled()
     })
 })

@@ -13,6 +13,8 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { useScratchlistCount } from '@/lib/use-scratchlist-count'
+import { formatDeleteSessionError } from '@/lib/deleteSessionError'
+import { useSessionListAttachedJob } from '@/hooks/queries/useSessionListAttachedJob'
 import { formatReopenError } from '@/lib/reopenError'
 import { formatReasoningLabel, getReasoningEffortForFlavor } from '@/lib/codexStatusLabels'
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
@@ -307,9 +309,26 @@ export function SessionHeader(props: {
     // confirm. Read-only hook reuses the cache filled by SessionChat -
     // no extra network when both components are mounted.
     const scratchlistCount = useScratchlistCount(session.id, api)
+    // The detail `session` carries no attached job; the list row does, and
+    // the hub refuses to delete while a running job outlives the session.
+    const hasRunningAttachedJob = useSessionListAttachedJob(session.id)?.status === 'running'
+    const deleteDescription = `${scratchlistCount > 0
+        ? `${t('dialog.delete.description', { name: title })} ${t(
+            scratchlistCount === 1
+                ? 'dialog.delete.scratchlist.one'
+                : 'dialog.delete.scratchlist.other',
+            { n: String(scratchlistCount) }
+        )}`
+        : t('dialog.delete.description', { name: title })}${hasRunningAttachedJob
+        ? ` ${t('dialog.delete.attachedJob')}`
+        : ''}`
 
     const handleDelete = async () => {
-        await deleteSession()
+        try {
+            await deleteSession({ clearAttachedJobs: hasRunningAttachedJob })
+        } catch (error) {
+            throw new Error(formatDeleteSessionError(error, t))
+        }
         onSessionDeleted?.()
     }
 
@@ -672,16 +691,7 @@ export function SessionHeader(props: {
                 isOpen={deleteOpen}
                 sessionId={session.id}
                 onClose={() => setDeleteOpen(false)}
-                description={
-                    scratchlistCount > 0
-                        ? `${t('dialog.delete.description', { name: title })} ${t(
-                            scratchlistCount === 1
-                                ? 'dialog.delete.scratchlist.one'
-                                : 'dialog.delete.scratchlist.other',
-                            { n: String(scratchlistCount) }
-                        )}`
-                        : t('dialog.delete.description', { name: title })
-                }
+                description={deleteDescription}
                 onConfirm={handleDelete}
                 isPending={isPending}
             />
