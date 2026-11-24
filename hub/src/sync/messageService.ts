@@ -22,6 +22,8 @@ import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
+import { countConversationRows } from './conversationRows'
+import { MESSAGES_PAGE_MAX } from '@hapi/protocol/apiTypes'
 import { extractInlineImagePreview, type InlineImagePreview } from './attachmentPreviews'
 import { JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX } from './sessionJobWake'
 
@@ -422,6 +424,7 @@ export class MessageService {
             after?: MessagePosition | null
             until?: MessagePosition | null
             epoch?: number | null
+            minConversation?: number
         }
     ): MessagesResponse {
         const epoch = this.store.messages.getMessageEpoch(sessionId)
@@ -437,13 +440,22 @@ export class MessageService {
                 epoch
             )
         }
-        return this.getLatestOrBeforeMessagesPage(
-            sessionId,
-            options.limit,
-            options.before ?? null,
-            epoch,
-            false
-        )
+        const before = options.before ?? null
+        const page = this.getLatestOrBeforeMessagesPage(sessionId, options.limit, before, epoch, false)
+        if (
+            options.minConversation !== undefined
+            && before === null
+            && !page.page.reset
+            && page.page.hasMore
+            && options.limit < MESSAGES_PAGE_MAX
+            && countConversationRows(page.messages) < options.minConversation
+        ) {
+            // The newest rows are pure tool activity, which the web folds into
+            // one collapsed card: answer with the full page so the client does
+            // not need a second, serial request for the context before first paint.
+            return this.getLatestOrBeforeMessagesPage(sessionId, MESSAGES_PAGE_MAX, null, epoch, false)
+        }
+        return page
     }
 
     private getLatestOrBeforeMessagesPage(

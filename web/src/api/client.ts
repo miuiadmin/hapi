@@ -1,5 +1,6 @@
 import type { AttachedJob } from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { MESSAGES_PAGE_MAX } from '@hapi/protocol/apiTypes'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -256,6 +257,9 @@ export class ApiError extends Error {
         this.body = body
     }
 }
+
+/** Conversation rows a short latest page must contain before the hub stops widening it. */
+export const FIRST_PAINT_MIN_CONVERSATION = 1
 
 export class ApiClient {
     private token: string
@@ -642,6 +646,10 @@ export class ApiClient {
             untilAt?: number | null
             epoch?: number | null
             limit?: number
+            /** Latest pages only: the hub widens the page to the full size when
+             *  fewer than this many conversation rows are in it (tool-only tail).
+             *  Short latest pages ask for one conversation row unless told otherwise. */
+            minConversation?: number
         }
     ): Promise<MessagesResponse> {
         const params = new URLSearchParams()
@@ -668,6 +676,17 @@ export class ApiClient {
         }
         if (options.limit !== undefined && options.limit !== null) {
             params.set('limit', `${options.limit}`)
+        }
+        // A short latest page is a first paint. When its rows are all tool
+        // activity — which the web folds into one collapsed card — the hub
+        // answers with the full-size page instead, and the client need not make
+        // a second, serial request for the context before anything can show.
+        // Full pages and cursor pages are left alone; older hubs ignore the flag.
+        const shortPage = options.limit !== undefined && options.limit !== null && options.limit < MESSAGES_PAGE_MAX
+        const latestPage = !params.has('beforeAt') && !params.has('afterAt') && !params.has('untilAt')
+        const minConversation = options.minConversation ?? (shortPage && latestPage ? FIRST_PAINT_MIN_CONVERSATION : undefined)
+        if (minConversation !== undefined) {
+            params.set('minConversation', `${minConversation}`)
         }
 
         const qs = params.toString()

@@ -742,8 +742,19 @@ export const DeleteUploadRequestSchema = z.object({
 
 export type DeleteUploadRequest = z.infer<typeof DeleteUploadRequestSchema>
 
+/** Largest message page the hub serves. */
+export const MESSAGES_PAGE_MAX = 200
+
 export const MessagesQuerySchema = z.object({
-    limit: z.coerce.number().int().min(1).max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX).optional(),
+    /**
+     * Latest pages only. When fewer than this many conversation rows (user
+     * prompts, assistant text, reasoning) are among the requested rows and
+     * older rows exist, the hub answers with the full-size page instead: a tail
+     * made of pure tool activity renders as one collapsed card, and the client
+     * would otherwise need a second, serial round trip for the context.
+     */
+    minConversation: z.coerce.number().int().min(1).max(50).optional(),
     beforeSeq: z.coerce.number().int().min(1).optional(),
     beforeAt: z.coerce.number().int().min(0).optional(),
     afterSeq: z.coerce.number().int().min(1).optional(),
@@ -752,6 +763,10 @@ export const MessagesQuerySchema = z.object({
     untilAt: z.coerce.number().int().min(0).optional(),
     epoch: z.coerce.number().int().min(0).optional(),
 })
+    .refine((data) => data.minConversation === undefined || (data.beforeAt === undefined && data.afterAt === undefined), {
+        message: 'minConversation requires a latest page',
+        path: ['minConversation'],
+    })
     .refine((data) => (data.beforeAt === undefined) === (data.beforeSeq === undefined), {
         message: 'beforeAt and beforeSeq must be provided together',
         path: ['beforeAt'],

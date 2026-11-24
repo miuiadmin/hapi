@@ -665,3 +665,54 @@ describe('ApiClient auth proxy redirect', () => {
             .resolves.toEqual({ ok: true, reason: undefined })
     })
 })
+
+describe('ApiClient message paging: a short latest page asks the hub for context', () => {
+    let originalFetch: typeof globalThis.fetch
+    let fetchMock: ReturnType<typeof vi.fn>
+    const emptyPage = () => new Response(
+        JSON.stringify({ success: true, data: { messages: [], page: { hasMore: false } } }),
+        { status: 200 }
+    )
+    const urlOf = (call: number) => String(fetchMock.mock.calls[call]?.[0])
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch
+        fetchMock = vi.fn().mockImplementation(() => Promise.resolve(emptyPage()))
+        globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it('asks the hub to widen a short latest page when it holds no conversation row', async () => {
+        const api = new ApiClient('test-token')
+        await api.getMessages('session-1', { limit: 20 })
+
+        // A tail of pure tool activity renders as one collapsed card; the hub then
+        // answers with the full page, sparing a second, serial context request.
+        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=20&minConversation=1')
+    })
+
+    it('leaves full pages, cursor pages and unbounded requests alone', async () => {
+        const api = new ApiClient('test-token')
+        await api.getMessages('session-1', { limit: 200 })
+        await api.getMessages('session-1', { beforeAt: 10, beforeSeq: 10, limit: 200 })
+        await api.getMessages('session-1', { afterAt: 5, afterSeq: 5, epoch: 1, limit: 200 })
+        await api.getMessages('session-1', { afterAt: 5, afterSeq: 5, untilAt: 9, untilSeq: 9, limit: 20 })
+        await api.getMessages('session-1', {})
+
+        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=200')
+        expect(urlOf(1)).toBe('/api/sessions/session-1/messages?beforeAt=10&beforeSeq=10&limit=200')
+        expect(urlOf(2)).toBe('/api/sessions/session-1/messages?afterAt=5&afterSeq=5&epoch=1&limit=200')
+        expect(urlOf(3)).toBe('/api/sessions/session-1/messages?afterAt=5&afterSeq=5&untilAt=9&untilSeq=9&limit=20')
+        expect(urlOf(4)).toBe('/api/sessions/session-1/messages')
+    })
+
+    it('honours an explicit threshold', async () => {
+        const api = new ApiClient('test-token')
+        await api.getMessages('session-1', { limit: 200, minConversation: 4 })
+
+        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=200&minConversation=4')
+    })
+})
