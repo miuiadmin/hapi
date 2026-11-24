@@ -165,7 +165,7 @@ export const HappyUserMessage = memo(function HappyUserMessage() {
                             <summary className="cursor-pointer">{t('branch.importedReference')}</summary>
                             <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words">{importedReference}</pre>
                         </details> : null}
-                        {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
+                        {hasAttachments ? <MessageAttachments attachments={attachments} messageId={sourceMessageId} /> : null}
                     </div>
                     {showStatus && (
                         <div className="happy-message-actions-first-line flex shrink-0 items-center gap-1">

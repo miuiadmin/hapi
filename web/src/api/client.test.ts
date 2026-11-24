@@ -589,8 +589,26 @@ describe('ApiClient auth proxy redirect', () => {
         {
             name: 'fetchScratchlistAttachmentBlob',
             run: (api) => api.fetchScratchlistAttachmentBlob('session-1', 'attachment-1')
+        },
+        {
+            name: 'fetchMessageAttachmentPreviewBlob',
+            run: (api) => api.fetchMessageAttachmentPreviewBlob('session-1', 'message-1', 'attachment-1')
         }
     ]
+
+    it('fetchMessageAttachmentPreviewBlob requests the on-demand preview route and returns the image bytes', async () => {
+        fetchMock.mockResolvedValueOnce(new Response('jpeg-bytes', { status: 200, headers: { 'Content-Type': 'image/jpeg' } }))
+        const controller = new AbortController()
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        const blob = await api.fetchMessageAttachmentPreviewBlob('session-1', 'message-1', 'attachment-1', controller.signal)
+
+        expect(blob.size).toBe('jpeg-bytes'.length)
+        expect(fetchMock.mock.calls[0][0]).toBe(
+            'https://hub.example/api/sessions/session-1/messages/message-1/attachments/attachment-1/preview'
+        )
+        expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'manual', signal: controller.signal })
+    })
 
     it.each(callSites)('$name rejects with AuthProxyRedirectError', async ({ run }) => {
         fetchMock

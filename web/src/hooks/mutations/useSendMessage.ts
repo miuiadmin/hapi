@@ -12,6 +12,7 @@ import {
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { getRetryDeliveryMode } from '@/lib/messageDelivery'
+import { rehydrateAttachmentPreviews } from '@/lib/attachmentPreviews'
 import { telemetryClient } from '@/lib/telemetryClient'
 import { noteSendSettled } from '@/chat/turnLatency'
 
@@ -209,6 +210,8 @@ export function useSendMessage(
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
     const resolveGuardRef = useRef(false)
+    /** Local ids whose retry is fetching a stripped image preview before re-sending. */
+    const hydratingRetriesRef = useRef(new Set<string>())
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
 
@@ -414,7 +417,7 @@ export function useSendMessage(
             haptic.notification('error')
             return false
         }
-        if (mutation.isPending || resolveGuardRef.current) {
+        if (mutation.isPending || resolveGuardRef.current || hydratingRetriesRef.current.has(localId)) {
             options?.onBlocked?.('pending')
             return false
         }
@@ -422,17 +425,36 @@ export function useSendMessage(
         const message = findMessageByLocalId(sessionId, localId)
         if (!message?.originalText) return false
 
+        const attachments = getMessageAttachments(message)
         updateMessageStatus(sessionId, localId, 'sending')
 
-        mutation.mutate({
-            sessionId,
-            text: message.originalText,
-            localId,
-            createdAt: message.createdAt,
-            attachments: getMessageAttachments(message),
-            scheduledAt: message.scheduledAt ?? null,
-            deliveryMode: getRetryDeliveryMode(getMessageDeliveryMode(message)),
-        })
+        // Captured for the deferred retry below (narrowing does not cross into it).
+        const session = sessionId
+        const text = message.originalText
+        const retry = (withAttachments: AttachmentMetadata[] | undefined) => {
+            mutation.mutate({
+                sessionId: session,
+                text,
+                localId,
+                createdAt: message.createdAt,
+                attachments: withAttachments,
+                scheduledAt: message.scheduledAt ?? null,
+                deliveryMode: getRetryDeliveryMode(getMessageDeliveryMode(message)),
+            })
+        }
+
+        if (!attachments?.some((attachment) => attachment.hasPreview === true && !attachment.previewUrl)) {
+            retry(attachments)
+            return true
+        }
+
+        // Message pages leave large image previews out, and the CLI rebuilds
+        // the file from `previewUrl`: fetch it back before the retry goes out,
+        // or the retried send would drop the screenshot.
+        hydratingRetriesRef.current.add(localId)
+        void rehydrateAttachmentPreviews(api, session, message.id ?? localId, attachments)
+            .then(retry)
+            .finally(() => hydratingRetriesRef.current.delete(localId))
         return true
     }
 

@@ -3,6 +3,7 @@ import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+import { stripLargeInlineImagePreviews } from '../../sync/attachmentPreviews'
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -34,13 +35,47 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const until = parsed.data.untilAt !== undefined && parsed.data.untilSeq !== undefined
             ? { at: parsed.data.untilAt, seq: parsed.data.untilSeq }
             : null
-        return c.json(engine.getMessagesPage(sessionId, {
+        const page = engine.getMessagesPage(sessionId, {
             limit,
             before,
             after,
             until,
             epoch: parsed.data.epoch ?? null
-        }))
+        })
+        // Large inline image previews do not ride along on pages; the web
+        // fetches them on demand from the attachment preview route below.
+        return c.json({ ...page, messages: stripLargeInlineImagePreviews(page.messages) })
+    })
+
+    app.get('/sessions/:id/messages/:messageId/attachments/:attachmentId/preview', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const preview = engine.getMessageAttachmentPreview(
+            sessionResult.sessionId,
+            c.req.param('messageId'),
+            c.req.param('attachmentId')
+        )
+        if (!preview) {
+            return c.json({ error: 'Attachment preview not found' }, 404)
+        }
+        return new Response(preview.data, {
+            headers: {
+                'Content-Type': preview.mimeType,
+                'Content-Length': String(preview.data.byteLength),
+                'X-Content-Type-Options': 'nosniff',
+                // Message content is immutable, so the browser keeps the image
+                // across every later page refetch of the same session.
+                'Cache-Control': 'private, max-age=31536000, immutable',
+            },
+        })
     })
 
     app.get('/sessions/:id/messages/:messageId/context', async (c) => {
@@ -54,7 +89,11 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
-        return c.json(engine.getMessageContext(sessionResult.sessionId, c.req.param('messageId')))
+        const context = engine.getMessageContext(sessionResult.sessionId, c.req.param('messageId'))
+        if (!context) {
+            return c.json(context)
+        }
+        return c.json({ ...context, messages: stripLargeInlineImagePreviews(context.messages) })
     })
 
     app.delete('/sessions/:id/messages/:messageId', async (c) => {

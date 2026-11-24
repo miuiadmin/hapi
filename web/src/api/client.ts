@@ -1668,6 +1668,36 @@ export class ApiClient {
         return await response.blob()
     }
 
+    /**
+     * Inline image preview of one message attachment. Large previews are left
+     * out of message pages (the hub marks them `hasPreview`) so a pasted
+     * screenshot is not re-downloaded with every page refetch; this fetches
+     * the bytes when the message scrolls into view.
+     */
+    async fetchMessageAttachmentPreviewBlob(
+        sessionId: string,
+        messageId: string,
+        attachmentId: string,
+        signal?: AbortSignal
+    ): Promise<Blob> {
+        const headers = new Headers()
+        const liveToken = this.getToken ? this.getToken() : null
+        const authToken = liveToken ?? this.token
+        if (authToken) {
+            headers.set('authorization', `Bearer ${authToken}`)
+        }
+        const response = await fetchThroughAuthProxy(
+            this.buildUrl(
+                `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/preview`
+            ),
+            { headers, signal }
+        )
+        if (!response.ok) {
+            throw new ApiError(`Failed to fetch attachment preview (${response.status})`, response.status)
+        }
+        return await response.blob()
+    }
+
     async deleteScratchlistAttachment(sessionId: string, attachmentId: string): Promise<void> {
         await this.request(
             `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/attachments/${encodeURIComponent(attachmentId)}`,
