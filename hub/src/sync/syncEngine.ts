@@ -725,6 +725,7 @@ export class SyncEngine {
             after?: { at: number; seq: number } | null
             until?: { at: number; seq: number } | null
             epoch?: number | null
+            minConversation?: number
         }
     ): MessagesResponse {
         return this.messageService.getMessagesPage(sessionId, options)

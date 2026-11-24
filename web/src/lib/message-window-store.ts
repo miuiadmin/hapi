@@ -9,6 +9,7 @@ import type { NormalizedMessage } from '@/chat/types'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 import { telemetryClient } from '@/lib/telemetryClient'
+import { cancelSessionOpenSettle, noteSessionOpenPage, noteSessionOpenSync } from '@/lib/sessionOpenTrace'
 
 export type MessageViewMode = 'tail' | 'history'
 
@@ -1141,6 +1142,8 @@ function beginTailSync(sessionId: string): number {
             warning: null
         })
     })
+    // Open timeline (developer mode): a sync is in flight, so the open is not settled.
+    cancelSessionOpenSettle()
     return generation
 }
 
@@ -1162,6 +1165,17 @@ function finishTailSync(sessionId: string, generation: number, warning: string |
     if (!applied) {
         return
     }
+    // Open timeline (developer mode): this sync is done. The open settles only
+    // when the sync left the window tail-current.
+    const settledState = getState(sessionId)
+    noteSessionOpenSync(
+        sessionId,
+        !settledState.isSyncingTail
+            && !settledState.pendingGapRecovery
+            && !settledState.preferLatestOnActivation
+            && settledState.warning === null,
+        settledState.messages.length
+    )
     // Observation only (load_incomplete, diag): a warning appearing where
     // there was none is the single funnel for every tail-sync failure — the
     // upstream message can embed a response body, so it must pass the shared
@@ -1238,6 +1252,7 @@ async function fetchInitialContextPage(
         beforeSeq: before.seq,
         limit: PAGE_SIZE
     }).catch(() => null)
+    if (context) noteSessionOpenPage(sessionId, 'context', context.messages.length)
     return context && context.page.epoch === latest.page.epoch ? context : null
 }
 
@@ -1285,8 +1300,12 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                     : isColdWindow
                         ? INITIAL_PAGE_SIZE
                         : PAGE_SIZE
+            // The hub widens a short latest page whose rows are all tool
+            // activity to the full page (see ApiClient.getMessages), so the
+            // tool-only guard below usually needs no second, serial request.
             const response = await api.getMessages(sessionId, { limit: latestPageSize })
             if (!isCurrentTailSync(sessionId, generation)) return
+            noteSessionOpenPage(sessionId, 'latest', response.messages.length)
             // The tool-only guard runs for every first-paint shape: a cached
             // re-entry whose freshly fetched latest page is all tool activity
             // (busy subagent turns) would otherwise replace the visible
@@ -1364,6 +1383,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 epoch: initial.epoch,
                 limit: PAGE_SIZE
             })
+            noteSessionOpenPage(sessionId, 'catch-up', response.messages.length)
             if (!isCurrentTailSync(sessionId, generation)) return
 
             if (response.page.reset || response.page.direction === 'latest') {
@@ -1455,6 +1475,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
                 const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
                 if (!isCurrentTailSync(sessionId, generation)) return
+                noteSessionOpenPage(sessionId, 'latest', response.messages.length)
                 updateState(sessionId, (previous) => {
                     if (previous.syncGeneration !== generation) return previous
                     const trimLimit = Math.min(OLDER_LOAD_WINDOW_SIZE, Math.max(VISIBLE_WINDOW_SIZE, previous.messages.length))

@@ -80,6 +80,15 @@ function consumeSessionEntry(sessionId: string, now: number): RecordedEntry | nu
     return recorded
 }
 
+/** The navigation intent recorded for `sessionId`, without consuming it: the
+ *  open timeline (lib/sessionOpenTrace) starts its clock at the moment the
+ *  session was selected. Null when nothing was recorded or it went stale. */
+export function peekSessionEntry(sessionId: string, now: number = Date.now()): { entry: SessionEntry; at: number } | null {
+    const recorded = recordedEntries.get(sessionId)
+    if (!recorded || now - recorded.at > ENTRY_STALENESS_MS) return null
+    return { entry: recorded.entry, at: recorded.at }
+}
+
 /** Resolve the entry for a fresh session open: recorded intent first, then
  * URL params (a pending request or a message target in the link), else a
  * plain direct URL entry. Exported for tests. */

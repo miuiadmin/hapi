@@ -40,7 +40,8 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             before,
             after,
             until,
-            epoch: parsed.data.epoch ?? null
+            epoch: parsed.data.epoch ?? null,
+            minConversation: parsed.data.minConversation
         })
         // Large inline image previews do not ride along on pages; the web
         // fetches them on demand from the attachment preview route below.
