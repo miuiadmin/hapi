@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionOpenTraceChip, formatOpenTraceBytes, formatOpenTraceMs } from './SessionOpenTraceChip'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
+    SESSION_OPEN_TRACE_SETTLE_GRACE_MS,
     beginSessionOpenTrace,
     endSessionOpenTrace,
     noteSessionOpenFirstRow,
@@ -112,7 +113,7 @@ describe('SessionOpenTraceChip', () => {
         act(() => { scheduleSessionOpenSettle(SESSION, 200) })
 
         // Not before the tail stayed current for the grace window.
-        await pass(499)
+        await pass(SESSION_OPEN_TRACE_SETTLE_GRACE_MS - 1)
         expect(chip()?.dataset.state).toBe('loading')
         await pass(1)
 
