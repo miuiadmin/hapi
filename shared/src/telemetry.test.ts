@@ -101,6 +101,10 @@ describe('TELEMETRY_KINDS registry', () => {
             expect(kind.length).toBeGreaterThan(0)
         }
     })
+    test('the session open timeline is a registered ux kind (one per open, developer mode and up)', () => {
+        const spec = TELEMETRY_KINDS['session_open_trace']
+        expect(spec).toMatchObject({ domain: 'ux', minLevel: 1 })
+    })
     test('P0 kinds present (incl revision additions turn_latency / client_window_inventory)', () => {
         for (const kind of [
             'session_open',
@@ -157,6 +161,89 @@ describe('validateTelemetryEvent', () => {
             domain: 'ux',
             kind: 'session_open',
             data: { entry: 'not-a-real-entry', openedAt: 1 },
+        })
+        expect(r.ok).toBe(false)
+    })
+    test('session_open_trace: accepts a settled timeline and a left one, keeping every number', () => {
+        const leg = { kind: 'latest', startMs: 45, ttfbMs: 100, totalMs: 200, wireBytes: 12_300, decodedBytes: 90_000, status: 200, rows: 200 }
+        const settled = validateTelemetryEvent({
+            ...baseEvent,
+            domain: 'ux',
+            kind: 'session_open_trace',
+            sessionId: 'sess-1',
+            data: {
+                entry: 'list-click',
+                openedAt: 1_792_000_000_000,
+                fromCache: false,
+                outcome: 'settled',
+                firstRowMs: 277,
+                settledMs: 290,
+                rowCount: 200,
+                requestCount: 2,
+                wireBytes: 13_200,
+                decodedBytes: 95_200,
+                requests: [
+                    { kind: 'detail', startMs: 2, ttfbMs: 19, totalMs: 38, wireBytes: 900, decodedBytes: 5_200, status: 200 },
+                    leg,
+                ],
+            },
+        })
+        expect(settled.ok).toBe(true)
+        if (settled.ok) {
+            expect(settled.data).toMatchObject({ firstRowMs: 277, settledMs: 290, rowCount: 200, requestCount: 2 })
+            expect(settled.data.requests).toEqual([
+                { kind: 'detail', startMs: 2, ttfbMs: 19, totalMs: 38, wireBytes: 900, decodedBytes: 5_200, status: 200 },
+                leg,
+            ])
+        }
+        // The user moved on before the tail arrived: no settle time, the failed leg is kept.
+        const left = validateTelemetryEvent({
+            ...baseEvent,
+            domain: 'ux',
+            kind: 'session_open_trace',
+            sessionId: 'sess-1',
+            data: {
+                entry: 'url-direct',
+                openedAt: 1_792_000_000_000,
+                fromCache: true,
+                outcome: 'left',
+                rowCount: 21,
+                requestCount: 1,
+                wireBytes: 0,
+                decodedBytes: 0,
+                requests: [{ kind: 'latest', startMs: 5, totalMs: 9_000, status: 0 }],
+            },
+        })
+        expect(left.ok).toBe(true)
+    })
+    test('session_open_trace: rejects a settled timeline without its settle time, unknown legs and negative numbers', () => {
+        const timeline = (data: Record<string, unknown>) => validateTelemetryEvent({
+            ...baseEvent,
+            domain: 'ux',
+            kind: 'session_open_trace',
+            sessionId: 'sess-1',
+            data: {
+                entry: 'list-click', openedAt: 1_792_000_000_000, fromCache: false, outcome: 'settled',
+                settledMs: 290, rowCount: 200, requestCount: 1, wireBytes: 900, decodedBytes: 5_200, requests: [], ...data,
+            },
+        }).ok
+        expect(timeline({})).toBe(true)
+        expect(timeline({ settledMs: undefined })).toBe(false)
+        expect(timeline({ requests: [{ kind: 'prefetch', startMs: 2, totalMs: 38 }] })).toBe(false)
+        expect(timeline({ firstRowMs: -1 })).toBe(false)
+        expect(timeline({ entry: 'x'.repeat(40) })).toBe(false)
+    })
+    test('session_open_trace: more than 12 legs is rejected', () => {
+        const r = validateTelemetryEvent({
+            ...baseEvent,
+            domain: 'ux',
+            kind: 'session_open_trace',
+            sessionId: 'sess-1',
+            data: {
+                entry: 'list-click', openedAt: 1_792_000_000_000, fromCache: false, outcome: 'settled',
+                settledMs: 290, rowCount: 200, requestCount: 13, wireBytes: 0, decodedBytes: 0,
+                requests: Array.from({ length: 13 }, (_, index) => ({ kind: 'catch-up', startMs: index * 10, totalMs: 5 })),
+            },
         })
         expect(r.ok).toBe(false)
     })

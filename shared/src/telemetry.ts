@@ -151,6 +151,54 @@ const DATA_LOADED_DATA = z.object({
     settledAt: intMs.optional(),
 })
 
+/**
+ * One leg of a session open, relative to the moment the session was opened
+ * (Resource Timing; same-origin, so the numbers are not zeroed by CORS).
+ */
+const OPEN_TRACE_REQUEST = z.object({
+    kind: z.enum(['latest', 'context', 'catch-up', 'detail']),
+    startMs: intMs,
+    ttfbMs: intMs.optional(),
+    totalMs: intMs,
+    /** Bytes that crossed the network, headers included (0 = answered from the
+     *  browser cache), and the body size after decoding. */
+    wireBytes: z.number().int().min(0).optional(),
+    decodedBytes: z.number().int().min(0).optional(),
+    /** Rows in the message page (absent for the session-detail request and for
+     *  a request that got no response). */
+    rows: z.number().int().min(0).optional(),
+    /** 0 = failed before a response. */
+    status: z.number().int().min(0).optional(),
+})
+
+/**
+ * "I tapped the session: how much came down and how long until it was on
+ * screen?" — the open as a timeline, in milliseconds from the tap:
+ * firstRowMs = first message row on screen, settledMs = tail current.
+ * Requests are up to 12 legs, oldest first.
+ */
+const SESSION_OPEN_TRACE_DATA = z.object({
+    entry: shortStr(32),
+    /** Wall clock of the open (device clock), for lining up with hub logs. */
+    openedAt: intMs,
+    /** The window already held a cached tail when the session was opened. */
+    fromCache: z.boolean(),
+    /** settled = the tail became current; left = the user moved on before it did. */
+    outcome: z.enum(['settled', 'left']),
+    firstRowMs: intMs.optional(),
+    /** Absent when outcome is left. */
+    settledMs: intMs.optional(),
+    rowCount: z.number().int().min(0),
+    requestCount: z.number().int().min(0),
+    wireBytes: z.number().int().min(0),
+    decodedBytes: z.number().int().min(0),
+    requests: z.array(OPEN_TRACE_REQUEST).max(12),
+})
+    .refine((data) => data.outcome === 'left' || data.settledMs !== undefined, {
+        message: 'a settled open carries the moment the tail became current',
+        path: ['settledMs'],
+    })
+
 const WINDOW_ENTRY = z.object({
     messageCount: z.number().int().min(0),
     approxBytes: z.number().int().min(0),
@@ -293,6 +341,7 @@ export const TELEMETRY_KINDS: Record<string, TelemetryKindSpec> = {
     session_open: { domain: 'ux', minLevel: 1, data: SESSION_OPEN_DATA },
     session_close: { domain: 'ux', minLevel: 1, data: SESSION_CLOSE_DATA },
     data_loaded: { domain: 'ux', minLevel: 1, data: DATA_LOADED_DATA },
+    session_open_trace: { domain: 'ux', minLevel: 1, data: SESSION_OPEN_TRACE_DATA },
     client_window_inventory: { domain: 'ux', minLevel: 1, data: CLIENT_WINDOW_INVENTORY_DATA },
     session_pause_resume: { domain: 'ux', minLevel: 2, data: SESSION_PAUSE_RESUME_DATA },
     session_pin: { domain: 'ux', minLevel: 2, data: SESSION_PIN_DATA },

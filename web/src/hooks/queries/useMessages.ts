@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage } from '@/types/api'
 import {
@@ -18,6 +18,7 @@ import {
     type OlderLoadOutcome,
 } from '@/lib/message-window-store'
 import { telemetryClient } from '@/lib/telemetryClient'
+import { beginSessionOpenTrace, endSessionOpenTrace, noteSessionOpenFirstRow } from '@/lib/sessionOpenTrace'
 
 /**
  * load_slow thresholds (diag, observation only). The aTrust round-trip tax is
@@ -86,6 +87,8 @@ export function useMessages(
 } {
     const initialSyncKey = api && sessionId ? sessionId : null
     const [initialSyncReadyKey, setInitialSyncReadyKey] = useState<string | null>(null)
+    /** The session whose open timeline this hook started (one per session visit). */
+    const tracedOpenRef = useRef<string | null>(null)
     const state = useSyncExternalStore(
         useCallback((listener) => {
             if (!sessionId) return () => {}
@@ -120,6 +123,13 @@ export function useMessages(
         }
         let active = true
         const syncStartedAt = Date.now()
+        // Open timeline (developer mode): the clock starts at the tap. Once per
+        // session visit — a search-target open is not traced at all, and a
+        // later re-run of this effect must not pose as a fresh open.
+        if (tracedOpenRef.current !== sessionId) {
+            tracedOpenRef.current = sessionId
+            beginSessionOpenTrace(sessionId, getMessageWindowState(sessionId).messages.length > 0)
+        }
         // Read BEFORE the sync starts: activation (the first layout effect)
         // sets preferLatestOnActivation when a persisted v3 window served a
         // usable cursor, and the sync's own updates clear it on landing.
@@ -154,6 +164,9 @@ export function useMessages(
         return () => {
             active = false
             setMessageWindowTargetLock(sessionId, false)
+            // The open is over (the session was switched or the page left):
+            // close its timeline with the rows the window holds right now.
+            endSessionOpenTrace(getMessageWindowState(sessionId).messages.length)
         }
     }, [api, sessionId, options.skipInitialTailSync])
 
@@ -230,6 +243,14 @@ export function useMessages(
         }
     }, [sessionId])
 
+    // Open timeline (developer mode): the first frame that holds a message row.
+    // When the tail became current is reported by the store itself, at the end
+    // of each sync — a fast sync can start and finish between two commits, so
+    // the store's state is not something an effect here can watch.
+    const hasRows = state.messages.length > 0
+    useLayoutEffect(() => {
+        if (sessionId && hasRows) noteSessionOpenFirstRow(sessionId)
+    }, [sessionId, hasRows])
     const loadMore = useCallback(async (onBeforeApply?: (historyVersion: number) => boolean) => {
         if (!api || !sessionId) {
             return { kind: 'stopped', reason: 'unavailable' } as const

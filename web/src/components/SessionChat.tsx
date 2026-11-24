@@ -49,6 +49,7 @@ import { codexModelAdvertisesFastTier, getEffectiveCodexServiceTier } from '@/co
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { SessionOpenTraceChip } from '@/components/SessionOpenTraceChip'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
 import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
@@ -2512,6 +2513,7 @@ function SessionChatInner(props: SessionChatProps) {
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
+                        <SessionOpenTraceChip sessionId={props.session.id} />
                         {canViewAgentTerminal && terminalMounted && (
                             // SessionChatInner is keyed by session.id, so switching sessions remounts this subtree.
                             <Suspense fallback={null}>
