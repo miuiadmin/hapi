@@ -536,6 +536,64 @@ describe('useSendMessage', () => {
                 { id: 'att-1', filename: 'x.png', mimeType: 'image/png', size: 1, path: '/x.png' }
             ])
         })
+
+        it('retryMessage: puts back an image preview the message page left out before re-sending', async () => {
+            // Message pages drop large inline previews (hasPreview marker); the
+            // CLI rebuilds the file from previewUrl, so a retried send has to
+            // carry it again or the screenshot would silently disappear.
+            const sendMock = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {})
+            const previewMock = vi.fn(async () => new Blob(['jpeg-bytes'], { type: 'image/jpeg' }))
+            const api = { sendMessage: sendMock, fetchMessageAttachmentPreviewBlob: previewMock } as unknown as ApiClient
+
+            const { getMessageWindowState } = await import('@/lib/message-window-store')
+            const stateMock = vi.mocked(getMessageWindowState)
+            const failedShotMessage = {
+                id: 'message-shot',
+                seq: 41,
+                localId: 'local-shot',
+                content: {
+                    role: 'user' as const,
+                    content: {
+                        type: 'text' as const,
+                        text: 'see the black blocks',
+                        attachments: [
+                            { id: 'att-shot', filename: '15071.jpg', mimeType: 'image/jpeg', size: 551943, path: '/tmp/15071.jpg', hasPreview: true }
+                        ]
+                    }
+                },
+                createdAt: 1000,
+                invokedAt: null,
+                scheduledAt: null,
+                status: 'failed' as const,
+                originalText: 'see the black blocks',
+            }
+            stateMock.mockReturnValue({
+                messages: [failedShotMessage]
+            } as unknown as ReturnType<typeof getMessageWindowState>)
+
+            const { result } = renderHook(
+                () => useSendMessage(api, 'session-A'),
+                { wrapper: createWrapper() },
+            )
+
+            let accepted = false
+            act(() => {
+                accepted = result.current.retryMessage('local-shot')
+            })
+            expect(accepted).toBe(true)
+            // The send waits for the preview; a second tap meanwhile is ignored.
+            expect(sendMock).not.toHaveBeenCalled()
+            expect(result.current.retryMessage('local-shot')).toBe(false)
+
+            await waitFor(() => {
+                expect(sendMock).toHaveBeenCalledTimes(1)
+            })
+            expect(previewMock).toHaveBeenCalledWith('session-A', 'message-shot', 'att-shot')
+            const attachments = sendMock.mock.calls[0][3] as Array<{ id: string; previewUrl?: string; hasPreview?: boolean }>
+            expect(attachments).toHaveLength(1)
+            expect(attachments[0]).toMatchObject({ id: 'att-shot', filename: '15071.jpg', size: 551943 })
+            expect(attachments[0]?.previewUrl).toMatch(/^data:image\/jpeg;base64,/)
+        })
     })
 
     it('does not call onSuccess when blocked', () => {

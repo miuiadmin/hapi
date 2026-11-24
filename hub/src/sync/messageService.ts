@@ -22,6 +22,7 @@ import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
+import { extractInlineImagePreview, type InlineImagePreview } from './attachmentPreviews'
 import { JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX } from './sessionJobWake'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
@@ -269,6 +270,21 @@ export class MessageService {
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
         const stored = this.store.messages.getMessages(sessionId, limit)
         return toVisibleDecryptedMessages(stored)
+    }
+
+    /**
+     * Inline image preview of one stored attachment — what the page projection
+     * (stripLargeInlineImagePreviews) left out, fetched by the web on demand.
+     */
+    getMessageAttachmentPreview(
+        sessionId: string,
+        messageId: string,
+        attachmentId: string
+    ): InlineImagePreview | null {
+        const row = this.store.messages.getMessageById(sessionId, messageId)
+        if (!row) return null
+        const [message] = toVisibleDecryptedMessages([row])
+        return extractInlineImagePreview(message, attachmentId)
     }
 
     getMessageContext(sessionId: string, messageId: string): MessageContextResponse | null {

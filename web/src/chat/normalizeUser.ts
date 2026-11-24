@@ -20,7 +20,9 @@ function parseAttachments(raw: unknown): AttachmentMetadata[] | undefined {
                 mimeType: item.mimeType,
                 size: item.size,
                 path: item.path,
-                previewUrl: typeof item.previewUrl === 'string' ? item.previewUrl : undefined
+                previewUrl: typeof item.previewUrl === 'string' ? item.previewUrl : undefined,
+                // Hub marker for a preview that was left off the page (lazy-loaded).
+                hasPreview: item.hasPreview === true ? true : undefined
             })
         }
     }

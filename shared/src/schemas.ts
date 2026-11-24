@@ -596,7 +596,15 @@ export const AttachmentMetadataSchema = z.object({
     mimeType: z.string(),
     size: z.number(),
     path: z.string(),
-    previewUrl: z.string().optional()
+    /**
+     * Inline image preview as a data URL. Part of the stored message (the CLI
+     * materialises the file on the runner from it), but message pages served to
+     * the web drop large ones and set `hasPreview` instead — see
+     * GET /sessions/:id/messages/:messageId/attachments/:attachmentId/preview.
+     */
+    previewUrl: z.string().optional(),
+    /** Set by the hub on message pages whose large inline preview was removed. */
+    hasPreview: z.boolean().optional()
 })
 
 export type AttachmentMetadata = z.infer<typeof AttachmentMetadataSchema>

@@ -50,6 +50,7 @@ import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult, type DeliverQueuedMessageNowResult } from './messageService'
+import type { InlineImagePreview } from './attachmentPreviews'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
 import { createPromptTitle } from './promptTitle'
 import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
@@ -731,6 +732,15 @@ export class SyncEngine {
 
     getMessageContext(sessionId: string, messageId: string): MessageContextResponse | null {
         return this.messageService.getMessageContext(sessionId, messageId)
+    }
+
+    /** Inline image preview of one stored attachment (served to the web on demand). */
+    getMessageAttachmentPreview(
+        sessionId: string,
+        messageId: string,
+        attachmentId: string
+    ): InlineImagePreview | null {
+        return this.messageService.getMessageAttachmentPreview(sessionId, messageId, attachmentId)
     }
 
     getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
