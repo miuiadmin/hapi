@@ -12,12 +12,14 @@ import {
     SESSION_OPEN_TRACE_EVENT,
     SESSION_OPEN_TRACE_MAX_LEGS,
     SESSION_OPEN_TRACE_SETTLE_GRACE_MS,
+    SESSION_OPEN_TRACE_STREAM_WAIT_MS,
     beginSessionOpenTrace,
     cancelSessionOpenSettle,
     endSessionOpenTrace,
     getSessionOpenTrace,
     noteSessionOpenFirstRow,
     noteSessionOpenPage,
+    noteSessionOpenStreamJoined,
     noteSessionOpenSync,
     resetSessionOpenTrace,
     scheduleSessionOpenSettle,
@@ -334,6 +336,7 @@ describe('session open trace', () => {
         beginSessionOpenTrace('s11', true)
         // The first page landed but armed a gap recovery: the tail is not current.
         noteSessionOpenSync('s11', false, 21)
+        noteSessionOpenStreamJoined('s11')
         vi.advanceTimersByTime(300)
         expect(traces()).toHaveLength(0)
         // The recovery finished: current.
@@ -345,9 +348,79 @@ describe('session open trace', () => {
         expect(traces()[0]).toMatchObject({ outcome: 'settled', fromCache: true, settledMs: 300, rowCount: 51 })
     })
 
+    it('waits for the event stream to join, so the reconcile it triggers is part of the timeline', () => {
+        // What an open looks like on the wire: the page, then — once the stream
+        // has connected — a catch-up page and a latest page. A slow link makes
+        // the stream late: well after the page's own grace window.
+        const messages = '/api/sessions/s12/messages'
+        const join = 100 + SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 500
+        beginSessionOpenTrace('s12', false)
+        serveLegs(
+            leg(`${messages}?limit=20&minConversation=1`, 8, 95),
+            leg('/api/sessions/s12', 9, 95),
+            leg(`${messages}?afterAt=10&afterSeq=10&epoch=1&limit=200`, join + 33, join + 81),
+            leg(`${messages}?limit=200`, join + 82, join + 207)
+        )
+        vi.advanceTimersByTime(98)
+        noteSessionOpenPage('s12', 'latest', 20)
+        noteSessionOpenSync('s12', true, 20)
+        // Tail current, but the stream has not joined: past the grace window and still open.
+        vi.advanceTimersByTime(join - 98)
+        expect(traces()).toHaveLength(0)
+
+        noteSessionOpenStreamJoined('s12')
+        vi.advanceTimersByTime(33)
+        cancelSessionOpenSettle()
+        vi.advanceTimersByTime(48)
+        noteSessionOpenPage('s12', 'catch-up', 0)
+        vi.advanceTimersByTime(126)
+        noteSessionOpenPage('s12', 'latest', 200)
+        noteSessionOpenSync('s12', true, 200)
+        vi.advanceTimersByTime(SESSION_OPEN_TRACE_SETTLE_GRACE_MS - 1)
+        expect(traces()).toHaveLength(0)
+        vi.advanceTimersByTime(1)
+
+        expect(traces()).toHaveLength(1)
+        expect(traces()[0]).toMatchObject({ outcome: 'settled', settledMs: join + 207, rowCount: 200, requestCount: 4, wireBytes: 5200 })
+        expect(requestsOf().map((leg) => [leg.kind, leg.startMs, leg.totalMs, leg.rows])).toEqual([
+            ['latest', 8, 87, 20],
+            ['detail', 9, 86, undefined],
+            ['catch-up', join + 33, 48, 0],
+            ['latest', join + 82, 125, 200]
+        ])
+        expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('closes on its own when the stream never joins, and not before the tail is current', () => {
+        beginSessionOpenTrace('s13', false)
+        vi.advanceTimersByTime(600)
+        noteSessionOpenStreamJoined('s13')
+        // Joined, but no sync has completed since the open: nothing is settled.
+        vi.advanceTimersByTime(3000)
+        expect(traces()).toHaveLength(0)
+        vi.advanceTimersByTime(100)
+        noteSessionOpenSync('s13', true, 3)
+        vi.advanceTimersByTime(SESSION_OPEN_TRACE_SETTLE_GRACE_MS)
+        expect(traces()).toHaveLength(1)
+        expect(traces()[0]).toMatchObject({ settledMs: 3700, rowCount: 3 })
+
+        resetSessionOpenTrace()
+        beginSessionOpenTrace('s14', false)
+        vi.advanceTimersByTime(100)
+        noteSessionOpenSync('s14', true, 5)
+        // The wait started with the open; 100ms of it are already over.
+        vi.advanceTimersByTime(SESSION_OPEN_TRACE_STREAM_WAIT_MS + SESSION_OPEN_TRACE_SETTLE_GRACE_MS - 100 - 1)
+        expect(traces()).toHaveLength(1)
+        vi.advanceTimersByTime(1)
+        expect(traces()).toHaveLength(2)
+        expect(traces()[1]).toMatchObject({ settledMs: 100, rowCount: 5 })
+        expect(vi.getTimerCount()).toBe(0)
+    })
+
     it('does nothing while developer mode is off', () => {
         getLevel.mockReturnValue(0)
         beginSessionOpenTrace('s9', false)
+        noteSessionOpenStreamJoined('s9')
         noteSessionOpenFirstRow('s9')
         noteSessionOpenPage('s9', 'latest', 20)
         scheduleSessionOpenSettle('s9', 20)

@@ -25,6 +25,7 @@ import { getAppSseResyncQueryKeys } from '@/lib/sseResync'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { noteSessionOpenStreamJoined } from '@/lib/sessionOpenTrace'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useSessionTailFallback } from '@/hooks/useSessionTailFallback'
 import { useTranslation } from '@/lib/use-translation'
@@ -398,6 +399,8 @@ function AppInner() {
         if (!api || !selectedSessionId) {
             return
         }
+        // Open timeline (developer mode): the session's stream has joined.
+        noteSessionOpenStreamJoined(selectedSessionId)
         // A resumed connection replayed messages-consumed/message events for
         // this session, so the queued-state snapshot cannot have drifted.
         if (info.resumed) {

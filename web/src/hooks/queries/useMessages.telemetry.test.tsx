@@ -4,7 +4,7 @@ import { TELEMETRY_KINDS } from '@hapi/protocol/telemetry'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessagesResponse } from '@/types/api'
 import { clearMessageWindow, getMessageWindowState, recoverWindowAfterGapResume } from '@/lib/message-window-store'
-import { resetSessionOpenTrace } from '@/lib/sessionOpenTrace'
+import { SESSION_OPEN_TRACE_SETTLE_GRACE_MS, noteSessionOpenStreamJoined, resetSessionOpenTrace } from '@/lib/sessionOpenTrace'
 import { useMessages } from './useMessages'
 
 vi.mock('@/lib/telemetryClient', () => ({
@@ -218,8 +218,10 @@ describe('useMessages telemetry', () => {
     it('confirmed-empty session: the poll stops after the sync settles with zero messages', async () => {
         const api = makeApi(async () => latestResponse([]))
         renderHook(() => useMessages(api, sessionId))
+        // The open timeline waits for the session's event stream; it has joined.
+        act(() => { noteSessionOpenStreamJoined(sessionId) })
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(1_600)
+            await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 600)
         })
         // no session-detail metric fires for an empty window, and the poll
         // has torn itself down (no pending timers left behind)
@@ -242,8 +244,9 @@ describe('useMessages telemetry', () => {
         await act(async () => {
             await vi.advanceTimersByTimeAsync(100)
         })
+        act(() => { noteSessionOpenStreamJoined(sessionId) })
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(300)
+            await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS - 100)
         })
         expect(result.current.messages).toHaveLength(2)
         // The rows are in; the timeline keeps watching for a gap recovery that may follow the first page.
@@ -279,9 +282,10 @@ describe('useMessages telemetry', () => {
         vi.spyOn(performance, 'getEntriesByType').mockReturnValue([] as never)
         const api = makeApi(async () => latestResponse([agentMessage('cached', 1, 1_000), agentMessage('fresh', 2, 2_000)]))
         const { result } = renderHook(() => useMessages(api, sessionId))
+        act(() => { noteSessionOpenStreamJoined(sessionId) })
 
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(1_200)
+            await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 100)
         })
 
         const traces = eventsOf('session_open_trace')
@@ -335,9 +339,14 @@ describe('useMessages telemetry', () => {
 
         await act(async () => {
             await recoverWindowAfterGapResume(api, sessionId)
-            await vi.advanceTimersByTimeAsync(1_200)
         })
         expect(getMessageWindowState(sessionId).pendingGapRecovery).toBe(false)
+        // Still open: the timeline also waits for the session's event stream.
+        expect(eventsOf('session_open_trace')).toHaveLength(0)
+        act(() => { noteSessionOpenStreamJoined(sessionId) })
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 100)
+        })
 
         const traces = eventsOf('session_open_trace')
         expect(traces).toHaveLength(1)
