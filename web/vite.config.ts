@@ -103,9 +103,9 @@ function getVendorChunkName(id: string): string | undefined {
 //     updateHeight();          // reads el.clientHeight
 //
 // The ref is attached in the layout phase of the commit that just inserted
-// every message row, so that read forces a full style + layout of the thread
-// before the browser gets to paint it — the largest forced layout of a session
-// open (render.md §3.2). In this version nothing reads the stored height back
+// every message row, so that read is what forced the first full style + layout
+// of the thread (render.md §3.2; 0.7~0.9 s on a 60k-node session under the
+// study's CPU throttle). In this version nothing reads the stored height back
 // (the `height.viewport` / `height.inset` fields of the thread viewport store
 // have no consumer in @assistant-ui/react 0.15.21, core 0.3.20, store 0.3.14
 // or web/src), and the ResizeObserver installed on the line above reports the
@@ -115,8 +115,19 @@ function getVendorChunkName(id: string): string | undefined {
 // untouched — to take the first measurement in the next animation frame
 // instead of in the commit. It fails the build loudly if the module no longer
 // looks the way it expects, so an upstream change cannot silently drop the
-// patch. Scope: production build and the dev server's transformed modules;
-// vitest externalizes node_modules, so unit tests run the original module.
+// patch.
+//
+// Measured caveat (README §4.4): on its own this does not shorten the first
+// frame. The thread has to be laid out once before it can be painted, and on
+// the session-open path the next layout read of the same commit (HappyThread's
+// scrollbar-gutter measurement) simply performs that layout instead. What the
+// patch buys is that a library-internal ref no longer forces a layout of a
+// half-committed thread, and that the commit's cost no longer depends on
+// which reader comes first.
+//
+// Scope: the production build (verified) and any module the dev server
+// transforms itself — dependency pre-bundling was not checked. vitest
+// externalizes node_modules, so unit tests run the original module.
 function deferAssistantUiViewportSizeRead(): Plugin {
     const target = normalizePath('@assistant-ui/react/dist/utils/hooks/useSizeHandle.js')
     const eager = '\t\t\tro.observe(el);\n\t\t\tupdateHeight();\n\t\t\treturn () => {\n\t\t\t\tro.disconnect();\n'

@@ -2076,14 +2076,21 @@ export function activateMessageWindow(
     if (next !== previous) {
         // Research prototype C (perf/exp-render-firstframe): when the rows are
         // untouched, publish through the normal throttle instead of notifying
-        // synchronously. This runs from a layout effect on the session page's
-        // mounting commit; an immediate notification makes React re-render the
-        // whole thread a second time before the first frame (the rows did not
-        // change — only `preferLatestOnActivation` did). `useMessages` derives
-        // the first-frame-at-bottom signal from `willPreferLatestOnActivation`
-        // instead, so the first commit still lands at the bottom. An activation
-        // that does change the window (retained history window, over-long
-        // window trimmed back to the tail) keeps the immediate publication.
+        // synchronously. This runs from a layout effect of the session page's
+        // mounting commit, and a synchronous notification re-rendered the whole
+        // thread a second time before the first frame although the rows did
+        // not change — only `preferLatestOnActivation` did. `useMessages`
+        // derives the first-frame-at-bottom signal from
+        // `willPreferLatestOnActivation` instead, so the mounting commit still
+        // lands at the bottom.
+        // Measured caveat (README §2.2): this alone does not remove that
+        // re-render. React 19 re-checks useSyncExternalStore snapshots in the
+        // passive phase (this write is seen there), and the row tooltips and
+        // the SessionChat mount effects schedule synchronous updates of their
+        // own. It is kept because it is one trigger fewer and the publication
+        // timing is no longer tied to the commit. An activation that does
+        // change the window (retained history window, over-long window trimmed
+        // back to the tail) keeps the immediate publication.
         setState(sessionId, next, !rowsUnchanged)
     }
     if (requestedLatest) {
