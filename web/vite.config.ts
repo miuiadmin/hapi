@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, normalizePath, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -93,6 +93,47 @@ function getVendorChunkName(id: string): string | undefined {
     return undefined
 }
 
+// Research prototype C (perf/exp-render-firstframe), item 4.
+//
+// @assistant-ui/react's viewport ref (`useSizeHandle`, used by
+// `ThreadPrimitive.Viewport` and `.ViewportFooter`) measures the element
+// synchronously while React attaches the ref:
+//
+//     ro.observe(el);
+//     updateHeight();          // reads el.clientHeight
+//
+// The ref is attached in the layout phase of the commit that just inserted
+// every message row, so that read forces a full style + layout of the thread
+// before the browser gets to paint it — the largest forced layout of a session
+// open (render.md §3.2). In this version nothing reads the stored height back
+// (the `height.viewport` / `height.inset` fields of the thread viewport store
+// have no consumer in @assistant-ui/react 0.15.21, core 0.3.20, store 0.3.14
+// or web/src), and the ResizeObserver installed on the line above reports the
+// real height in the same frame anyway (after layout, before paint).
+//
+// This plugin rewrites that one module at build time — node_modules is left
+// untouched — to take the first measurement in the next animation frame
+// instead of in the commit. It fails the build loudly if the module no longer
+// looks the way it expects, so an upstream change cannot silently drop the
+// patch. Scope: production build and the dev server's transformed modules;
+// vitest externalizes node_modules, so unit tests run the original module.
+function deferAssistantUiViewportSizeRead(): Plugin {
+    const target = normalizePath('@assistant-ui/react/dist/utils/hooks/useSizeHandle.js')
+    const eager = '\t\t\tro.observe(el);\n\t\t\tupdateHeight();\n\t\t\treturn () => {\n\t\t\t\tro.disconnect();\n'
+    const deferred = '\t\t\tro.observe(el);\n\t\t\tconst firstMeasure = requestAnimationFrame(updateHeight);\n\t\t\treturn () => {\n\t\t\t\tcancelAnimationFrame(firstMeasure);\n\t\t\t\tro.disconnect();\n'
+    return {
+        name: 'defer-assistant-ui-viewport-size-read',
+        enforce: 'pre',
+        transform(code, id) {
+            if (!normalizePath(id).endsWith(target)) return null
+            if (code.split(eager).length !== 2) {
+                this.error(`${target}: expected exactly one eager updateHeight() call after ro.observe(el); refusing to build with an unpatched viewport size read`)
+            }
+            return { code: code.replace(eager, deferred), map: null }
+        },
+    }
+}
+
 function copyKaTeXFonts(): Plugin {
     return {
         name: 'copy-katex-fonts',
@@ -141,6 +182,7 @@ export default defineConfig({
         react(),
         spaFallback(),
         copyKaTeXFonts(),
+        deferAssistantUiViewportSizeRead(),
         VitePWA({
             // User-controlled reload avoids mid-session surprise reloads (autoUpdate reloads all tabs).
             registerType: 'prompt',
