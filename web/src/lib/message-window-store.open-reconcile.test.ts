@@ -145,7 +145,7 @@ describe('an open reconciles as soon as its first page has landed', () => {
         expect(marks).toHaveLength(1)
         expect(marks[0]!.epoch).toBe(1)
         expect(marks[0]!.rows.size).toBe(70)
-        expect(marks[0]).not.toHaveProperty('staleEpoch')
+        expect(marks[0]).not.toHaveProperty('seenEpoch')
         expect(getMessageWindowState(id)).toMatchObject({
             isSyncingTail: false,
             pendingGapRecovery: false,
@@ -205,7 +205,7 @@ describe('an open reconciles as soon as its first page has landed', () => {
         expect(marks).toHaveLength(1)
         expect(marks[0]).toMatchObject({ epoch: 1 })
         expect(marks[0]!.rows.size).toBe(20)
-        expect(marks[0]).not.toHaveProperty('staleEpoch')
+        expect(marks[0]).not.toHaveProperty('seenEpoch')
         expect(idsOf(id)).toEqual(rows(1, 20).map((message) => message.id))
         expect(getMessageWindowState(id)).toMatchObject({ isSyncingTail: false, pendingGapRecovery: false, warning: null })
     })
@@ -234,6 +234,8 @@ describe('an open reconciles as soon as its first page has landed', () => {
 
 describe('an open that finds the session\'s epoch moved on keeps its window', () => {
     const cached = rows(31, 100)
+    const PAGE = { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: true, nextBeforeAt: 310, nextBeforeSeq: 31 }
+    const FIRST = { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: true, nextBeforeAt: 810, nextBeforeSeq: 81 }
 
     function edited(message: DecryptedMessage, rowHash: string): DecryptedMessage {
         return {
@@ -246,79 +248,114 @@ describe('an open that finds the session\'s epoch moved on keeps its window', ()
         } as DecryptedMessage
     }
 
-    it('takes the changed row from the page, drops nothing else, and moves to the new epoch', async () => {
-        const id = sessionId('epoch-moved')
-        persistWindow(id, cached, 1)
-        activateMessageWindow(id, { reconcileAfterFirstPage: true })
-        const hydrated = getMessageWindowState(id).messages
+    /**
+     * The reconcile's answer in one of its two shapes. `page`: the labelled
+     * page itself, which a hub that does not know the list is wanted under any
+     * epoch answers a stale list with (ApiClient.getReconcilePage hands it on).
+     * `list`: the page's fingerprint list with `messages` narrowed to the rows
+     * that differ, which the transport answers a hub that does know it with.
+     */
+    const answer = (shape: 'page' | 'list', listed: DecryptedMessage[], differing: DecryptedMessage[], overrides: Partial<MessagesResponse['page']> = {}): MessagesResponse => (
+        shape === 'page'
+            ? latest(listed, 2, overrides)
+            : latest(differing, 2, { ...overrides, rowHashes: listed.map((message) => ({ id: message.id, hash: message.rowHash ?? '' })) })
+    )
+    const shapes: Array<'page' | 'list'> = ['page', 'list']
+    const shapeName = (shape: 'page' | 'list') => (shape === 'page' ? 'the labelled page (a hub without the any-epoch list)' : 'the list and the rows that differ (a hub with it)')
 
-        const queries: Query[] = []
-        const marks: Array<ReconcileMark | null> = []
-        const page = cached.map((message) => (message.id === 'm60' ? edited(message, 'h60-edited') : message))
-        const api = createApi(async (_sessionId, query) => {
-            queries.push(query)
-            if (query.afterAt !== undefined) throw new Error('no catch-up: the page carries every row the window lacks')
-            if (query.limit === INITIAL_PAGE_SIZE) {
-                return latest(cached.slice(-20), 2, { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: true, nextBeforeAt: 810, nextBeforeSeq: 81 })
-            }
-            marks.push(takeReconcilePageMark(id))
-            // The transport answers the stale-epoch mark with the labelled page itself.
-            return latest(page, 2, { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: true, nextBeforeAt: 310, nextBeforeSeq: 31 })
+    for (const shape of shapes) {
+        it(`takes the changed row, drops nothing else, and moves to the new epoch — ${shapeName(shape)}`, async () => {
+            const id = sessionId(`epoch-moved-${shape}`)
+            persistWindow(id, cached, 1)
+            activateMessageWindow(id, { reconcileAfterFirstPage: true })
+            const hydrated = getMessageWindowState(id).messages
+
+            const queries: Query[] = []
+            const marks: Array<ReconcileMark | null> = []
+            const page = cached.map((message) => (message.id === 'm60' ? edited(message, 'h60-edited') : message))
+            const api = createApi(async (_sessionId, query) => {
+                queries.push(query)
+                if (query.afterAt !== undefined) throw new Error('no catch-up: the page carries every row the window lacks')
+                if (query.limit === INITIAL_PAGE_SIZE) return latest(cached.slice(-20), 2, FIRST)
+                marks.push(takeReconcilePageMark(id))
+                return answer(shape, page, [page[29]!], PAGE)
+            })
+
+            await openWindow(api, id)
+
+            expect(queries).toEqual([{ limit: INITIAL_PAGE_SIZE }, { limit: 200 }])
+            expect(marks).toHaveLength(1)
+            // The window's rows stay labelled with the old epoch until checked; the first page's epoch is what the list must be read under or after.
+            expect(marks[0]).toMatchObject({ epoch: 1, seenEpoch: 2 })
+            expect(marks[0]!.rows.get('m99')).toBe('h99')
+            expect(idsOf(id)).toEqual(cached.map((message) => message.id))
+            const state = getMessageWindowState(id)
+            expect(state.messages).toHaveLength(70)
+            expect(state.messages.find((message) => message.id === 'm60')?.rowHash).toBe('h60-edited')
+            expect(state.messages.find((message) => message.id === 'm60')?.content).toEqual(page[29]!.content)
+            // The rows that did not change are the very same objects the window was restored with.
+            expect(state.messages.find((message) => message.id === 'm61')).toBe(hydrated.find((message) => message.id === 'm61'))
+            expect(state).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null, isSyncingTail: false })
         })
 
-        await openWindow(api, id)
+        it(`drops a row the page no longer lists inside its range, keeps older rows and the client's own — ${shapeName(shape)}`, async () => {
+            const id = sessionId(`epoch-removed-${shape}`)
+            const queued = {
+                id: 'local-1',
+                localId: 'local-1',
+                seq: null,
+                createdAt: 995,
+                invokedAt: null,
+                status: 'queued',
+                content: { role: 'user', content: { type: 'text', text: 'queued prompt' } }
+            } as DecryptedMessage
+            persistWindow(id, [...rows(21, 100), queued], 1)
+            activateMessageWindow(id, { reconcileAfterFirstPage: true })
 
-        expect(queries).toEqual([{ limit: INITIAL_PAGE_SIZE }, { limit: 200 }])
-        expect(marks).toHaveLength(1)
-        expect(marks[0]).toMatchObject({ epoch: 1, staleEpoch: true })
-        expect(idsOf(id)).toEqual(cached.map((message) => message.id))
-        const state = getMessageWindowState(id)
-        expect(state.messages).toHaveLength(70)
-        expect(state.messages.find((message) => message.id === 'm60')?.rowHash).toBe('h60-edited')
-        expect(state.messages.find((message) => message.id === 'm60')?.content).toEqual(page[29]!.content)
-        // The rows that did not change are the very same objects the window was restored with.
-        expect(state.messages.find((message) => message.id === 'm61')).toBe(hydrated.find((message) => message.id === 'm61'))
-        expect(state).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null, isSyncingTail: false })
-    })
+            // m60 was removed on the server; the page starts at m31, so m21–m30 are older than it.
+            const page = rows(31, 100).filter((message) => message.id !== 'm60')
+            const api = createApi(async (_sessionId, query) => {
+                if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
+                if (query.limit === INITIAL_PAGE_SIZE) return latest(rows(81, 100), 2, FIRST)
+                takeReconcilePageMark(id)
+                return answer(shape, page, [], PAGE)
+            })
 
-    it('drops a row the page no longer lists inside its range, keeps older rows and the client\'s own', async () => {
-        const id = sessionId('epoch-removed')
-        const queued = {
-            id: 'local-1',
-            localId: 'local-1',
-            seq: null,
-            createdAt: 995,
-            invokedAt: null,
-            status: 'queued',
-            content: { role: 'user', content: { type: 'text', text: 'queued prompt' } }
-        } as DecryptedMessage
-        persistWindow(id, [...rows(21, 100), queued], 1)
-        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+            await openWindow(api, id)
 
-        // m60 was removed on the server; the page starts at m31, so m21–m30 are older than it.
-        const page = rows(31, 100).filter((message) => message.id !== 'm60')
-        const api = createApi(async (_sessionId, query) => {
-            if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
-            if (query.limit === INITIAL_PAGE_SIZE) {
-                return latest(rows(81, 100), 2, { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: true, nextBeforeAt: 810, nextBeforeSeq: 81 })
-            }
-            takeReconcilePageMark(id)
-            return latest(page, 2, { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: true, nextBeforeAt: 310, nextBeforeSeq: 31 })
+            // The queued prompt sits where its creation time puts it: between m99 and m100.
+            expect(idsOf(id)).toEqual([
+                ...rows(21, 99).map((message) => message.id).filter((id) => id !== 'm60'),
+                'local-1',
+                'm100'
+            ])
+            expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
         })
 
-        await openWindow(api, id)
+        it(`drops what a whole-session page no longer lists, wherever the row sat — ${shapeName(shape)}`, async () => {
+            const id = sessionId(`epoch-shrunk-${shape}`)
+            persistWindow(id, rows(21, 100), 1)
+            activateMessageWindow(id, { reconcileAfterFirstPage: true })
 
-        // The queued prompt sits where its creation time puts it: between m99 and m100.
-        expect(idsOf(id)).toEqual([
-            ...rows(21, 99).map((message) => message.id).filter((id) => id !== 'm60'),
-            'local-1',
-            'm100'
-        ])
-        expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
-    })
+            // Rows m21–m24 were removed; m60 changed in place. The session is small enough for the page to be all of it.
+            const page = rows(25, 100).map((message) => (message.id === 'm60' ? edited(message, 'h60-edited') : message))
+            const whole = { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: false, nextBeforeAt: 250, nextBeforeSeq: 25 }
+            const api = createApi(async (_sessionId, query) => {
+                if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
+                if (query.limit === INITIAL_PAGE_SIZE) return latest(page.slice(-20), 2, whole)
+                takeReconcilePageMark(id)
+                return answer(shape, page, [page[35]!], whole)
+            })
 
-    it(`replaces the window with the page when more than ${RECONCILE_MAX_IDS} rows differ`, async () => {
-        const id = sessionId('epoch-rewind')
+            await openWindow(api, id)
+
+            expect(idsOf(id)).toEqual(page.map((message) => message.id))
+            expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, hasMore: false, pendingGapRecovery: false, warning: null })
+        })
+    }
+
+    it(`replaces the window with the labelled page when more than ${RECONCILE_MAX_IDS} rows of it differ (a hub without the any-epoch list)`, async () => {
+        const id = sessionId('epoch-rewind-page')
         persistWindow(id, cached, 1)
         activateMessageWindow(id, { reconcileAfterFirstPage: true })
 
@@ -326,41 +363,122 @@ describe('an open that finds the session\'s epoch moved on keeps its window', ()
         // the session now holds seventy rows the window never saw. The page
         // is the whole session.
         const page = rows(201, 270).map((message) => ({ ...message, rowHash: `h${message.seq}` }))
+        const whole = { snapshotHeadAt: 2_700, snapshotHeadSeq: 270, hasMore: false, nextBeforeAt: 2_010, nextBeforeSeq: 201 }
+        const queries: Query[] = []
         const api = createApi(async (_sessionId, query) => {
+            queries.push(query)
             if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
-            if (query.limit === INITIAL_PAGE_SIZE) {
-                return latest(page.slice(-20), 2, { snapshotHeadAt: 2_700, snapshotHeadSeq: 270, hasMore: false, nextBeforeAt: 2_010, nextBeforeSeq: 201 })
-            }
+            if (query.limit === INITIAL_PAGE_SIZE) return latest(page.slice(-20), 2, whole)
             takeReconcilePageMark(id)
-            return latest(page, 2, { snapshotHeadAt: 2_700, snapshotHeadSeq: 270, hasMore: false, nextBeforeAt: 2_010, nextBeforeSeq: 201 })
+            return answer('page', page, page, whole)
         })
 
         await openWindow(api, id)
 
+        expect(queries).toEqual([{ limit: INITIAL_PAGE_SIZE }, { limit: 200 }])
         expect(idsOf(id)).toEqual(page.map((message) => message.id))
         expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
     })
 
-    it('drops what a whole-session page no longer lists, wherever the row sat', async () => {
-        const id = sessionId('epoch-shrunk')
-        persistWindow(id, rows(21, 100), 1)
+    it(`asks for the page itself when the list leaves more than ${RECONCILE_MAX_IDS} rows of the window to drop, and replaces the window with it`, async () => {
+        const id = sessionId('epoch-list-rewind')
+        persistWindow(id, cached, 1)
         activateMessageWindow(id, { reconcileAfterFirstPage: true })
 
-        // Rows m21–m24 were removed; m60 changed in place. The session is small enough for the page to be all of it.
-        const page = rows(25, 100).map((message) => (message.id === 'm60' ? edited(message, 'h60-edited') : message))
+        // A rewind to m30, then five new rows: every row the window held from
+        // m31 to m95 is gone (65), and the fifteen rows before them are new
+        // to the window. The list has nothing to fetch beyond those fifteen,
+        // but too much to drop for a patch: the page is asked for as well.
+        const page = [...rows(16, 30), ...rows(96, 100)]
+        const whole = { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: false, nextBeforeAt: 160, nextBeforeSeq: 16 }
+        const queries: Query[] = []
+        const answers: MessagesResponse[] = []
         const api = createApi(async (_sessionId, query) => {
+            queries.push(query)
             if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
-            if (query.limit === INITIAL_PAGE_SIZE) {
-                return latest(page.slice(-20), 2, { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: false, nextBeforeAt: 250, nextBeforeSeq: 25 })
-            }
+            if (query.limit === INITIAL_PAGE_SIZE) return latest(rows(96, 100), 2, whole)
             takeReconcilePageMark(id)
-            return latest(page, 2, { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: false, nextBeforeAt: 250, nextBeforeSeq: 25 })
+            // The first full page asked for is the list and its rows; the second is the page itself.
+            const response = answers.length === 0
+                ? latest(rows(16, 30), 2, { ...whole, rowHashes: page.map((message) => ({ id: message.id, hash: message.rowHash ?? '' })) })
+                : latest(page, 2, whole)
+            answers.push(response)
+            return response
         })
 
         await openWindow(api, id)
 
+        expect(queries).toEqual([{ limit: INITIAL_PAGE_SIZE }, { limit: 200 }, { limit: 200 }])
         expect(idsOf(id)).toEqual(page.map((message) => message.id))
-        expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, hasMore: false, pendingGapRecovery: false, warning: null })
+        expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, hasMore: false, pendingGapRecovery: false, warning: null, isSyncingTail: false })
+    })
+
+    it('keeps a row the list still names with the fingerprint the window holds when the rows asked for after it are fewer', async () => {
+        // The list names seventy rows, three of which differ; the rows that
+        // came back are those three. Nothing else is taken or dropped.
+        const id = sessionId('epoch-list-partial')
+        persistWindow(id, cached, 1)
+        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+        const page = cached.map((message) => (['m40', 'm60', 'm80'].includes(message.id) ? edited(message, `${message.rowHash}-edited`) : message))
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
+            if (query.limit === INITIAL_PAGE_SIZE) return latest(cached.slice(-20), 2, FIRST)
+            takeReconcilePageMark(id)
+            return latest([page[9]!, page[29]!, page[49]!], 2, { ...PAGE, rowHashes: page.map((message) => ({ id: message.id, hash: message.rowHash ?? '' })) })
+        })
+
+        await openWindow(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(idsOf(id)).toEqual(cached.map((message) => message.id))
+        expect(state.messages.filter((message) => message.rowHash?.endsWith('-edited')).map((message) => message.id)).toEqual(['m40', 'm60', 'm80'])
+        expect(state).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
+    })
+
+    it('checks the window against a list the hub read under a newer epoch than the first page, when the first page found nothing moved', async () => {
+        // The first page was read under the window's epoch; the epoch moved on
+        // before the list was read (ApiClient.getReconcilePage takes such a
+        // list: it is newer than everything the window has read).
+        const id = sessionId('epoch-list-newer')
+        persistWindow(id, cached, 1)
+        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+        const page = cached.filter((message) => message.id !== 'm60')
+        const queries: Query[] = []
+        const marks: Array<ReconcileMark | null> = []
+        const api = createApi(async (_sessionId, query) => {
+            queries.push(query)
+            if (query.afterAt !== undefined) throw new Error('no catch-up: the head did not move')
+            if (query.limit === INITIAL_PAGE_SIZE) return latest(cached.slice(-20), 1, FIRST)
+            marks.push(takeReconcilePageMark(id))
+            return latest([], 2, { ...PAGE, rowHashes: page.map((message) => ({ id: message.id, hash: message.rowHash ?? '' })) })
+        })
+
+        await openWindow(api, id)
+
+        expect(queries).toEqual([{ limit: INITIAL_PAGE_SIZE }, { limit: 200 }])
+        expect(marks[0]).toMatchObject({ epoch: 1 })
+        expect(marks[0]).not.toHaveProperty('seenEpoch')
+        expect(idsOf(id)).toEqual(page.map((message) => message.id))
+        expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
+    })
+
+    it('a list under the window\'s own epoch is an upsert, as it always was: nothing is dropped', async () => {
+        const id = sessionId('epoch-list-same')
+        persistWindow(id, cached, 1)
+        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+        // The hub no longer lists m60 but did not move the epoch: not a removal the window acts on.
+        const page = cached.filter((message) => message.id !== 'm60')
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) throw new Error('no catch-up: the head did not move')
+            if (query.limit === INITIAL_PAGE_SIZE) return latest(cached.slice(-20), 1, FIRST)
+            takeReconcilePageMark(id)
+            return latest([], 1, { ...PAGE, rowHashes: page.map((message) => ({ id: message.id, hash: message.rowHash ?? '' })) })
+        })
+
+        await openWindow(api, id)
+
+        expect(idsOf(id)).toEqual(cached.map((message) => message.id))
+        expect(getMessageWindowState(id)).toMatchObject({ epoch: 1, pendingGapRecovery: false, warning: null })
     })
 
     it('keeps the old epoch label until the page has been checked, so a failed check is still answered with a reset', async () => {
@@ -373,7 +491,7 @@ describe('an open that finds the session\'s epoch moved on keeps its window', ()
         const api = createApi(async (_sessionId, query) => {
             queries.push(query)
             if (query.limit === INITIAL_PAGE_SIZE) {
-                return latest(cached.slice(-20), 2, { snapshotHeadAt: 1_000, snapshotHeadSeq: 100, hasMore: true, nextBeforeAt: 810, nextBeforeSeq: 81 })
+                return latest(cached.slice(-20), 2, FIRST)
             }
             if (fail) throw new Error('page unavailable')
             // The next plain sync asks with the epoch the window still claims; the hub answers the page with a reset verdict.

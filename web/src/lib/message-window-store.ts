@@ -158,8 +158,11 @@ const appliedRewindLocalIds = new Map<string, Set<string>>()
 type OpenReconcile =
     /** The session page asked; the first page has not landed yet. */
     | { requested: true }
-    /** The first page landed: what the reconcile needs to know. */
-    | { requested: false; cursor: MessagePosition | null; epochChanged: boolean }
+    /** The first page landed: what the reconcile needs to know. `epoch` is
+     *  the one that page was read under — the newest the window has read a
+     *  page under, which is not the one its other rows are labelled with once
+     *  `epochChanged`. */
+    | { requested: false; cursor: MessagePosition | null; epochChanged: boolean; epoch: number }
 const openReconciles = new Map<string, OpenReconcile>()
 
 export const MAX_RETAINED_INACTIVE_WINDOWS = 12
@@ -1171,8 +1174,8 @@ function isLocallyHeldRow(message: DecryptedMessage): boolean {
 
 /**
  * An open found the session's epoch moved on since the window read its rows,
- * so rows may have changed in place or been removed. The labelled newest page
- * is in hand; check the window against it row by row instead of replacing the
+ * so rows may have changed in place or been removed. The newest page is in
+ * hand; check the window against it row by row instead of replacing the
  * window with the first page's twenty rows:
  *
  *  - a page row the window lacks, or holds with another fingerprint, is taken
@@ -1183,6 +1186,15 @@ function isLocallyHeldRow(message: DecryptedMessage): boolean {
  *    the page is the whole session (nothing older than it exists): then every
  *    row is in range;
  *  - rows older than a page that has older rows beyond it are left alone.
+ *
+ * The page comes in one of two shapes. The labelled page itself: its rows are
+ * what is listed and what is taken. Or, from the transport (ApiClient.
+ * getReconcilePage), the page's fingerprint list (`page.rowHashes`, every row
+ * the page holds) with `messages` narrowed to the rows that differed — the
+ * rows the window lacks or holds with another fingerprint are taken already,
+ * the listed rows the window holds unchanged are not served, and the list is
+ * what tells a row the window holds inside the range that the page no longer
+ * has. Either way the page's metadata is the whole page's.
  *
  * More differing rows than a reconcile ever lists — a rewind, say — is not a
  * patch: the answer is null and the caller replaces the window with the page
@@ -1197,12 +1209,18 @@ function reconcileWindowWithPage(
     const pageOldest = pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
     if (!pageOldest) return null
     const wholeSession = response.page.hasMore !== true
-    const held = new Map(previous.messages.map((message) => [message.id, message]))
     const listed = new Set<string>()
     let take = 0
-    for (const message of response.messages) {
-        listed.add(message.id)
-        if (held.get(message.id)?.rowHash !== message.rowHash) take += 1
+    if (response.page.rowHashes !== undefined) {
+        for (const { id } of response.page.rowHashes) listed.add(id)
+        // Bounded by the transport (RECONCILE_MAX_IDS).
+        take = response.messages.length
+    } else {
+        const held = new Map(previous.messages.map((message) => [message.id, message]))
+        for (const message of response.messages) {
+            listed.add(message.id)
+            if (held.get(message.id)?.rowHash !== message.rowHash) take += 1
+        }
     }
     const dropped = new Set<string>()
     for (const message of previous.messages) {
@@ -1219,6 +1237,48 @@ function reconcileWindowWithPage(
         hasMore: false,
         oldestPositionAt: pageOldest.at,
         oldestPositionSeq: pageOldest.seq
+    })
+}
+
+/** What the reconcile step is to do with the newest page it asked for: apply it, or — when it came as a list the window has too many rows inside its range to drop — ask for the page itself. */
+type ReconcileOutcome = InternalState | 'page'
+
+/**
+ * The reconcile's newest page, applied to the window. The transport hint
+ * (`markReconcilePage`) may have had the transport answer with the page's
+ * fingerprint list and the rows that differ; `firstPageFoundEpochMoved` is
+ * the open's first page having found the session's epoch moved on.
+ *
+ *  - a reset verdict is authoritative: it replaces the window;
+ *  - a list read under another epoch than the window's rows were is that
+ *    page's range as the hub holds it now: the window is checked against it
+ *    (`reconcileWindowWithPage`); when too many of its rows inside the range
+ *    are no longer listed to drop, the answer is 'page' and the caller asks
+ *    for the page itself, which replaces the window as before;
+ *  - a page, after a first page that found the epoch moved: checked by id;
+ *    too different, and it replaces the window;
+ *  - any other page is upserted, or replaces the window when its epoch is not
+ *    the window's.
+ */
+function applyReconcileResponse(
+    previous: InternalState,
+    response: MessagesResponse,
+    requestBaseline: Map<string, DecryptedMessage>,
+    trimLimit: number,
+    firstPageFoundEpochMoved: boolean
+): ReconcileOutcome {
+    if (!response.page.reset && response.page.rowHashes !== undefined && response.page.epoch !== previous.epoch) {
+        return reconcileWindowWithPage(previous, response, requestBaseline, trimLimit) ?? 'page'
+    }
+    if (!response.page.reset && firstPageFoundEpochMoved) {
+        const verified = reconcileWindowWithPage(previous, response, requestBaseline, trimLimit)
+        if (verified) return verified
+    }
+    return applyLatestResponse(previous, response, {
+        replaceServerRows: response.page.reset
+            || (previous.epoch !== null && response.page.epoch !== previous.epoch),
+        requestBaseline,
+        trimLimit
     })
 }
 
@@ -1492,7 +1552,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 })
             })
             if (armReconcile) {
-                openReconciles.set(sessionId, { requested: false, cursor: initialCursor, epochChanged })
+                openReconciles.set(sessionId, { requested: false, cursor: initialCursor, epochChanged, epoch: response.page.epoch })
                 const controller = tailSyncControllers.get(sessionId)
                 if (controller) controller.trailingRequested = true
             }
@@ -1636,39 +1696,60 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 // original cursor and the flag survive, and the next sync
                 // retries the whole recovery.
                 const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
+                const windowEpoch = getState(sessionId).epoch ?? 0
                 // Transport hint (web only): this page is the reconcile, not a
                 // replacement, and here is what the window holds. A client that
                 // knows nothing about it answers the plain page.
                 markReconcilePage(sessionId, {
-                    epoch: getState(sessionId).epoch ?? 0,
+                    epoch: windowEpoch,
                     rows: new Map(getState(sessionId).messages.map((message) => [message.id, message.rowHash])),
-                    ...(openReconcile?.epochChanged ? { staleEpoch: true } : {})
+                    // The open's first page was read under another epoch than
+                    // the window's rows are labelled with (it stays labelled so
+                    // until checked): the list the transport reads must be from
+                    // that page's time or later.
+                    ...(openReconcile && openReconcile.epoch !== windowEpoch ? { seenEpoch: openReconcile.epoch } : {})
                 })
-                const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+                // Applies the reconcile's page; true when the page came as the
+                // list under a moved epoch and more rows inside its range would
+                // have to be dropped than a patch drops: the page itself is
+                // wanted then.
+                const applyReconcilePage = (response: MessagesResponse): boolean => {
+                    let wantsPage = false
+                    updateState(sessionId, (previous) => {
+                        if (previous.syncGeneration !== generation) return previous
+                        const trimLimit = Math.min(OLDER_LOAD_WINDOW_SIZE, Math.max(VISIBLE_WINDOW_SIZE, previous.messages.length))
+                        // The open found the epoch moved: the page is checked
+                        // against the window row by row rather than replacing it.
+                        // Too different, and the window is replaced as before.
+                        const next = applyReconcileResponse(
+                            previous,
+                            response,
+                            requestBaseline,
+                            trimLimit,
+                            openReconcile?.epochChanged === true
+                        )
+                        if (next === 'page') {
+                            wantsPage = true
+                            return previous
+                        }
+                        // The activation flag is consumed here — the upsert
+                        // subsumed its refresh — but the recovery stays pending
+                        // until the row sweep below succeeds, so a failed context
+                        // request retries on the next sync instead of leaving the
+                        // enriched cached call stale with no retry path.
+                        return buildState(next, { preferLatestOnActivation: false })
+                    })
+                    return wantsPage
+                }
+                let response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
                 if (!isCurrentTailSync(sessionId, generation)) return
                 noteSessionOpenPage(sessionId, 'latest', response.messages.length)
-                updateState(sessionId, (previous) => {
-                    if (previous.syncGeneration !== generation) return previous
-                    const trimLimit = Math.min(OLDER_LOAD_WINDOW_SIZE, Math.max(VISIBLE_WINDOW_SIZE, previous.messages.length))
-                    // The open found the epoch moved: the page is checked
-                    // against the window row by row rather than replacing it.
-                    // Too different, and the window is replaced as before.
-                    const verified = openReconcile?.epochChanged && !response.page.reset
-                        ? reconcileWindowWithPage(previous, response, requestBaseline, trimLimit)
-                        : null
-                    const next = verified ?? applyLatestResponse(previous, response, {
-                        replaceServerRows: response.page.reset
-                            || (previous.epoch !== null && response.page.epoch !== previous.epoch),
-                        requestBaseline,
-                        trimLimit
-                    })
-                    // The activation flag is consumed here — the upsert
-                    // subsumed its refresh — but the recovery stays pending
-                    // until the row sweep below succeeds, so a failed context
-                    // request retries on the next sync instead of leaving the
-                    // enriched cached call stale with no retry path.
-                    return buildState(next, { preferLatestOnActivation: false })
-                })
+                if (applyReconcilePage(response)) {
+                    response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+                    if (!isCurrentTailSync(sessionId, generation)) return
+                    noteSessionOpenPage(sessionId, 'latest', response.messages.length)
+                    applyReconcilePage(response)
+                }
 
                 // A tool-call row the client cached before the gap can be
                 // enriched in place afterwards; when more than a latest page of

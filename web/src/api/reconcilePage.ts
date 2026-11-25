@@ -1,4 +1,5 @@
 import { MESSAGES_PAGE_MAX } from '@hapi/protocol/apiTypes'
+import type { MessagesResponse } from '@/types/api'
 
 /**
  * The gap-recovery page, paid per changed row instead of per page.
@@ -19,9 +20,15 @@ import { MESSAGES_PAGE_MAX } from '@hapi/protocol/apiTypes'
  * An open's reconcile follows its first page without waiting for the session's
  * event stream, so the router starts the fingerprint list on the tap too
  * (`prefetchSessionOpenPage`, `ApiClient.prefetchReconcileManifest`): the list
- * needs only the epoch the persisted window was read under. A window whose
- * epoch the hub has moved on from gets the page itself for that list, and the
- * store checks its rows against it by id (`staleEpoch`).
+ * needs only the epoch the persisted window was read under. The list is asked
+ * for under any epoch (`manifestAnyEpoch`): the hub that knows the parameter
+ * answers it with the list even once the session's epoch has moved on, which
+ * is what happens every time a streamed block settles. The list then names
+ * every row of the newest page, and the store takes it as that page's range:
+ * rows the window holds inside it that are not listed are dropped, the rows
+ * that differ are fetched by id, rows older than the page are kept. A hub
+ * that does not know the parameter answers such a list with the page itself,
+ * which is taken as the page (`staleEpoch` rows are then checked by id).
  */
 
 export type ReconcileMark = {
@@ -32,15 +39,14 @@ export type ReconcileMark = {
      *  hub labelled pages). */
     rows: ReadonlyMap<string, string | undefined>
     /**
-     * The hub has moved the session's epoch on since the window read its rows
-     * (the open's first page said so). A fingerprint list asked for with the
-     * old epoch is answered with the page itself, and rows may have been
-     * removed, which no list of the survivors can show: the reconcile takes
-     * the labelled page — the one prefetched on the tap, which the hub
-     * answered the same way — and the store checks its window against it by
-     * id.
+     * The newest epoch the window has read a page under, when that is not
+     * `epoch`: an open whose first page found the session's epoch moved on
+     * read that page under the new one while its other rows stay labelled
+     * with the old. A list read under an earlier epoch than this was read
+     * before a removal that page already lacks, so it is not this window's to
+     * be checked against and is asked for again.
      */
-    staleEpoch?: boolean
+    seenEpoch?: number
 }
 
 let marked: { sessionId: string; mark: ReconcileMark } | null = null
@@ -61,9 +67,14 @@ export function takeReconcilePageMark(sessionId: string): ReconcileMark | null {
     return taken && taken.sessionId === sessionId ? taken.mark : null
 }
 
-/** The messages query of the reconcile's fingerprint list for a window read under `epoch`. */
+/**
+ * The messages query of the reconcile's fingerprint list for a window read under `epoch`.
+ * The list is asked for under any epoch (`manifestAnyEpoch`): a hub that knows the
+ * parameter answers with the list once the session's epoch has moved on, with the
+ * page's rows as they are now; one that does not answers with the page itself.
+ */
 export function reconcileManifestQuery(epoch: number): string {
-    return `limit=${MESSAGES_PAGE_MAX}&knownEpoch=${epoch}&withRowHashes=1&rowHashes=1`
+    return `limit=${MESSAGES_PAGE_MAX}&knownEpoch=${epoch}&withRowHashes=1&rowHashes=1&manifestAnyEpoch=1`
 }
 
 /** Whether a messages query is that of a reconcile's fingerprint list, whatever epoch it asked for. */
@@ -73,6 +84,17 @@ export function isReconcileManifestQuery(query: string): boolean {
         && params.get('rowHashes') === '1'
         && params.get('knownEpoch') !== null
         && !params.has('ids')
+}
+
+/**
+ * Whether a response is a fingerprint list this window may be checked
+ * against: a list (`page.rowHashes`), read under the epoch the window's rows
+ * were read under or a later one it has already read a page under
+ * (`mark.seenEpoch`). One read under an earlier epoch was read before a page
+ * the window has since read, and may still list rows that page already lacked.
+ */
+export function isReconcileList(response: MessagesResponse, mark: ReconcileMark): boolean {
+    return response.page.rowHashes !== undefined && response.page.epoch >= (mark.seenEpoch ?? mark.epoch)
 }
 
 /** The rows of the newest page the window does not hold as the hub would serve them now. */

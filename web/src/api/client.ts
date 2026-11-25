@@ -11,6 +11,7 @@ import {
     RECONCILE_MAX_IDS,
     RECONCILE_MIN_LABELLED_ROWS,
     isFullLatestPage,
+    isReconcileList,
     isReconcileManifestQuery,
     labelledRowCount,
     reconcileManifestQuery,
@@ -305,6 +306,9 @@ type PrefetchedPage = {
     at: number
     response: Promise<MessagesResponse>
 }
+
+/** A page answered as its fingerprint list (`page.rowHashes`). */
+type ListResponse = MessagesResponse & { page: { rowHashes: NonNullable<MessagesResponse['page']['rowHashes']> } }
 
 export class ApiClient {
     private token: string
@@ -823,9 +827,13 @@ export class ApiClient {
      * landed the list has too, and the reconcile is a row request instead of
      * a list request and then a row request.
      *
-     * The hub answers with the page itself once the session's epoch has moved
-     * on. That page is kept as well: the store then checks its window against
-     * it by id instead of asking for the page again.
+     * The list is asked for under any epoch (see ./reconcilePage). A hub that
+     * has moved the session's epoch on since the window read its rows — what
+     * every settled streamed block does — answers it with the list as the
+     * page is now, and the store checks the window against that list by id
+     * and drops what it no longer holds. A hub that does not know the
+     * parameter answers with the page itself, which the store checks by id
+     * as before.
      */
     prefetchReconcileManifest(sessionId: string, epoch: number): void {
         this.stashPrefetchedPage(sessionId, reconcileManifestQuery(epoch))
@@ -863,36 +871,24 @@ export class ApiClient {
      * The gap-recovery reconcile (see ./reconcilePage). The page metadata —
      * cursors, hasMore, snapshot head, epoch — is always the whole page's;
      * only `messages` narrows to what the window is missing or holds stale.
+     * The list rides along on the page (`page.rowHashes`): read under another
+     * epoch than the window's rows were, it is the page's range as the hub
+     * holds it now, and the window store checks its rows against it.
      */
     private async getReconcilePage(sessionId: string, mark: ReconcileMark): Promise<MessagesResponse> {
         const wholePage = `limit=${MESSAGES_PAGE_MAX}`
         const fetchWholePage = () => this.fetchMessagesPage(sessionId, wholePage, true)
-        if (mark.staleEpoch) {
-            // The list prefetched on the tap was asked for with the window's
-            // old epoch, so the hub answered it with the labelled page: that
-            // is the page. (A list after all means the hub was still on the
-            // old epoch then; it says nothing about rows since removed, so it
-            // is not used.)
-            const prefetched = this.takePrefetchedManifest(sessionId)
-            const taken = prefetched ? await prefetched.catch(() => null) : null
-            if (taken && taken.page.rowHashes === undefined) {
-                return taken
-            }
-            return await fetchWholePage()
-        }
         // A cold open, or a window saved before the hub labelled pages, differs
         // in most of the page: the page itself is the cheaper request.
         if (labelledRowCount(mark) < RECONCILE_MIN_LABELLED_ROWS) {
             return await fetchWholePage()
         }
-        const pageUrl = (query: string) => (
-            this.messagesUrl(sessionId, `limit=${MESSAGES_PAGE_MAX}&knownEpoch=${mark.epoch}&${query}`)
-        )
-        const fetchManifest = () => this.request<MessagesResponse>(this.messagesUrl(sessionId, reconcileManifestQuery(mark.epoch)))
-        let manifest: MessagesResponse
+        const fetchList = () => this.request<MessagesResponse>(this.messagesUrl(sessionId, reconcileManifestQuery(mark.epoch)))
+        const isList = (response: MessagesResponse): response is ListResponse => response.page.rowHashes !== undefined
+        let list: MessagesResponse
         const prefetched = this.takePrefetchedManifest(sessionId)
         if (!prefetched) {
-            manifest = await fetchManifest()
+            list = await fetchList()
         } else {
             let taken: MessagesResponse | null = null
             try {
@@ -900,35 +896,52 @@ export class ApiClient {
             } catch {
                 // A prefetch nobody owed anything to: ask again.
             }
-            // The list was asked for with the epoch the window had on the tap.
-            // A list for another epoch is not this window's to compare with.
-            manifest = taken && (taken.page.rowHashes === undefined || taken.page.epoch === mark.epoch)
-                ? taken
-                : await fetchManifest()
+            if (taken && !isList(taken)) {
+                // The hub answered with the page itself: an older hub, which
+                // does not know the list is wanted under any epoch, once the
+                // session's epoch has moved on — or a reset verdict. That page
+                // is the answer, as it always was.
+                return taken
+            }
+            // The list was asked for on the tap, next to the first page. One
+            // read under an earlier epoch than the window has read a page
+            // under (the first page found the epoch moved on after the list
+            // was read) predates a removal that page already lacks: it is not
+            // this window's to be checked against, so the list is asked for
+            // again — and is answered by the page itself unless the hub knows
+            // the parameter.
+            list = taken && isReconcileList(taken, mark) ? taken : await fetchList()
         }
-        // An older hub answers the plain page. The hub also answers with the
-        // page itself once the session's epoch has moved on: rows may have
-        // been removed or reordered, and the window has to replace its copy
-        // rather than patch it.
-        if (manifest.page.rowHashes === undefined || manifest.page.epoch !== mark.epoch) {
-            return manifest
+        // An older hub answers the plain page. So does the hub for a list it
+        // will not serve (a reset verdict): the page is the answer then.
+        if (!isList(list)) {
+            return list
         }
-        const changed = rowsToFetch(mark, manifest.page.rowHashes)
+        if (!isReconcileList(list, mark)) {
+            // Read under an epoch the window has already read a page under:
+            // it may still list rows that page lacked. The page is the answer.
+            return await fetchWholePage()
+        }
+        const changed = rowsToFetch(mark, list.page.rowHashes)
         if (changed.length > RECONCILE_MAX_IDS) {
             return await fetchWholePage()
         }
         let messages: MessagesResponse['messages'] = []
         if (changed.length > 0) {
+            // Asked for under the epoch the list named. The hub answers an id
+            // list it has since left with the page itself: the page then.
             const rows = await this.request<MessagesResponse>(
-                pageUrl(`withRowHashes=1&ids=${changed.map(encodeURIComponent).join(',')}`)
+                this.messagesUrl(
+                    sessionId,
+                    `limit=${MESSAGES_PAGE_MAX}&knownEpoch=${list.page.epoch}&withRowHashes=1&ids=${changed.map(encodeURIComponent).join(',')}`
+                )
             )
-            if (rows.page.epoch !== mark.epoch) {
+            if (rows.page.epoch !== list.page.epoch) {
                 return rows
             }
             messages = rows.messages
         }
-        const { rowHashes: _rowHashes, ...page } = manifest.page
-        return { messages, page }
+        return { messages, page: list.page }
     }
 
     async getMessageContext(sessionId: string, messageId: string): Promise<MessageContextResponse | null> {
