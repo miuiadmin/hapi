@@ -10,7 +10,9 @@ import { stripLargeInlineImagePreviews } from '../../sync/attachmentPreviews'
 /** The fingerprint part of a messages query; undefined when it asks for none of it. */
 function rowHashesOf(query: MessagesQuery): MessagePageRowHashes | undefined {
     if (query.rowHashes === '1' && query.knownEpoch !== undefined) {
-        return { kind: 'manifest', knownEpoch: query.knownEpoch }
+        // `manifestAnyEpoch` is a manifest's alone: its list is answered under
+        // the hub's current epoch even when `knownEpoch` is not it.
+        return { kind: 'manifest', knownEpoch: query.knownEpoch, ...(query.manifestAnyEpoch === '1' ? { anyEpoch: true as const } : {}) }
     }
     if (query.ids !== undefined && query.knownEpoch !== undefined && query.withRowHashes === '1') {
         return { kind: 'ids', knownEpoch: query.knownEpoch, ids: query.ids.split(',') }

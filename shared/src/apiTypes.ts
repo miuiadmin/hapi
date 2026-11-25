@@ -203,7 +203,9 @@ export type MessagesResponse = {
         /**
          * Manifest pages only (`rowHashes`): for each row the page would hold,
          * the fingerprint the hub would serve it with — the same value as the
-         * row's `rowHash` on a labelled page.
+         * row's `rowHash` on a labelled page. A manifest asked with
+         * `manifestAnyEpoch` under an epoch the hub has left carries it too:
+         * the list is the page's as it is now, and `epoch` the hub's current.
          */
         rowHashes?: Array<{ id: string; hash: string }>
     }
@@ -792,6 +794,17 @@ export const MessagesQuerySchema = z.object({
      */
     rowHashes: z.literal('1').optional(),
     /**
+     * Latest pages only, with `rowHashes` and `knownEpoch`. The manifest is
+     * answered even when the epoch has moved on since `knownEpoch`: `messages`
+     * is empty and `page.rowHashes` lists the newest page as it is now, under
+     * the hub's current epoch (`page.epoch`). The list names every row of the
+     * page, so a client can also drop the rows it holds inside the page's
+     * range that are no longer listed. Without it a stale epoch gets the page
+     * itself, as before. Older hubs ignore the parameter and answer with the
+     * page, which such a client takes as the page. An id list never carries it.
+     */
+    manifestAnyEpoch: z.literal('1').optional(),
+    /**
      * Latest pages only, with `withRowHashes` and `knownEpoch`: the page as
      * usual, with `messages` narrowed to these rows (those the page holds).
      */
@@ -800,7 +813,8 @@ export const MessagesQuerySchema = z.object({
      * The session epoch the caller's fingerprints were handed under. The hub
      * answers a manifest or `ids` request with the full page instead when the
      * epoch has moved on since: rows may have been removed or reordered, and
-     * the caller has to replace its copy rather than patch it.
+     * the caller has to replace its copy rather than patch it. A manifest
+     * with `manifestAnyEpoch` is the exception: it gets the list.
      */
     knownEpoch: z.coerce.number().int().min(0).optional(),
 })
@@ -827,6 +841,10 @@ export const MessagesQuerySchema = z.object({
             path: ['ids'],
         },
     )
+    .refine((data) => data.manifestAnyEpoch === undefined || data.rowHashes !== undefined, {
+        message: 'manifestAnyEpoch requires a manifest (rowHashes=1)',
+        path: ['manifestAnyEpoch'],
+    })
     .refine((data) => data.ids === undefined || isIdList(data.ids), {
         message: 'ids must be 1 to 200 comma-separated message ids',
         path: ['ids'],

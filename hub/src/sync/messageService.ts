@@ -113,8 +113,15 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
 export type MessagePageRowHashes =
     /** Label every message of the page with its fingerprint. */
     | { kind: 'label' }
-    /** The page's fingerprints only; no messages. */
-    | { kind: 'manifest'; knownEpoch: number }
+    /**
+     * The page's fingerprints only; no messages. `anyEpoch`: the list is
+     * answered under the hub's current epoch even when `knownEpoch` is not it
+     * (`page.epoch` says which). The list names every row of the newest page,
+     * so a client that knows to read it this way can drop the rows it holds
+     * inside the page's range that are no longer listed — the reason a stale
+     * epoch is otherwise answered with the page itself.
+     */
+    | { kind: 'manifest'; knownEpoch: number; anyEpoch?: true }
     /** The page with only the given messages. */
     | { kind: 'ids'; knownEpoch: number; ids: string[] }
 
@@ -574,7 +581,13 @@ export class MessageService {
             // have been removed or reordered since, and patching its copy by
             // id would leave deleted rows standing. It gets the whole page.
             const stale = 'knownEpoch' in rowHashes && rowHashes.knownEpoch !== epoch
-            if (rowHashes.kind === 'manifest' && !stale) {
+            if (rowHashes.kind === 'manifest' && (!stale || rowHashes.anyEpoch === true)) {
+                // A manifest that asked for any epoch is answered with the list
+                // under the current one even when stale: the list names every
+                // row of the page, so a client that asked this way can drop
+                // what the page no longer holds instead of patching by id.
+                // Everything else about the page — cursor, hasMore, snapshot
+                // head — is the whole page's, as for any manifest.
                 served = []
                 manifest = messages.map((message) => ({ id: message.id, hash: message.rowHash ?? '' }))
             } else if (rowHashes.kind === 'ids' && !stale) {

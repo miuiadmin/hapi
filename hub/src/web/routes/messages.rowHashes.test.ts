@@ -198,6 +198,109 @@ describe('GET /api/sessions/:id/messages — row fingerprints', () => {
         expect(narrowed.messages.map((message) => message.id)).toEqual([plain.messages[0].id])
     })
 
+    describe('manifestAnyEpoch', () => {
+        const HASH_ASK = '?limit=200&withRowHashes=1'
+        const LIST = (epoch: number, any: boolean) => `?limit=200&rowHashes=1&knownEpoch=${epoch}${any ? '&manifestAnyEpoch=1' : ''}`
+
+        it('under the current epoch the list is the plain manifest, byte for byte', async () => {
+            const store = new Store(':memory:')
+            const sessionId = newSession(store, 'hashes-any-same')
+            seedConversation(store, sessionId, 12)
+            const app = createApp(store)
+            const plain = await get(app, sessionId, '?limit=200')
+
+            const plainList = await (await app.request(`/api/sessions/${sessionId}/messages${LIST(plain.page.epoch, false)}`)).text()
+            const anyList = await (await app.request(`/api/sessions/${sessionId}/messages${LIST(plain.page.epoch, true)}`)).text()
+            expect(anyList).toBe(plainList)
+            const parsed = JSON.parse(anyList) as MessagesResponse
+            expect(parsed.messages).toEqual([])
+            expect(parsed.page.epoch).toBe(plain.page.epoch)
+            expect(parsed.page.rowHashes).toHaveLength(12)
+        })
+
+        it('under an epoch the hub has left, the list is the page\'s as it is now and the epoch the hub\'s', async () => {
+            const store = new Store(':memory:')
+            const sessionId = newSession(store, 'hashes-any-stale')
+            seedConversation(store, sessionId, 30)
+            const app = createApp(store)
+            const before = await get(app, sessionId, HASH_ASK)
+
+            // A settle that lands before the head: one row backdated, one
+            // changed in place, three removed from the tail (a rewind), and
+            // the epoch moves on twice.
+            store.messages.addMessage(sessionId, userPrompt('late'), undefined, null, 1005)
+            store.messages.bumpMessageEpoch(sessionId)
+            editRow(store, before.messages[9].id, assistantText('edited'))
+            store.messages.truncateOpenCodeRewind(sessionId, before.messages[27].seq!, before.messages[27].id)
+
+            const now = await get(app, sessionId, HASH_ASK)
+            expect(now.page.epoch).toBeGreaterThan(before.page.epoch)
+
+            const staleList = await get(app, sessionId, LIST(before.page.epoch, true))
+            expect(staleList.messages).toEqual([])
+            expect(staleList.page.epoch).toBe(now.page.epoch)
+            expect(staleList.page.reset).toBe(false)
+            expect(staleList.page.rowHashes).toEqual(fingerprints(now.messages))
+            // Cursor, hasMore, snapshot head, revision: the whole page's, as for any manifest.
+            expect(withoutManifest(staleList.page)).toEqual(withoutManifest(now.page))
+            // The asked-for epoch does not matter: any epoch but the current one gets the same list.
+            expect(await get(app, sessionId, LIST(now.page.epoch - 1, true))).toEqual(staleList)
+
+            // A client that reads the list this way goes on to ask for its rows under the epoch the list named.
+            const changed = staleList.page.rowHashes!.filter((entry) => (
+                before.messages.find((message) => message.id === entry.id)?.rowHash !== entry.hash
+            )).map((entry) => entry.id)
+            expect(changed).toHaveLength(2)
+            const rows = await get(
+                app,
+                sessionId,
+                `?limit=200&withRowHashes=1&knownEpoch=${staleList.page.epoch}&ids=${changed.join(',')}`
+            )
+            expect(rows.messages.map((message) => message.id)).toEqual(changed)
+            expect(rows.messages.every((message) => HASH.test(message.rowHash ?? ''))).toBe(true)
+        })
+
+        it('changes nothing for a caller that does not send it: a stale list or id list still gets the page', async () => {
+            const store = new Store(':memory:')
+            const sessionId = newSession(store, 'hashes-any-plain')
+            seedConversation(store, sessionId, 6)
+            const app = createApp(store)
+            const before = await get(app, sessionId, '?limit=200')
+            store.messages.bumpMessageEpoch(sessionId)
+
+            // A stale list without the parameter: the labelled page, as before…
+            const stale = await get(app, sessionId, LIST(before.page.epoch, false))
+            const labelled = await get(app, sessionId, HASH_ASK)
+            expect(stale.messages).toEqual(labelled.messages)
+            expect(stale.messages.every((message) => HASH.test(message.rowHash ?? ''))).toBe(true)
+            expect(withoutManifest(stale.page)).toEqual(withoutManifest(labelled.page))
+            expect(JSON.stringify(stale)).toBe(JSON.stringify(labelled))
+            // …and so a stale id list, with or without rows to serve.
+            for (const ids of [before.messages[0].id, 'not-a-row']) {
+                const page = await get(app, sessionId, `?limit=200&withRowHashes=1&knownEpoch=${before.page.epoch}&ids=${ids}`)
+                expect(JSON.stringify(page)).toBe(JSON.stringify(labelled))
+            }
+            // Nothing else about the query changed: the parameter is absent from every answer.
+            expect(JSON.stringify(labelled)).not.toContain('manifestAnyEpoch')
+        })
+
+        it('is a manifest\'s alone, in one spelling', async () => {
+            const store = new Store(':memory:')
+            const sessionId = newSession(store, 'hashes-any-invalid')
+            store.messages.addMessage(sessionId, userPrompt('q1'), undefined, null, 1000)
+            const app = createApp(store)
+            for (const query of [
+                '?limit=200&manifestAnyEpoch=1',
+                '?limit=200&withRowHashes=1&manifestAnyEpoch=1',
+                '?limit=200&withRowHashes=1&knownEpoch=0&ids=abc&manifestAnyEpoch=1',
+                '?limit=200&rowHashes=1&knownEpoch=0&manifestAnyEpoch=true',
+                '?limit=200&rowHashes=1&knownEpoch=0&manifestAnyEpoch=0'
+            ]) {
+                expect((await app.request(`/api/sessions/${sessionId}/messages${query}`)).status, query).toBe(400)
+            }
+        })
+    })
+
     it('labels catch-up pages, including a reset verdict', async () => {
         const store = new Store(':memory:')
         const sessionId = newSession(store, 'hashes-after')

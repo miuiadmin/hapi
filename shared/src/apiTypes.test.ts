@@ -160,6 +160,24 @@ describe('MessagesQuerySchema', () => {
             expect(MessagesQuerySchema.safeParse(query).success, JSON.stringify(query)).toBe(false)
         }
     })
+
+    it('a manifest may ask to be answered under any epoch; only a manifest may', () => {
+        expect(MessagesQuerySchema.parse({ limit: '200', rowHashes: '1', knownEpoch: '3', manifestAnyEpoch: '1' }))
+            .toEqual({ limit: 200, rowHashes: '1', knownEpoch: 3, manifestAnyEpoch: '1' })
+        for (const query of [
+            // not without the manifest, not on an id list or a label, and one spelling
+            { limit: '200', knownEpoch: '3', manifestAnyEpoch: '1' },
+            { limit: '200', withRowHashes: '1', knownEpoch: '3', ids: 'a', manifestAnyEpoch: '1' },
+            { limit: '200', withRowHashes: '1', manifestAnyEpoch: '1' },
+            { limit: '200', rowHashes: '1', knownEpoch: '3', manifestAnyEpoch: 'true' },
+            { limit: '200', rowHashes: '1', knownEpoch: '3', manifestAnyEpoch: '0' }
+        ]) {
+            expect(MessagesQuerySchema.safeParse(query).success, JSON.stringify(query)).toBe(false)
+        }
+        // A query without the parameter parses to exactly what it did (nothing is added).
+        expect(MessagesQuerySchema.parse({ limit: '200', rowHashes: '1', knownEpoch: '3' }))
+            .toEqual({ limit: 200, rowHashes: '1', knownEpoch: 3 })
+    })
 })
 
 describe('DecryptedMessageSchema rowHash', () => {
