@@ -1,5 +1,5 @@
 import { BranchConversationDialog } from '@/components/BranchConversationDialog'
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
@@ -770,7 +770,10 @@ export function SessionChat(props: SessionChatProps) {
     return <SessionChatInner key={props.session.id} {...props} />
 }
 
-function SessionChatInner(props: SessionChatProps) {
+// memo: SessionPage re-renders on every message-window store notification
+// (each tail-sync step); the chat only re-renders when one of its props actually
+// changed. Message rows are shielded separately by the stable chat context.
+const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
@@ -805,20 +808,24 @@ function SessionChatInner(props: SessionChatProps) {
         }
     })
 
+    // `forkFlow` is a fresh object every render (it carries loading/preview state);
+    // the openers are stable callbacks, so depending on them keeps these handlers —
+    // and with them the thread's chat context — stable across sync re-renders.
+    const { openFork, openRewind } = forkFlow
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
-        forkFlow.openFork(messageLocalId)
-    }, [forkFlow])
+        openFork(messageLocalId)
+    }, [openFork])
 
     const onRewindConversation = useCallback(async (messageLocalId: string) => {
-        forkFlow.openRewind(messageLocalId)
-    }, [forkFlow])
+        openRewind(messageLocalId)
+    }, [openRewind])
 
     const onRewindForkFallback = useCallback(() => {
         if (!rewindForkFallback) return
         const localId = rewindForkFallback
         setRewindForkFallback(null)
-        forkFlow.openFork(localId)
-    }, [forkFlow, rewindForkFallback])
+        openFork(localId)
+    }, [openFork, rewindForkFallback])
     const sessionInactive = !props.session.active
     const inactiveCanResume = inactiveSessionCanResume(
         props.session,
@@ -835,6 +842,12 @@ function SessionChatInner(props: SessionChatProps) {
         props.session.metadata?.startingMode === 'pty' && props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const focusComposerRef = useRef<(() => void) | null>(null)
+    // Stable identities for two thread props, so the chat context the message rows
+    // read does not change on every SessionChat render.
+    const handleContinuePlan = useCallback(() => focusComposerRef.current?.(), [])
+    const handleBranchConversation = useCallback((messageLocalId?: string, messageId?: string) => {
+        setBranchPoint({ messageLocalId, messageId })
+    }, [])
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     // Incremental state for the tail-append fast path of the block reducer;
     // reset together with the other caches whenever the session changes.
@@ -1232,6 +1245,10 @@ function SessionChatInner(props: SessionChatProps) {
         void queryClient.resetQueries({ queryKey: effortInvalidationKey, exact: true })
     }, [agentFlavor, sessionId, sessionModel, queryClient])
     const controlledByUser = props.session.agentState?.controlledByUser === true && !props.session.metadata?.capabilities?.concurrentClients
+    // Gate for the per-message branch action (see the HappyThread prop below).
+    const canBranchConversation = Boolean(props.session.metadata?.machineId)
+        && (!props.session.active || !controlledByUser)
+        && ['claude', 'codex'].includes(props.session.metadata?.flavor ?? 'claude')
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
     const codexModelsState = useCodexModels({
         api: props.api,
@@ -2583,10 +2600,9 @@ function SessionChatInner(props: SessionChatProps) {
                             && Boolean(props.session.metadata?.codexSessionId && props.session.metadata?.machineId)}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
-                        onContinuePlan={() => focusComposerRef.current?.()}
+                        onContinuePlan={handleContinuePlan}
                         historyActionPending={forkFlow.loading || historyActionPending}
-                        onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && ['claude', 'codex'].includes(props.session.metadata?.flavor ?? 'claude')
-                            ? (messageLocalId, messageId) => setBranchPoint({ messageLocalId, messageId }) : undefined}
+                        onBranchConversation={canBranchConversation ? handleBranchConversation : undefined}
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
@@ -2993,4 +3009,4 @@ function SessionChatInner(props: SessionChatProps) {
             />
         </div>
     )
-}
+})

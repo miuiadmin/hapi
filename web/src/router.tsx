@@ -700,7 +700,9 @@ function SessionPage() {
         ? inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)
         : false
     const rawSendError = sendErrors[sessionId] ?? null
-    const sendError: ComposerSendError | null = rawSendError
+    // Memoized so the prop identity only changes with the error itself (it used to be a
+    // fresh object on every SessionPage render while an error was showing).
+    const sendError: ComposerSendError | null = useMemo(() => rawSendError
         ? {
             id: rawSendError.id,
             text: rawSendError.text,
@@ -717,7 +719,7 @@ function SessionPage() {
                 }
                 : null
         }
-        : null
+        : null, [rawSendError, canOfferInactiveReopen, t, sessionId, reopenFromErrorAffordance, reopeningSessionId])
 
     const resolvedSessionRef = useRef<{ source: string; target: Promise<string> } | null>(null)
     // Clear when the session id or active flag changes so a same-id resume
@@ -762,6 +764,29 @@ function SessionPage() {
             )
         }
     }, [api, session, messages.length, cursorChatStoreStatus?.onDisk, t, addToast])
+
+    const resolveSessionIdForUpload = useCallback(async (id: string) => {
+        return (await resolveSessionId(id)).sessionId
+    }, [resolveSessionId])
+
+    // Abort-restore errors are handed to the composer through this prop; keep the
+    // identity stable so the memoized SessionChat does not re-render for it.
+    const handleAbortRestore = useCallback((text: string) => {
+        sendErrorIdRef.current += 1
+        setSendErrors((prev) => ({
+            ...prev,
+            [sessionId]: {
+                id: sendErrorIdRef.current,
+                text,
+                message: t('chat.sendError.aborted'),
+                code: 'abort',
+                scheduledAt: null,
+                deliveryMode: 'queue',
+                mutationStarted: true,
+                restoreSuppressed: false
+            }
+        }))
+    }, [sessionId, t])
 
     const handleSessionResolved = useCallback((resolvedSessionId: string) => {
         if (session) {
@@ -1079,7 +1104,7 @@ function SessionPage() {
             onLoadNewer={handleLoadNewerMessages}
             onCancelLoadMore={cancelLoadMoreMessages}
             onSend={sendMessage}
-            resolveSessionIdForUpload={async (id) => (await resolveSessionId(id)).sessionId}
+            resolveSessionIdForUpload={resolveSessionIdForUpload}
             onUploadSessionResolved={handleSessionResolved}
             resolveSessionIdForVoice={resolveVoiceSessionId}
             onVoiceSessionResolved={handleVoiceSessionResolved}
@@ -1101,22 +1126,7 @@ function SessionPage() {
             onLoadMessageContext={loadMessageContextForSession}
             onInitialTargetConsumed={handleInitialMessageConsumed}
             onSearchTargetDismissed={handleSearchTargetDismissed}
-            onAbortRestore={(text) => {
-                sendErrorIdRef.current += 1
-                setSendErrors((prev) => ({
-                    ...prev,
-                    [sessionId]: {
-                        id: sendErrorIdRef.current,
-                        text,
-                        message: t('chat.sendError.aborted'),
-                        code: 'abort',
-                        scheduledAt: null,
-                        deliveryMode: 'queue',
-                        mutationStarted: true,
-                        restoreSuppressed: false
-                    }
-                }))
-            }}
+            onAbortRestore={handleAbortRestore}
         />
         </Suspense>
     )

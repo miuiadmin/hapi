@@ -1,5 +1,5 @@
 import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ThreadPrimitive, unstable_useThreadMessageIds, useAuiState } from '@assistant-ui/react'
 import type { ComponentProps } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -570,6 +570,12 @@ const THREAD_MESSAGE_COMPONENTS = {
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.Unstable_MessageById>['components']
 
+// Not memoized on purpose (measured, prototype A): a thread re-render still walks
+// this id list, but each ThreadPrimitive.Unstable_MessageById is memoized by
+// assistant-ui and the rows bail out on the stable chat context. Wrapping the
+// walk in memo() moved ~30ms of accounting from this component to "the rest of
+// the commit" without shortening any commit, and it breaks the search-target
+// tests, which drive a stubbed Unstable_MessageById through the parent's re-render.
 /**
  * Render messages by stable id instead of their current array index.
  *
@@ -729,7 +735,10 @@ export function ConversationOutlinePanel(props: {
     )
 }
 
-export function HappyThread(props: {
+// memo: re-renders only when one of its props changes (identity), not on every
+// SessionChat render; the sync capsule / scroll state still update through the
+// props that carry them.
+export const HappyThread = memo(function HappyThread(props: {
     api: ApiClient
     session: Session
     serviceTier?: string | null
@@ -2945,7 +2954,9 @@ export function HappyThread(props: {
             snapshots: completeSnapshots,
             sourceContentWidth: sourceContentWidth > 0 ? sourceContentWidth : null,
         })
-    }, [props.session])
+        // Reads refs and module helpers only: a stable identity keeps the chat
+        // context value (and with it every row) unchanged when `session` is patched.
+    }, [])
 
     return (
         <HappyChatProvider value={{
@@ -3136,4 +3147,4 @@ export function HappyThread(props: {
             </ThreadPrimitive.Root>
         </HappyChatProvider>
     )
-}
+})

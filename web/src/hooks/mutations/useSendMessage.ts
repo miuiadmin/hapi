@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
@@ -321,12 +321,22 @@ export function useSendMessage(
         },
     })
 
-    const sendMessage = async (
+    // Stable identities for sendMessage / retryMessage (they are props of the memoized
+    // SessionChat): the route rebuilds the `options` object on every render and the
+    // mutation result flips with isPending, so both are read through refs at call time.
+    const optionsRef = useRef(options)
+    optionsRef.current = options
+    const mutationRef = useRef(mutation)
+    mutationRef.current = mutation
+
+    const sendMessage = useCallback(async (
         text: string,
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode: MessageDeliveryMode = 'queue',
     ): Promise<SendMessageAcceptance | false> => {
+        const options = optionsRef.current
+        const mutation = mutationRef.current
         if (!api) {
             options?.onBlocked?.('no-api')
             haptic.notification('error')
@@ -404,9 +414,11 @@ export function useSendMessage(
             deliveryMode,
         })
         return { attemptId: localId }
-    }
+    }, [api, sessionId, haptic])
 
-    const retryMessage = (localId: string): boolean => {
+    const retryMessage = useCallback((localId: string): boolean => {
+        const options = optionsRef.current
+        const mutation = mutationRef.current
         if (!api) {
             options?.onBlocked?.('no-api')
             haptic.notification('error')
@@ -456,7 +468,7 @@ export function useSendMessage(
             .then(retry)
             .finally(() => hydratingRetriesRef.current.delete(localId))
         return true
-    }
+    }, [api, sessionId, haptic])
 
     return {
         sendMessage,

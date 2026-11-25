@@ -5,10 +5,65 @@ function normalizeTimestamp(value: number): Date {
     return new Date(ms)
 }
 
+// --- Cached Intl formatters ---------------------------------------------------
+// `Date.prototype.toLocaleString` / `toLocaleTimeString` construct a fresh
+// Intl.DateTimeFormat on every call (ECMA-402 ToDateTimeOptions + Construct,
+// ~25µs each): formatting the timestamps of a 200-row thread cost ~130ms
+// (CPU x6) per render. Each of those calls is specified as constructing a
+// DateTimeFormat from the given options — plus numeric defaults when no
+// date/time component is requested, see ALL_NUMERIC — so one cached instance
+// per (options, locales) yields the same strings. Checked against the
+// toLocale* calls for 7 locales x 800 instants x every option set below.
+
+const TIME_H23: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
+const TIME_HOUR_NUMERIC: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' }
+const MONTH_DAY_TIME: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+const MONTH_DAY_TIME_H23: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
+const YEAR_MONTH_DAY_TIME_H23: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
+const TIMESTAMP_TITLE: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit'
+}
+/** What `toLocaleString()` with no options formats: every component numeric. */
+const ALL_NUMERIC: Intl.DateTimeFormatOptions = {
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric'
+}
+
+// Keyed by the module-level option objects above (stable identity), then locale.
+let formatters = new WeakMap<Intl.DateTimeFormatOptions, Map<string, Intl.DateTimeFormat>>()
+let formattersZoneOffset = Number.NaN
+
+function formatWithCachedFormatter(date: Date, locales: string | string[] | undefined, options: Intl.DateTimeFormatOptions): string {
+    if (Number.isNaN(date.getTime())) return 'Invalid Date' // what toLocaleString returns; DateTimeFormat#format would throw
+    // A formatter pins its resolved time zone. toLocale* re-resolves on every call, so
+    // follow a system time-zone change (offset at the epoch) by starting over.
+    const zoneOffset = new Date(0).getTimezoneOffset()
+    if (zoneOffset !== formattersZoneOffset) {
+        formatters = new WeakMap()
+        formattersZoneOffset = zoneOffset
+    }
+    let byLocale = formatters.get(options)
+    if (!byLocale) {
+        byLocale = new Map()
+        formatters.set(options, byLocale)
+    }
+    const localeKey = locales === undefined ? '' : Array.isArray(locales) ? locales.join(',') : locales
+    let formatter = byLocale.get(localeKey)
+    if (!formatter) {
+        formatter = new Intl.DateTimeFormat(locales, options)
+        byLocale.set(localeKey, formatter)
+    }
+    return formatter.format(date)
+}
+
 export function formatUnixTimestamp(value: number): string {
     const date = normalizeTimestamp(value)
     if (Number.isNaN(date.getTime())) return String(value)
-    return date.toLocaleString()
+    return formatWithCachedFormatter(date, undefined, ALL_NUMERIC)
 }
 
 export function formatResetTime(value: number): string {
@@ -21,9 +76,9 @@ export function formatResetTime(value: number): string {
         && date.getDate() === now.getDate()
 
     if (isToday) {
-        return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        return formatWithCachedFormatter(date, undefined, TIME_HOUR_NUMERIC)
     }
-    return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    return formatWithCachedFormatter(date, undefined, MONTH_DAY_TIME)
 }
 
 export function formatMessageTimestamp(date: Date, now: Date = new Date()): string {
@@ -32,15 +87,15 @@ export function formatMessageTimestamp(date: Date, now: Date = new Date()): stri
         && date.getDate() === now.getDate()
 
     if (sameDay) {
-        return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+        return formatWithCachedFormatter(date, undefined, TIME_H23)
     }
 
     const sameYear = date.getFullYear() === now.getFullYear()
     if (sameYear) {
-        return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+        return formatWithCachedFormatter(date, undefined, MONTH_DAY_TIME_H23)
     }
 
-    return date.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    return formatWithCachedFormatter(date, undefined, YEAR_MONTH_DAY_TIME_H23)
 }
 
 export function formatOutlineTimestamp(
@@ -51,7 +106,7 @@ export function formatOutlineTimestamp(
     const sameDay = date.getFullYear() === now.getFullYear()
         && date.getMonth() === now.getMonth()
         && date.getDate() === now.getDate()
-    const time = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    const time = formatWithCachedFormatter(date, locale, TIME_H23)
 
     if (sameDay) {
         return time
@@ -82,14 +137,7 @@ export function formatOutlineTimestamp(
 }
 
 export function formatMessageTimestampTitle(date: Date): string {
-    return date.toLocaleString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        second: '2-digit'
-    })
+    return formatWithCachedFormatter(date, undefined, TIMESTAMP_TITLE)
 }
 
 // Known types: five_hour → "5-hour", seven_day → "7-day".
