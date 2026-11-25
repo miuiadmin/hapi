@@ -99,7 +99,9 @@ export function useMessages(
     )
     useLayoutEffect(() => {
         if (sessionId && !options.skipInitialTailSync) {
-            activateMessageWindow(sessionId)
+            // The open reconciles by itself once its first page has landed,
+            // instead of waiting for the session's event stream to connect.
+            activateMessageWindow(sessionId, { reconcileAfterFirstPage: true })
         }
     }, [options.skipInitialTailSync, sessionId])
 
@@ -202,7 +204,9 @@ export function useMessages(
             }
             try {
                 const state = getMessageWindowState(sessionId)
-                if (state.isSyncingTail) {
+                // A reconcile the open armed after its first page runs with the
+                // rows already published: the reader sees the tail while it runs.
+                if (state.isSyncingTail && !state.pendingGapRecovery) {
                     return
                 }
                 if (state.messages.length === 0) {

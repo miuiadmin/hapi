@@ -3,7 +3,9 @@ import { ApiClient, PREFETCHED_PAGE_TTL_MS } from './client'
 import {
     RECONCILE_MAX_IDS,
     RECONCILE_MIN_LABELLED_ROWS,
+    isReconcileManifestQuery,
     markReconcilePage,
+    reconcileManifestQuery,
     resetReconcilePageForTests,
     rowsToFetch
 } from './reconcilePage'
@@ -265,13 +267,17 @@ describe('ApiClient first-page prefetch', () => {
         await expect(api.getMessages('session-1', { limit: 20 })).rejects.toThrow()
     })
 
-    it('lets the page go when the session asks for something else', async () => {
+    it('keeps the page for its session when another shape is asked for first', async () => {
         fetchMock.mockImplementation(() => Promise.resolve(json(body([]))))
         const api = new ApiClient('test-token')
         api.prefetchMessages('session-1', { limit: 20 })
         await api.getMessages('session-1', { limit: 200 })
         expect(urls()).toHaveLength(2)
-        // Dropped, not kept for later: the next first page is a new request.
+        // A session opened right after another one is asked for a catch-up
+        // page first; its first page is still the one started on the tap.
+        await api.getMessages('session-1', { limit: 20 })
+        expect(urls()).toHaveLength(2)
+        // Taken once: the next first page is a new request.
         await api.getMessages('session-1', { limit: 20 })
         expect(urls()).toHaveLength(3)
         expect(urls()[2]).toBe(urls()[0])
@@ -287,7 +293,8 @@ describe('ApiClient first-page prefetch', () => {
         api.prefetchMessages('old', { limit: 20 })
         now += PREFETCHED_PAGE_TTL_MS + 1
         api.prefetchMessages('fresh', { limit: 20 })
-        expect([...stash().keys()]).toEqual(['fresh'])
+        expect([...stash().keys()]).toHaveLength(1)
+        expect([...stash().keys()][0]).toMatch(/^fresh\?limit=20&minConversation=1&withRowHashes=1$/)
 
         // An expired page is never handed out.
         now += PREFETCHED_PAGE_TTL_MS + 1
@@ -301,5 +308,190 @@ describe('ApiClient first-page prefetch', () => {
         const api = new ApiClient('test-token')
         api.prefetchMessages('session-1', { beforeAt: 900, beforeSeq: 7, limit: 200 })
         expect(fetchMock).not.toHaveBeenCalled()
+    })
+})
+
+describe('ApiClient reconcile list prefetch', () => {
+    let originalFetch: typeof globalThis.fetch
+    let fetchMock: ReturnType<typeof vi.fn>
+    const urls = () => fetchMock.mock.calls.map((call) => String(call[0]))
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch
+        fetchMock = vi.fn()
+        globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+        resetReconcilePageForTests()
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+        vi.restoreAllMocks()
+        resetReconcilePageForTests()
+    })
+
+    const listUrl = (sessionId: string, epoch: number) => `/api/sessions/${sessionId}/messages?limit=200&knownEpoch=${epoch}&withRowHashes=1&rowHashes=1`
+    const pageUrl = (sessionId: string) => `/api/sessions/${sessionId}/messages?limit=200&withRowHashes=1`
+    const held = window([['a', 'aaaaaaaaaaaa'], ['b', 'bbbbbbbbbbbb'], ['c', 'cccccccccccc']])
+
+    it('starts the list on the tap, for the window\'s epoch', () => {
+        fetchMock.mockImplementation(() => Promise.resolve(json(body([]))))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 7)
+        expect(urls()).toEqual([listUrl('session-1', 7)])
+    })
+
+    it('hands the reconcile the list started on the tap: no request of its own, and no rows when nothing differs', async () => {
+        fetchMock.mockResolvedValueOnce(json(body([], { rowHashes: [
+            { id: 'a', hash: 'aaaaaaaaaaaa' },
+            { id: 'b', hash: 'bbbbbbbbbbbb' },
+            { id: 'c', hash: 'cccccccccccc' }
+        ] })))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 3)
+        markReconcilePage('session-1', { epoch: 3, rows: held })
+
+        const response = await api.getMessages('session-1', { limit: 200 })
+
+        expect(urls()).toEqual([listUrl('session-1', 3)])
+        expect(response.messages).toEqual([])
+        expect(response.page).toEqual(page())
+    })
+
+    it('fetches only the rows the prefetched list says differ', async () => {
+        const fresh = row('b', 'b changed', 'ffffffffffff')
+        fetchMock
+            .mockResolvedValueOnce(json(body([], { rowHashes: [
+                { id: 'a', hash: 'aaaaaaaaaaaa' },
+                { id: 'b', hash: 'ffffffffffff' },
+                { id: 'c', hash: 'cccccccccccc' }
+            ] })))
+            .mockResolvedValueOnce(json(body([fresh])))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 3)
+        markReconcilePage('session-1', { epoch: 3, rows: held })
+
+        const response = await api.getMessages('session-1', { limit: 200 })
+
+        expect(urls()).toEqual([
+            listUrl('session-1', 3),
+            '/api/sessions/session-1/messages?limit=200&knownEpoch=3&withRowHashes=1&ids=b'
+        ])
+        expect(response.messages).toEqual([fresh])
+    })
+
+    it('asks for the list again when the prefetched one is for the epoch the window had before it moved on', async () => {
+        // The list left on the tap for epoch 3 and was answered for epoch 3;
+        // by the reconcile the window is under epoch 4.
+        fetchMock
+            .mockResolvedValueOnce(json(body([], { rowHashes: [{ id: 'a', hash: 'aaaaaaaaaaaa' }] })))
+            .mockResolvedValueOnce(json(body([], { epoch: 4, rowHashes: [{ id: 'a', hash: 'aaaaaaaaaaaa' }] })))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 3)
+        markReconcilePage('session-1', { epoch: 4, rows: held })
+
+        await api.getMessages('session-1', { limit: 200 })
+
+        expect(urls()).toEqual([listUrl('session-1', 3), listUrl('session-1', 4)])
+    })
+
+    it('asks for the list again when the prefetched one failed', async () => {
+        fetchMock
+            .mockResolvedValueOnce(new Response('nope', { status: 503 }))
+            .mockResolvedValueOnce(json(body([], { rowHashes: [{ id: 'a', hash: 'aaaaaaaaaaaa' }] })))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 3)
+        markReconcilePage('session-1', { epoch: 3, rows: held })
+
+        const response = await api.getMessages('session-1', { limit: 200 })
+
+        expect(urls()).toEqual([listUrl('session-1', 3), listUrl('session-1', 3)])
+        expect(response.messages).toEqual([])
+    })
+
+    it('returns the page the hub answered a stale list with, without asking again', async () => {
+        // The window's rows were read under epoch 3 and the hub has moved on
+        // to 4: the list asked for on the tap came back as the page itself.
+        const whole = [row('a', 'a', 'aaaaaaaaaaaa'), row('b', 'b changed', 'ffffffffffff')]
+        fetchMock.mockResolvedValueOnce(json(body(whole, { epoch: 4 })))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 3)
+        markReconcilePage('session-1', { epoch: 3, rows: held, staleEpoch: true })
+
+        expect(await api.getMessages('session-1', { limit: 200 })).toEqual(body(whole, { epoch: 4 }))
+        expect(urls()).toEqual([listUrl('session-1', 3)])
+    })
+
+    it('asks for the page when the stale-epoch reconcile has no prefetched list', async () => {
+        const whole = [row('a', 'a', 'aaaaaaaaaaaa')]
+        fetchMock.mockResolvedValueOnce(json(body(whole, { epoch: 4 })))
+        const api = new ApiClient('test-token')
+        markReconcilePage('session-1', { epoch: 3, rows: held, staleEpoch: true })
+
+        expect(await api.getMessages('session-1', { limit: 200 })).toEqual(body(whole, { epoch: 4 }))
+        expect(urls()).toEqual([pageUrl('session-1')])
+    })
+
+    it('asks for the page when the hub answered the prefetched list with a list after all', async () => {
+        // The hub was still on the old epoch when the list was read: that list
+        // says nothing about rows removed since, so the page is asked for.
+        const whole = [row('a', 'a', 'aaaaaaaaaaaa')]
+        fetchMock
+            .mockResolvedValueOnce(json(body([], { rowHashes: [{ id: 'a', hash: 'aaaaaaaaaaaa' }] })))
+            .mockResolvedValueOnce(json(body(whole)))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 3)
+        markReconcilePage('session-1', { epoch: 3, rows: held, staleEpoch: true })
+
+        expect(await api.getMessages('session-1', { limit: 200 })).toEqual(body(whole))
+        expect(urls()).toEqual([listUrl('session-1', 3), pageUrl('session-1')])
+    })
+
+    it('leaves the first page alone: each prefetched request answers only its own shape', async () => {
+        const first = body([row('a', 'a', 'aaaaaaaaaaaa')], { limit: 20 })
+        fetchMock.mockImplementation(() => Promise.resolve(json(first)))
+        const api = new ApiClient('test-token')
+        api.prefetchMessages('session-1', { limit: 20 })
+        api.prefetchReconcileManifest('session-1', 3)
+        expect(urls()).toEqual([
+            '/api/sessions/session-1/messages?limit=20&minConversation=1&withRowHashes=1',
+            listUrl('session-1', 3)
+        ])
+        // The first page's request consumes only the first page.
+        await api.getMessages('session-1', { limit: 20 })
+        expect(urls()).toHaveLength(2)
+        // The reconcile's list waits for the reconcile; a plain full page does not take it.
+        await api.getMessages('session-1', { limit: 200 })
+        expect(urls()).toHaveLength(3)
+        expect(urls()[2]).toBe(pageUrl('session-1'))
+    })
+
+    it('the lists of two sessions are each their own', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(json(body([], { rowHashes: [
+            { id: 'a', hash: 'aaaaaaaaaaaa' }, { id: 'b', hash: 'bbbbbbbbbbbb' }, { id: 'c', hash: 'cccccccccccc' }
+        ] }))))
+        const api = new ApiClient('test-token')
+        api.prefetchReconcileManifest('session-1', 3)
+        api.prefetchReconcileManifest('session-2', 3)
+        markReconcilePage('session-1', { epoch: 3, rows: held })
+        await api.getMessages('session-1', { limit: 200 })
+        // No request for session-1's reconcile beyond the list started on its tap.
+        expect(urls()).toHaveLength(2)
+        markReconcilePage('session-2', { epoch: 3, rows: held })
+        await api.getMessages('session-2', { limit: 200 })
+        expect(urls()).toHaveLength(2)
+    })
+})
+
+describe('reconcile list queries', () => {
+    it('is the fingerprint list of the newest page for one epoch', () => {
+        expect(reconcileManifestQuery(12)).toBe('limit=200&knownEpoch=12&withRowHashes=1&rowHashes=1')
+        expect(isReconcileManifestQuery(reconcileManifestQuery(12))).toBe(true)
+    })
+
+    it('tells the list from the first page, the plain page, and the row request', () => {
+        expect(isReconcileManifestQuery('limit=20&minConversation=1&withRowHashes=1')).toBe(false)
+        expect(isReconcileManifestQuery('limit=200&withRowHashes=1')).toBe(false)
+        expect(isReconcileManifestQuery('limit=200&knownEpoch=12&withRowHashes=1&ids=a,b')).toBe(false)
+        expect(isReconcileManifestQuery('limit=200&knownEpoch=12&withRowHashes=1')).toBe(false)
     })
 })

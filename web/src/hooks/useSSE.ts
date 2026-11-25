@@ -278,6 +278,24 @@ function buildEventsUrl(
     }
 }
 
+export type SseConnectInfo = {
+    /** The hub replayed everything missed since the last connection. */
+    resumed: boolean
+    /**
+     * The first handshake of this subscription since it was selected: not the
+     * return of one of its connections that dropped. A subscription that is
+     * set up again for the same session because the connection dropped, the
+     * tab woke, or the token changed, reports false.
+     */
+    initial: boolean
+    /**
+     * The session the handshake's stream is scoped to, null for the global
+     * stream. A handshake that lands after the app moved on to another
+     * session still carries the one it belongs to.
+     */
+    sessionId: string | null
+}
+
 export function useSSE(options: {
     enabled: boolean
     token: string
@@ -290,7 +308,7 @@ export function useSSE(options: {
      * when the hub replayed everything missed since the last connection, so
      * the caller can skip its full REST resync.
      */
-    onConnect?: (info: { resumed: boolean }) => void
+    onConnect?: (info: SseConnectInfo) => void
     onDisconnect?: (reason: string) => void
     onError?: (error: unknown) => void
     onToast?: (event: ToastEvent) => void
@@ -321,6 +339,10 @@ export function useSSE(options: {
     // from a different subscription (e.g. after a session switch) would make
     // the hub replay against the wrong filter set, hence the key check.
     const lastEventCursorRef = useRef<{ key: string; id: string } | null>(null)
+    // The subscription the last connection was set up for. A setup for the
+    // same key is a reconnect of that subscription; one for another key is a
+    // subscription the caller newly selected.
+    const connectedKeyRef = useRef<string | null>(null)
     const lastActivityAtRef = useRef(0)
     // Mirror of the subscriptionId React state, readable synchronously from
     // teardown paths (requestReconnect / effect cleanup) that must mark the
@@ -391,9 +413,12 @@ export function useSSE(options: {
             subscriptionIdRef.current = null
             setSubscriptionId(null)
             setSubscriptionVisibility(null)
+            connectedKeyRef.current = null
             return
         }
 
+        const initialConnect = connectedKeyRef.current !== subscriptionKey
+        connectedKeyRef.current = subscriptionKey
         setSubscriptionId(null)
         setSubscriptionVisibility(null)
         const resumeCursor = lastEventCursorRef.current?.key === subscriptionKey
@@ -410,6 +435,9 @@ export function useSSE(options: {
         const eventSource = new EventSource(url)
         let disconnectNotified = false
         let reconnectRequested = false
+        // Set when this connection is torn down: a frame the browser still had
+        // queued for it belongs to a subscription the caller has left.
+        let tornDown = false
         // Observation only: this effect run's connection episode (perf) and,
         // for a session-scoped subscription, the thinking-phase stall tracker
         // (diag). Both are fail-silent and never touch connection behavior.
@@ -809,6 +837,12 @@ export function useSSE(options: {
         }
 
         const handleSyncEvent = (event: SyncEvent) => {
+            if (tornDown) {
+                // A frame the browser still had queued for a connection whose
+                // subscription the caller has left (a handshake of the session
+                // switched away from, say): it is nobody's now.
+                return
+            }
             lastActivityAtRef.current = Date.now()
 
             if (event.type === 'heartbeat') {
@@ -843,7 +877,14 @@ export function useSSE(options: {
                 // only) invalidation — sessions/details are App's job.
                 disarmWakeRestFallback(!resumed)
                 episode.noteConnect(handshakeSubscriptionId, Boolean(resumed))
-                onConnectRef.current?.({ resumed: Boolean(resumed) })
+                // The handshake is this connection's own: it says which session
+                // its stream is scoped to and whether this is the
+                // subscription's first connection.
+                onConnectRef.current?.({
+                    resumed: Boolean(resumed),
+                    initial: initialConnect,
+                    sessionId: subscription.sessionId ?? null
+                })
             }
 
             if (event.type === 'message-received') {
@@ -1147,6 +1188,7 @@ export function useSSE(options: {
         document.addEventListener('visibilitychange', onVisibilityChange)
 
         return () => {
+            tornDown = true
             clearInterval(watchdogTimer)
             clearTimeout(connectDeadlineTimer)
             document.removeEventListener('visibilitychange', onVisibilityChange)

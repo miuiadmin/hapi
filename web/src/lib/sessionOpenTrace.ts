@@ -7,17 +7,19 @@ import { peekSessionEntry } from '@/chat/sessionVisitTelemetry'
  *
  *   firstRowMs  tap → the first message row is on screen (from cache at once,
  *               or as soon as the first page lands)
- *   settledMs   tap → the tail is current and the open's own work is done: the
- *               session's event stream has joined and nothing is syncing
+ *   settledMs   tap → the tail is current and the open's own work is done: its
+ *               first sync and the reconcile it triggers have finished, and
+ *               nothing is syncing
  *   legs        the requests it took, with bytes on the wire and rows
  *
- * The timeline spans the stream join on purpose. The stream connects a moment
- * after the page, and a first connection cannot prove that nothing was missed,
- * so the client reconciles once more: a catch-up, then the newest page — or,
- * now that the hub labels rows with a fingerprint, the list of those
- * fingerprints and only the rows that differ from what the window holds.
- * Closing before that would leave the reconcile out of the timeline, and for a
- * long time it was the most expensive leg of an open.
+ * The timeline spans the open's reconcile on purpose. The first page is the
+ * newest rows; a first connection cannot prove that no row the window holds
+ * changed in place, so the open reconciles once more as soon as that page has
+ * landed: the list of the page's fingerprints and only the rows that differ
+ * from what the window holds. That reconcile used to wait for the session's
+ * event stream to connect; it no longer does, and neither does the timeline:
+ * an open settles once its syncs are done and a second passes without another
+ * starting. (The stream's own first connection no longer triggers anything.)
  *
  * The finished timeline goes to the hub as the `session_open_trace` event (so
  * every open can be looked up later with its wall-clock time) and is shown by
@@ -32,17 +34,14 @@ export const SESSION_OPEN_TRACE_MAX_LEGS = 12
 /**
  * A tail that stays current this long is considered settled; a sync starting in
  * the window resets it. It has to bridge the requests an open itself triggers
- * once its stream has joined — the catch-up, the reconcile, the row refreshes
- * — which follow each other within tens of milliseconds. It must not reach the
- * syncs that come after the open because something else happened: a message
- * the user sends, a running agent's next row. Those were measured at 1.1 s to
- * 2.4 s after the open's last request, and a 2 s window swallowed them into
- * the open's time. The background tail ticker is 10 s apart at its fastest.
+ * — the catch-up, the reconcile, the row refreshes — which follow each other
+ * within tens of milliseconds. It must not reach the syncs that come after the
+ * open because something else happened: a message the user sends, a running
+ * agent's next row. Those were measured at 1.1 s to 2.4 s after the open's
+ * last request, and a 2 s window swallowed them into the open's time. The
+ * background tail ticker is 10 s apart at its fastest.
  */
 export const SESSION_OPEN_TRACE_SETTLE_GRACE_MS = 1000
-/** How long an open waits for its event stream to join. A stream that never does
- *  (offline, blocked) must not keep the timeline open for good. */
-export const SESSION_OPEN_TRACE_STREAM_WAIT_MS = 10_000
 
 export type OpenTraceLegKind = 'latest' | 'context' | 'catch-up' | 'detail' | 'manifest' | 'refresh'
 type PageKind = Exclude<OpenTraceLegKind, 'detail' | 'manifest' | 'refresh'>
@@ -104,9 +103,6 @@ type ActiveTrace = {
     settledAt: number | null
     /** The last sync that finished left the window tail-current. */
     current: boolean
-    /** The session's event stream has joined since the open (or was given up on). */
-    streamJoined: boolean
-    streamWaitTimer: ReturnType<typeof setTimeout> | null
 }
 
 let active: ActiveTrace | null = null
@@ -189,14 +185,7 @@ function afterPaint(callback: () => void): void {
  * already waiting out its grace window closes as settled; any other closes as
  * left, with the rows the window holds right now.
  */
-function stopStreamWait(trace: ActiveTrace | null): void {
-    if (trace?.streamWaitTimer === null || trace?.streamWaitTimer === undefined) return
-    clearTimeout(trace.streamWaitTimer)
-    trace.streamWaitTimer = null
-}
-
 export function endSessionOpenTrace(rowCount?: number): void {
-    stopStreamWait(active)
     if (finalizeTimer !== null) {
         clearTimeout(finalizeTimer)
         finalizeTimer = null
@@ -229,16 +218,9 @@ export function beginSessionOpenTrace(sessionId: string, fromCache: boolean): vo
         firstRowAt: null,
         pages: [],
         settledAt: null,
-        current: false,
-        streamJoined: false,
-        streamWaitTimer: null
+        current: false
     }
     pendingRowCount = 0
-    const opened = active
-    opened.streamWaitTimer = setTimeout(() => {
-        opened.streamWaitTimer = null
-        noteSessionOpenStreamJoined(sessionId)
-    }, SESSION_OPEN_TRACE_STREAM_WAIT_MS)
     if (resourceTimingsReadyAt < active.t0) {
         resetResourceTimings()
     }
@@ -283,9 +265,9 @@ export function noteSessionOpenPage(sessionId: string, kind: PageKind, rows: num
 /**
  * A tail sync completed. The store reports every one right after it applied
  * its verdict: `current` says whether the window is now tail-current — no sync
- * in flight, nothing left to recover, no warning. The open settles on the first
- * such verdict that arrives once its event stream has joined; an open whose
- * first sync armed a gap recovery settles after the recovery.
+ * in flight, nothing left to recover, no warning. The open settles on the
+ * first such verdict; an open whose first sync armed its reconcile settles
+ * after that reconcile.
  */
 export function noteSessionOpenSync(sessionId: string, current: boolean, rowCount: number): void {
     const trace = active
@@ -296,23 +278,7 @@ export function noteSessionOpenSync(sessionId: string, current: boolean, rowCoun
         cancelSessionOpenSettle()
         return
     }
-    // The tail became current now. Remember it even while the timeline is
-    // still waiting for the stream: the wait is not part of the open's cost.
-    if (trace.settledAt === null) trace.settledAt = performance.now() - trace.t0
-    if (!trace.streamJoined) return
     scheduleSessionOpenSettle(sessionId, rowCount)
-}
-
-/** The session's event stream joined (the app reports it on every connect of the session's stream). */
-export function noteSessionOpenStreamJoined(sessionId: string): void {
-    const trace = active
-    if (!trace || trace.sessionId !== sessionId || trace.streamJoined) return
-    stopStreamWait(trace)
-    trace.streamJoined = true
-    // The stream's first connection makes the client reconcile once more: that
-    // sync starts any moment and re-arms the timeline, so this only closes the
-    // open when the window is current and stays that way.
-    if (trace.current) scheduleSessionOpenSettle(sessionId, pendingRowCount)
 }
 
 /**
@@ -342,7 +308,11 @@ export function cancelSessionOpenSettle(): void {
 }
 
 function legKind(url: string, marker: string): OpenTraceLegKind | null {
-    const rest = url.slice(url.indexOf(marker) + marker.length)
+    const index = url.indexOf(marker)
+    // Not a request of this session at all (the page's icon, the hub's own
+    // endpoints): nothing of the open.
+    if (index < 0) return null
+    const rest = url.slice(index + marker.length)
     if (rest === '' || rest.startsWith('?')) return 'detail'
     // Only what the open reads: a page (always requested with a limit or a
     // cursor) and a message's context. Sends, retries, attachment previews and
@@ -446,7 +416,6 @@ function readTimedLegs(trace: ActiveTrace): TrackedLeg[] {
 function finalizeSessionOpenTrace(left: boolean): void {
     const trace = active
     if (!trace) return
-    stopStreamWait(trace)
     active = null
     activeView = null
     const legs = readLegs(trace).slice(0, SESSION_OPEN_TRACE_MAX_LEGS)
@@ -502,7 +471,6 @@ export function subscribeSessionOpenTrace(listener: () => void): () => void {
 
 /** Tests only. */
 export function resetSessionOpenTrace(): void {
-    stopStreamWait(active)
     cancelSessionOpenSettle()
     active = null
     activeView = null

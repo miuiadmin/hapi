@@ -1,5 +1,5 @@
 import type { ApiClient } from '@/api/client'
-import { INITIAL_PAGE_SIZE } from '@/lib/message-window-store'
+import { INITIAL_PAGE_SIZE, getReconcileManifestEpoch } from '@/lib/message-window-store'
 import { prepareSessionOpenResourceTimings } from '@/lib/sessionOpenTrace'
 
 /**
@@ -13,6 +13,11 @@ import { prepareSessionOpenResourceTimings } from '@/lib/sessionOpenTrace'
  * here instead, and the transport hands the response to the session page when
  * it asks for the same page (`ApiClient.prefetchMessages`).
  *
+ * Next to it, for a session whose persisted window would be reconciled by
+ * fingerprint list, that list: the reconcile follows the first page without
+ * waiting for the session's event stream, and by then the list has landed
+ * too. It needs only the window's epoch, which the tap can read.
+ *
  * A tap that opens on a specific message (a search hit) loads a context page
  * instead; the caller skips those.
  */
@@ -23,4 +28,9 @@ export function prefetchSessionOpenPage(api: ApiClient | null, sessionId: string
     // request log after it.
     prepareSessionOpenResourceTimings()
     api.prefetchMessages(sessionId, { limit: INITIAL_PAGE_SIZE })
+    if (typeof api.prefetchReconcileManifest !== 'function') return
+    const epoch = getReconcileManifestEpoch(sessionId)
+    if (epoch !== null) {
+        api.prefetchReconcileManifest(sessionId, epoch)
+    }
 }

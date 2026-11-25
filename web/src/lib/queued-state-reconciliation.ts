@@ -14,9 +14,18 @@ const QUEUED_STATE_BATCH_SIZE = 1000
 
 export async function reconcileQueuedStateAfterConnect(
     api: ApiClient,
-    sessionId: string
+    sessionId: string,
+    /**
+     * `sync: false` reads the snapshot without asking for a tail sync first:
+     * for a connection whose reconcile the open's own sync is running or has
+     * run. The rows the snapshot decides about are guarded against having
+     * changed while the request was out either way.
+     */
+    options: { sync?: boolean } = {}
 ): Promise<void> {
-    await syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
+    if (options.sync !== false) {
+        await syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
+    }
     const candidateLocalIds = getQueuedReconcileCandidateLocalIds(sessionId)
     if (candidateLocalIds.length === 0) {
         return

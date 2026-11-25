@@ -9,7 +9,7 @@ import type { NormalizedMessage } from '@/chat/types'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 import { telemetryClient } from '@/lib/telemetryClient'
-import { markReconcilePage } from '@/api/reconcilePage'
+import { RECONCILE_MAX_IDS, RECONCILE_MIN_LABELLED_ROWS, markReconcilePage } from '@/api/reconcilePage'
 import { cancelSessionOpenSettle, noteSessionOpenPage, noteSessionOpenSync } from '@/lib/sessionOpenTrace'
 
 export type MessageViewMode = 'tail' | 'history'
@@ -147,6 +147,20 @@ const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
 const appliedRewindLocalIds = new Map<string, Set<string>>()
+/**
+ * What an open leaves for the reconcile it needs (see the first-page branch
+ * of `runTailSync`). An open asks for it when its window is activated
+ * (`activateMessageWindow` with `reconcileAfterFirstPage`); the first page's
+ * sync then arms it for the sync right after, which is that reconcile. The
+ * bare sync of the shared pagination fixtures asks for none of it and reads
+ * the first page alone, as it always did.
+ */
+type OpenReconcile =
+    /** The session page asked; the first page has not landed yet. */
+    | { requested: true }
+    /** The first page landed: what the reconcile needs to know. */
+    | { requested: false; cursor: MessagePosition | null; epochChanged: boolean }
+const openReconciles = new Map<string, OpenReconcile>()
 
 export const MAX_RETAINED_INACTIVE_WINDOWS = 12
 const NOTIFY_THROTTLE_MS = 150
@@ -1139,6 +1153,70 @@ function applyLatestResponse(
     })
 }
 
+/** A row the client owns rather than the server's page: not yet sent, waiting to be sent, or in a delivery state only the client can settle. */
+function isLocallyHeldRow(message: DecryptedMessage): boolean {
+    return optimisticMessage(message)
+        || isQueuedForInvocation(message)
+        || message.status === 'sending'
+        || message.status === 'failed'
+        || message.deliveryPending === true
+        || message.deliveryState === 'indeterminate'
+        || message.queueDismissed === true
+}
+
+/**
+ * An open found the session's epoch moved on since the window read its rows,
+ * so rows may have changed in place or been removed. The labelled newest page
+ * is in hand; check the window against it row by row instead of replacing the
+ * window with the first page's twenty rows:
+ *
+ *  - a page row the window lacks, or holds with another fingerprint, is taken
+ *    from the page (the upsert below does that by id);
+ *  - a window row inside the page's range that the page no longer lists is
+ *    dropped, unless the client owns it or it changed while the page was in
+ *    flight. The range is the page's own — at or after its oldest row — unless
+ *    the page is the whole session (nothing older than it exists): then every
+ *    row is in range;
+ *  - rows older than a page that has older rows beyond it are left alone.
+ *
+ * More differing rows than a reconcile ever lists — a rewind, say — is not a
+ * patch: the answer is null and the caller replaces the window with the page
+ * as before. So is a page without a cursor (nothing to range by).
+ */
+function reconcileWindowWithPage(
+    previous: InternalState,
+    response: MessagesResponse,
+    requestBaseline: Map<string, DecryptedMessage>,
+    trimLimit: number
+): InternalState | null {
+    const pageOldest = pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
+    if (!pageOldest) return null
+    const wholeSession = response.page.hasMore !== true
+    const held = new Map(previous.messages.map((message) => [message.id, message]))
+    const listed = new Set<string>()
+    let take = 0
+    for (const message of response.messages) {
+        listed.add(message.id)
+        if (held.get(message.id)?.rowHash !== message.rowHash) take += 1
+    }
+    const dropped = new Set<string>()
+    for (const message of previous.messages) {
+        if (listed.has(message.id) || isLocallyHeldRow(message) || requestBaseline.get(message.id) !== message) continue
+        const position = messagePosition(message)
+        if (position && (wholeSession || comparePosition(position, pageOldest) >= 0)) dropped.add(message.id)
+    }
+    if (take > RECONCILE_MAX_IDS || dropped.size > RECONCILE_MAX_IDS) return null
+    const retained = dropped.size === 0 ? previous : { ...previous, messages: previous.messages.filter((message) => !dropped.has(message.id)) }
+    const next = applyLatestResponse(retained, response, { replaceServerRows: false, requestBaseline, trimLimit })
+    if (!wholeSession) return next
+    // Nothing is older than a page that is the whole session, so the window's older paging ends with it too.
+    return buildState(next, {
+        hasMore: false,
+        oldestPositionAt: pageOldest.at,
+        oldestPositionSeq: pageOldest.seq
+    })
+}
+
 function beginTailSync(sessionId: string): number {
     let generation = 0
     updateState(sessionId, (previous) => {
@@ -1326,7 +1404,25 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             // ordinary pages pay no extra request.
             const context = await fetchInitialContextPage(api, sessionId, response)
             if (!isCurrentTailSync(sessionId, generation)) return
-            let gapRecoveryArmed = false
+            // This page opens the session — a cold window, or a cached one
+            // re-entered whose activation asked for the reconcile — rather than
+            // answering a structural reset or a server reset verdict, which are
+            // authoritative as they are. An open is not current yet: a cursor
+            // cannot tell that a row the window holds changed in place. The
+            // reconcile that can runs as the next sync, requested on this run's
+            // way out; it used to wait for the session's event stream to
+            // connect and hand over a gap.
+            const intent = openReconciles.get(sessionId)?.requested === true
+            openReconciles.delete(sessionId)
+            const replaced = initial.requiresLatestReset || response.page.reset === true
+            const armReconcile = intent && !replaced && !pendingGapRecovery
+            // The page was read under another epoch than the window's rows:
+            // rows may have been removed. The window is kept and the reconcile
+            // checks it against the page by id (reconcileWindowWithPage).
+            const epochChanged = armReconcile
+                && initial.epoch !== null
+                && response.page.epoch !== initial.epoch
+            let holeAhead = false
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous
                 // Cached re-entry keeps the loaded history: swap-in of the
@@ -1338,35 +1434,64 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 // over the cached rows instead; when the fresh page does not
                 // reach back into the cached window, arm gap recovery so the
                 // next sync walks the interval.
+                // Gap recovery reconciles by id so already-loaded history
+                // outside the latest page survives; only a structural
+                // reset or a server reset verdict may replace rows.
                 const cachedIds = new Set(initial.messages.map((message) => message.id))
                 const overlapsCached = response.messages.some((message) => cachedIds.has(message.id))
-                const next = applyLatestResponse(previous, response, {
-                    // Gap recovery reconciles by id so already-loaded history
-                    // outside the latest page survives; only a structural
-                    // reset, a server reset verdict, or an epoch change (a
-                    // remote rewind whose messages-invalidated event was
-                    // missed can have deleted held rows) may replace rows.
-                    replaceServerRows: initial.requiresLatestReset
-                        || response.page.reset
-                        || (initial.epoch !== null && response.page.epoch !== initial.epoch),
+                let next = applyLatestResponse(previous, response, {
+                    // An open that found the epoch moved keeps its rows and
+                    // has them checked against the page by id instead; every
+                    // other page under another epoch still replaces them.
+                    replaceServerRows: replaced
+                        || (!armReconcile && initial.epoch !== null && response.page.epoch !== initial.epoch),
                     requestBaseline
                 })
-                if (!context) {
-                    if (preferLatestOnActivation && !pendingGapRecovery && !overlapsCached && next.hasMore) {
-                        gapRecoveryArmed = true
-                        return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: true })
+                if (epochChanged) {
+                    // Stays labelled with the epoch its rows were read under
+                    // until the reconcile has checked them: a sync that finds
+                    // it so still asks with that epoch, and the hub's reset
+                    // verdict replaces the window rather than trusting it.
+                    next = buildState(next, { epoch: initial.epoch })
+                }
+                if (!armReconcile) {
+                    if (!context) {
+                        // Without the request the page's sync ends here. When
+                        // the fresh tail does not reach back into the cached
+                        // window, arm gap recovery so the next sync walks the
+                        // interval instead of leaving a silent hole.
+                        holeAhead = preferLatestOnActivation && !pendingGapRecovery && !overlapsCached && next.hasMore
+                        return buildState(next, {
+                            preferLatestOnActivation: false,
+                            pendingGapRecovery: holeAhead
+                        })
                     }
-                    return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: false })
+                    return buildState(mergeIntoWindow(next, context.messages, { mode: 'prepend' }), {
+                        preferLatestOnActivation: false,
+                        pendingGapRecovery: false,
+                        hasMore: context.page.hasMore,
+                        oldestPositionAt: context.page.nextBeforeAt,
+                        oldestPositionSeq: context.page.nextBeforeSeq
+                    })
+                }
+                if (!context) {
+                    holeAhead = preferLatestOnActivation && !overlapsCached && next.hasMore
+                    return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: true })
                 }
                 return buildState(mergeIntoWindow(next, context.messages, { mode: 'prepend' }), {
                     preferLatestOnActivation: false,
-                    pendingGapRecovery: false,
+                    pendingGapRecovery: true,
                     hasMore: context.page.hasMore,
                     oldestPositionAt: context.page.nextBeforeAt,
                     oldestPositionSeq: context.page.nextBeforeSeq
                 })
             })
-            if (gapRecoveryArmed) {
+            if (armReconcile) {
+                openReconciles.set(sessionId, { requested: false, cursor: initialCursor, epochChanged })
+                const controller = tailSyncControllers.get(sessionId)
+                if (controller) controller.trailingRequested = true
+            }
+            if (holeAhead) {
                 // Observation only (load_incomplete): the fresh tail does not
                 // reach the cached window — a hole will be walked on the next
                 // sync.
@@ -1382,10 +1507,31 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             return
         }
 
-        let after = initialCursor
+        // What the open's first page left for this sync, when this sync is the
+        // reconcile it armed (an activation's request still waiting for its
+        // first page is not that, and does not carry over).
+        const leftBehind = openReconciles.get(sessionId) ?? null
+        openReconciles.delete(sessionId)
+        const openReconcile = leftBehind && !leftBehind.requested ? leftBehind : null
+        // Where the catch-up starts: where the window ended before its first
+        // page was applied when the open recorded it, so rows the first page
+        // (the newest twenty) does not reach are walked too; the window's
+        // newest cursor otherwise.
+        const recoveryCursor = openReconcile?.cursor ?? initialCursor
+        let after = recoveryCursor
         let until: MessagePosition | null = null
         let catchUpReset = false
-        while (true) {
+        // Nothing to catch up when the open's first page found the session's
+        // head exactly where the cached window ended: the hub answers a
+        // catch-up from there with an empty page, and the page below is read
+        // later anyway. Nor when the epoch moved: that page carries every row
+        // the window lacks.
+        const skipCatchUp = openReconcile !== null
+            && (openReconcile.epochChanged
+                || (openReconcile.cursor !== null
+                    && initialCursor !== null
+                    && comparePosition(openReconcile.cursor, initialCursor) === 0))
+        while (!skipCatchUp) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
             const response = await api.getMessages(sessionId, {
                 afterAt: after.at,
@@ -1490,7 +1636,8 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 // knows nothing about it answers the plain page.
                 markReconcilePage(sessionId, {
                     epoch: getState(sessionId).epoch ?? 0,
-                    rows: new Map(getState(sessionId).messages.map((message) => [message.id, message.rowHash]))
+                    rows: new Map(getState(sessionId).messages.map((message) => [message.id, message.rowHash])),
+                    ...(openReconcile?.epochChanged ? { staleEpoch: true } : {})
                 })
                 const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
                 if (!isCurrentTailSync(sessionId, generation)) return
@@ -1498,7 +1645,13 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 updateState(sessionId, (previous) => {
                     if (previous.syncGeneration !== generation) return previous
                     const trimLimit = Math.min(OLDER_LOAD_WINDOW_SIZE, Math.max(VISIBLE_WINDOW_SIZE, previous.messages.length))
-                    const next = applyLatestResponse(previous, response, {
+                    // The open found the epoch moved: the page is checked
+                    // against the window row by row rather than replacing it.
+                    // Too different, and the window is replaced as before.
+                    const verified = openReconcile?.epochChanged && !response.page.reset
+                        ? reconcileWindowWithPage(previous, response, requestBaseline, trimLimit)
+                        : null
+                    const next = verified ?? applyLatestResponse(previous, response, {
                         replaceServerRows: response.page.reset
                             || (previous.epoch !== null && response.page.epoch !== previous.epoch),
                         requestBaseline,
@@ -1526,7 +1679,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         .filter((message) => {
                             const position = messagePosition(message)
                             if (!position || comparePosition(position, pageOldest) >= 0) return false
-                            if (initialCursor && comparePosition(position, initialCursor) > 0) return false
+                            if (recoveryCursor && comparePosition(position, recoveryCursor) > 0) return false
                             return isNonTerminalToolCallRow(message)
                         })
                         .sort((left, right) => comparePosition(
@@ -1655,9 +1808,25 @@ function enterTailMode(previous: InternalState): InternalState {
     })
 }
 
-export function activateMessageWindow(sessionId: string): void {
+export function activateMessageWindow(
+    sessionId: string,
+    options: {
+        /**
+         * The open reconciles by itself: once the first page of this
+         * activation's sync has landed, the newest page (or the fingerprint
+         * list and the rows that differ) is reconciled right after it, as the
+         * next sync. The session page asks for this. Without it the first
+         * page's sync ends there, and a reconcile comes only from a
+         * connection that reports a gap.
+         */
+        reconcileAfterFirstPage?: boolean
+    } = {}
+): void {
     if (messageWindowTargetLocks.has(sessionId)) {
         return
+    }
+    if (options.reconcileAfterFirstPage) {
+        openReconciles.set(sessionId, { requested: true })
     }
     let requestedLatest = false
     updateState(sessionId, (previous) => {
@@ -2279,6 +2448,41 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
 
 export function getMessageWindowState(sessionId: string): MessageWindowState {
     return getState(sessionId)
+}
+
+/**
+ * The epoch to ask the reconcile's fingerprint list for when this session is
+ * tapped, or null when the list would not pay: the window has no cursor or
+ * epoch yet (a cold open), is waiting for an authoritative replacement, or
+ * holds fewer fingerprinted rows than make the list cheaper than the page.
+ */
+export function getReconcileManifestEpoch(sessionId: string): number | null {
+    const state = getState(sessionId)
+    if (state.epoch === null || state.requiresLatestReset || getNewestCursor(state) === null) return null
+    let labelled = 0
+    for (const message of state.messages) {
+        if (message.rowHash !== undefined) labelled += 1
+    }
+    return labelled >= RECONCILE_MIN_LABELLED_ROWS ? state.epoch : null
+}
+
+/**
+ * Whether an open's own reconcile has not left the window current: nothing was
+ * ever read into it, a replacement or a recovery is still pending and nothing
+ * is running it, or the last sync warned. The session's event stream asks for
+ * a recovery on its first connection only then; otherwise the open's first
+ * sync has done it, or is doing it.
+ */
+export function windowNeedsReconcile(sessionId: string): boolean {
+    const state = getState(sessionId)
+    if (state.warning !== null || state.requiresLatestReset) return true
+    if (state.isSyncingTail) {
+        // A cold window's first page is still out: joining that sync is all a
+        // recovery could do. A cached window's first page arms its own
+        // reconcile when it lands.
+        return state.epoch === null
+    }
+    return state.epoch === null || state.pendingGapRecovery
 }
 
 export type MessageWindowInventoryWindow = {

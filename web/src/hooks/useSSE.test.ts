@@ -14,7 +14,8 @@ import {
     isRenderIrrelevantSessionPatch,
     sameSessionSummaryMetadata,
     shouldInvalidateSessionListForEvent,
-    useSSE
+    useSSE,
+    type SseConnectInfo
 } from './useSSE'
 
 describe('session summary metadata equality', () => {
@@ -643,5 +644,164 @@ describe('useSSE user-activity ordering', () => {
         const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
         expect(data?.sessions[0]?.lastUserMessageAt).toBe(9_000)
         unmount()
+    })
+})
+
+describe('useSSE handshake info', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+        resetSubscriptionLivenessForTests()
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    function handshake(source: FakeEventSource, subscriptionId: string, resume: 'ok' | 'gap') {
+        act(() => { source.simulateOpen() })
+        act(() => {
+            source.simulateMessage({
+                type: 'connection-changed',
+                data: { status: 'open', subscriptionId, resume }
+            })
+        })
+    }
+
+    /** A session-scoped stream for `sessionId`, reporting every handshake to `onConnect`. */
+    function renderSessionStream(sessionId: string, onConnect: (info: SseConnectInfo) => void) {
+        const queryClient = new QueryClient()
+        const wrapper = ({ children }: { children: ReactNode }) =>
+            createElement(QueryClientProvider, { client: queryClient }, children)
+        return renderHook(({ current }: { current: string }) => useSSE({
+            enabled: true,
+            token: 'test-token',
+            baseUrl: 'http://hub.test',
+            subscription: { sessionId: current },
+            scope: 'full',
+            onEvent: () => {},
+            onConnect
+        }), { wrapper, initialProps: { current: sessionId } })
+    }
+
+    it('a session\'s first handshake is initial and names the session', () => {
+        const connects: SseConnectInfo[] = []
+        const { unmount } = renderSessionStream('s-a', (info) => connects.push(info))
+
+        handshake(FakeEventSource.instances[0]!, 'sub-1', 'gap')
+        expect(connects).toEqual([{ resumed: false, initial: true, sessionId: 's-a' }])
+
+        // A replayed gap reads as resumed.
+        handshake(FakeEventSource.instances[0]!, 'sub-2', 'ok')
+        expect(connects[1]).toEqual({ resumed: true, initial: true, sessionId: 's-a' })
+        unmount()
+    })
+
+    it('a connection that dropped and came back is not initial', () => {
+        const connects: SseConnectInfo[] = []
+        const { unmount } = renderSessionStream('s-a', (info) => connects.push(info))
+        const first = FakeEventSource.instances[0]!
+        handshake(first, 'sub-1', 'gap')
+
+        act(() => { first.onerror?.({}) })
+        act(() => { vi.advanceTimersByTime(600) })
+        expect(FakeEventSource.instances).toHaveLength(2)
+        handshake(FakeEventSource.instances[1]!, 'sub-2', 'gap')
+
+        expect(connects).toEqual([
+            { resumed: false, initial: true, sessionId: 's-a' },
+            { resumed: false, initial: false, sessionId: 's-a' }
+        ])
+        unmount()
+    })
+
+    it('a session selected again after another one starts over as initial', () => {
+        const connects: SseConnectInfo[] = []
+        const { rerender, unmount } = renderSessionStream('s-a', (info) => connects.push(info))
+        handshake(FakeEventSource.instances[0]!, 'sub-1', 'gap')
+
+        rerender({ current: 's-b' })
+        expect(FakeEventSource.instances).toHaveLength(2)
+        handshake(FakeEventSource.instances[1]!, 'sub-2', 'gap')
+
+        rerender({ current: 's-a' })
+        expect(FakeEventSource.instances).toHaveLength(3)
+        handshake(FakeEventSource.instances[2]!, 'sub-3', 'gap')
+
+        expect(connects).toEqual([
+            { resumed: false, initial: true, sessionId: 's-a' },
+            { resumed: false, initial: true, sessionId: 's-b' },
+            { resumed: false, initial: true, sessionId: 's-a' }
+        ])
+        unmount()
+    })
+
+    it('the global stream carries no session', () => {
+        const connects: SseConnectInfo[] = []
+        const queryClient = new QueryClient()
+        const wrapper = ({ children }: { children: ReactNode }) =>
+            createElement(QueryClientProvider, { client: queryClient }, children)
+        const global = renderHook(() => useSSE({
+            enabled: true,
+            token: 'test-token',
+            baseUrl: 'http://hub.test',
+            subscription: { all: true },
+            onEvent: () => {},
+            onConnect: (info) => connects.push(info)
+        }), { wrapper })
+        handshake(FakeEventSource.instances[0]!, 'sub-g', 'gap')
+        expect(connects).toEqual([{ resumed: false, initial: true, sessionId: null }])
+        global.unmount()
+    })
+
+    it('a handshake that lands after its subscription was left is not reported', () => {
+        const connects: SseConnectInfo[] = []
+        const { rerender, unmount } = renderSessionStream('s-a', (info) => connects.push(info))
+        const leftBehind = FakeEventSource.instances[0]!
+
+        // The user switches to s-b; s-a's source is closed on the way out,
+        // but its handshake was already queued for dispatch.
+        rerender({ current: 's-b' })
+        act(() => {
+            leftBehind.simulateMessage({
+                type: 'connection-changed',
+                data: { status: 'open', subscriptionId: 'sub-a', resume: 'gap' }
+            })
+        })
+        expect(connects).toEqual([])
+
+        handshake(FakeEventSource.instances[1]!, 'sub-b', 'gap')
+        expect(connects).toEqual([{ resumed: false, initial: true, sessionId: 's-b' }])
+        unmount()
+    })
+
+    it('a subscription set up again after the stream was disabled is initial', () => {
+        const connects: SseConnectInfo[] = []
+        const queryClient = new QueryClient()
+        const wrapper = ({ children }: { children: ReactNode }) =>
+            createElement(QueryClientProvider, { client: queryClient }, children)
+        const hook = renderHook(({ enabled }: { enabled: boolean }) => useSSE({
+            enabled,
+            token: 'test-token',
+            baseUrl: 'http://hub.test',
+            subscription: { sessionId: 's-a' },
+            onEvent: () => {},
+            onConnect: (info) => connects.push(info)
+        }), { wrapper, initialProps: { enabled: true } })
+        handshake(FakeEventSource.instances[0]!, 'sub-1', 'gap')
+
+        hook.rerender({ enabled: false })
+        expect(FakeEventSource.instances).toHaveLength(1)
+        hook.rerender({ enabled: true })
+        expect(FakeEventSource.instances).toHaveLength(2)
+        handshake(FakeEventSource.instances[1]!, 'sub-2', 'gap')
+
+        expect(connects).toEqual([
+            { resumed: false, initial: true, sessionId: 's-a' },
+            { resumed: false, initial: true, sessionId: 's-a' }
+        ])
+        hook.unmount()
     })
 })

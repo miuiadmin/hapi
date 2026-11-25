@@ -8,7 +8,7 @@ import { initializeThemeColors } from '@/hooks/useThemeColors'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
-import { useSSE } from '@/hooks/useSSE'
+import { useSSE, type SseConnectInfo } from '@/hooks/useSSE'
 import { useDelayedFlag } from '@/hooks/useDelayedFlag'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
@@ -24,8 +24,8 @@ import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { getAppSseResyncQueryKeys } from '@/lib/sseResync'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
-import { noteSessionOpenStreamJoined } from '@/lib/sessionOpenTrace'
+import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages, windowNeedsReconcile } from '@/lib/message-window-store'
+import { sessionHandshakeAction } from '@/lib/sessionStreamHandshake'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useSessionTailFallback } from '@/hooks/useSessionTailFallback'
 import { useTranslation } from '@/lib/use-translation'
@@ -316,7 +316,7 @@ function AppInner() {
         void run()
     }, [api, isPushSupported, pushPermission, subscribe, token])
 
-    const handleSseConnect = useCallback((info: { resumed: boolean }) => {
+    const handleSseConnect = useCallback((info: SseConnectInfo) => {
         // Clear disconnected state on successful connection
         reportSseConnect()
         reportSseConnected()
@@ -395,21 +395,23 @@ function AppInner() {
         void syncTailMessages(api, event.sessionId)
     }, [api, selectedSessionId])
 
-    const handleSessionSseConnect = useCallback((info: { resumed: boolean }) => {
+    const handleSessionSseConnect = useCallback((info: SseConnectInfo) => {
         if (!api || !selectedSessionId) {
             return
         }
-        // Open timeline (developer mode): the session's stream has joined.
-        noteSessionOpenStreamJoined(selectedSessionId)
-        // A resumed connection replayed messages-consumed/message events for
-        // this session, so the queued-state snapshot cannot have drifted.
-        if (info.resumed) {
+        const action = sessionHandshakeAction(info, selectedSessionId, windowNeedsReconcile(selectedSessionId))
+        if (action === 'ignore' || action === 'nothing') {
             return
         }
-        // First connects and gaps cannot prove continuity: reconcile the window
-        // from an authoritative latest page (applied by id, keeping loaded
-        // history) so in-place row updates (merged tool-call ticks) the replay
-        // cannot deliver are recovered too.
+        if (action === 'queued-state') {
+            // The stream's first connection, the open having reconciled by
+            // itself (or doing so): only the queued-state snapshot is still
+            // this connection's to check, and it needs no tail sync first.
+            void reconcileQueuedStateAfterConnect(api, selectedSessionId, { sync: false }).catch((error) => {
+                console.error('Failed to reconcile queued state after SSE connect:', error)
+            })
+            return
+        }
         recoverWindowAfterGapResume(api, selectedSessionId).catch((error) => {
             console.error('Failed to recover the message window after an SSE gap:', error)
         })

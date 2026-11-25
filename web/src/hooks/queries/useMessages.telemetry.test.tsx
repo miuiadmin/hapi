@@ -4,7 +4,7 @@ import { TELEMETRY_KINDS } from '@hapi/protocol/telemetry'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessagesResponse } from '@/types/api'
 import { clearMessageWindow, getMessageWindowState, recoverWindowAfterGapResume } from '@/lib/message-window-store'
-import { SESSION_OPEN_TRACE_SETTLE_GRACE_MS, noteSessionOpenStreamJoined, resetSessionOpenTrace } from '@/lib/sessionOpenTrace'
+import { SESSION_OPEN_TRACE_SETTLE_GRACE_MS, resetSessionOpenTrace } from '@/lib/sessionOpenTrace'
 import { useMessages } from './useMessages'
 
 vi.mock('@/lib/telemetryClient', () => ({
@@ -218,8 +218,6 @@ describe('useMessages telemetry', () => {
     it('confirmed-empty session: the poll stops after the sync settles with zero messages', async () => {
         const api = makeApi(async () => latestResponse([]))
         renderHook(() => useMessages(api, sessionId))
-        // The open timeline waits for the session's event stream; it has joined.
-        act(() => { noteSessionOpenStreamJoined(sessionId) })
         await act(async () => {
             await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 600)
         })
@@ -229,14 +227,26 @@ describe('useMessages telemetry', () => {
         expect(vi.getTimerCount()).toBe(0)
     })
 
-    it('session_open_trace on a cold open: when the first row was on screen, when the tail settled, and the legs it took', async () => {
+    it('session_open_trace on a cold open: when the first row was on screen, when the open\'s reconcile settled, and the legs it took', async () => {
+        const first = latestResponse([agentMessage('m1', 1, 1_000), agentMessage('m2', 2, 1_100)])
+        // Nothing is newer than the first page: the reconcile's catch-up comes back empty.
+        const catchUp: MessagesResponse = {
+            messages: [],
+            page: {
+                direction: 'after', limit: 200, epoch: 1, reset: false,
+                nextBeforeAt: null, nextBeforeSeq: null,
+                nextAfterAt: 1_100, nextAfterSeq: 2, snapshotHeadAt: 1_100, snapshotHeadSeq: 2, hasMore: false
+            }
+        }
         vi.spyOn(performance, 'getEntriesByType').mockReturnValue([
             timing(`/api/sessions/${sessionId}`, 2, 40, { transferSize: 900, encodedBodySize: 800, decodedBodySize: 5_200 }),
-            timing(`/api/sessions/${sessionId}/messages?limit=20&minConversation=1`, 10, 230, { transferSize: 12_300, encodedBodySize: 12_000, decodedBodySize: 90_000 })
+            timing(`/api/sessions/${sessionId}/messages?limit=20&minConversation=1`, 10, 100, { transferSize: 12_300, encodedBodySize: 12_000, decodedBodySize: 90_000 }),
+            timing(`/api/sessions/${sessionId}/messages?afterAt=1100&afterSeq=2&epoch=1&limit=200`, 102, 200, { transferSize: 476, encodedBodySize: 400, decodedBodySize: 266 }),
+            timing(`/api/sessions/${sessionId}/messages?limit=200&withRowHashes=1`, 202, 300)
         ] as never)
-        // The page lands 100ms after the tap.
-        const api = makeApi(() => new Promise((resolve) => {
-            setTimeout(() => resolve(latestResponse([agentMessage('m1', 1, 1_000), agentMessage('m2', 2, 1_100)])), 100)
+        // Every page lands 100ms after it was asked for.
+        const api = makeApi((_sessionId, query) => new Promise((resolve) => {
+            setTimeout(() => resolve(query.afterAt !== undefined ? catchUp : first), 100)
         }))
         const { result } = renderHook(() => useMessages(api, sessionId))
 
@@ -244,16 +254,17 @@ describe('useMessages telemetry', () => {
         await act(async () => {
             await vi.advanceTimersByTimeAsync(100)
         })
-        act(() => { noteSessionOpenStreamJoined(sessionId) })
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS - 100)
-        })
         expect(result.current.messages).toHaveLength(2)
-        // The rows are in; the timeline keeps watching for a gap recovery that may follow the first page.
+        // The rows are in; the first page armed the open's reconcile (the catch-up, then the newest page), which is under way.
         expect(eventsOf('session_open_trace')).toHaveLength(0)
 
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(400)
+            await vi.advanceTimersByTimeAsync(200)
+        })
+        // The reconcile is done at 300; the timeline closes after its grace window.
+        expect(eventsOf('session_open_trace')).toHaveLength(0)
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS)
         })
         const traces = eventsOf('session_open_trace')
         expect(traces).toHaveLength(1)
@@ -263,16 +274,18 @@ describe('useMessages telemetry', () => {
             fromCache: false,
             // The page landed and the rows committed at 100; they are on screen after the frame that follows (2 × 16ms).
             firstRowMs: 132,
-            settledMs: 100,
+            settledMs: 300,
             rowCount: 2,
-            requestCount: 2,
-            wireBytes: 13_200,
-            decodedBytes: 95_200
+            requestCount: 4,
+            wireBytes: 14_976,
+            decodedBytes: 104_466
         })
         expect(typeof traces[0]!.openedAt).toBe('number')
         expect(traces[0]!.requests).toEqual([
             { kind: 'detail', startMs: 2, ttfbMs: 19, totalMs: 38, wireBytes: 900, decodedBytes: 5_200, status: 200 },
-            { kind: 'latest', startMs: 10, ttfbMs: 110, totalMs: 220, wireBytes: 12_300, decodedBytes: 90_000, status: 200, rows: 2 }
+            { kind: 'latest', startMs: 10, ttfbMs: 45, totalMs: 90, wireBytes: 12_300, decodedBytes: 90_000, status: 200, rows: 2 },
+            { kind: 'catch-up', startMs: 102, ttfbMs: 49, totalMs: 98, wireBytes: 476, decodedBytes: 266, status: 200, rows: 0 },
+            { kind: 'latest', startMs: 202, ttfbMs: 49, totalMs: 98, wireBytes: 1_300, decodedBytes: 9_000, status: 200, rows: 2 }
         ])
         expectSchemaValid('session_open_trace', traces[0])
     })
@@ -282,7 +295,6 @@ describe('useMessages telemetry', () => {
         vi.spyOn(performance, 'getEntriesByType').mockReturnValue([] as never)
         const api = makeApi(async () => latestResponse([agentMessage('cached', 1, 1_000), agentMessage('fresh', 2, 2_000)]))
         const { result } = renderHook(() => useMessages(api, sessionId))
-        act(() => { noteSessionOpenStreamJoined(sessionId) })
 
         await act(async () => {
             await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 100)
@@ -297,10 +309,10 @@ describe('useMessages telemetry', () => {
 
     /**
      * A cached window (row seq 1) that fell far behind: the fresh 20-row page (seq 32-51)
-     * does not reach it, so the first sync arms a gap recovery. The recovery then
-     * catches up from the cached cursor (seq 2-31) and reconciles the newest page.
+     * does not reach it, so the open's reconcile catches up from where the cached
+     * window ended (seq 2-31) and then reconciles the newest page.
      */
-    function gapApi(): ApiClient {
+    function gapApi(catchUpPending = false): ApiClient {
         const rows = (from: number, to: number) => (
             Array.from({ length: to - from + 1 }, (_, index) => agentMessage(`r${from + index}`, from + index, (from + index) * 100))
         )
@@ -310,6 +322,7 @@ describe('useMessages telemetry', () => {
         const tail = () => page(rows(32, 51), { hasMore: true, nextBeforeAt: 3_100, nextBeforeSeq: 31 })
         const getMessages = vi.fn(async (_sessionId: string, query: { afterAt?: number | null; afterSeq?: number | null; limit?: number }) => {
             if (query.afterAt !== undefined && query.afterAt !== null) {
+                if (catchUpPending) return await new Promise<MessagesResponse>(() => {})
                 return page(rows(2, 31), {
                     direction: 'after', nextAfterAt: 3_100, nextAfterSeq: 31, snapshotHeadAt: 5_100, snapshotHeadSeq: 51
                 })
@@ -319,7 +332,7 @@ describe('useMessages telemetry', () => {
         return makeApi(getMessages)
     }
 
-    it('session_open_trace waits for the gap recovery and records the whole open: first page, catch-up, reconcile', async () => {
+    it('session_open_trace records the whole open — first page, catch-up, reconcile — which run back to back without the event stream', async () => {
         cacheWindow(sessionId)
         vi.spyOn(performance, 'getEntriesByType').mockReturnValue([
             timing(`/api/sessions/${sessionId}/messages?limit=20`, 10, 60),
@@ -329,21 +342,16 @@ describe('useMessages telemetry', () => {
         const api = gapApi()
         const { result } = renderHook(() => useMessages(api, sessionId))
 
+        // The first page and the reconcile it arms follow each other with only
+        // the requests' own awaits in between.
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(300)
+            await vi.advanceTimersByTimeAsync(0)
         })
         expect(result.current.messages.length).toBeGreaterThan(0)
-        expect(getMessageWindowState(sessionId).pendingGapRecovery).toBe(true)
-        // The cached rows are on screen and the first page landed, but a recovery is pending: not settled.
-        expect(eventsOf('session_open_trace')).toHaveLength(0)
-
-        await act(async () => {
-            await recoverWindowAfterGapResume(api, sessionId)
-        })
         expect(getMessageWindowState(sessionId).pendingGapRecovery).toBe(false)
-        // Still open: the timeline also waits for the session's event stream.
+        expect(getMessageWindowState(sessionId).messages).toHaveLength(51)
+        // Done, and waiting out the grace window.
         expect(eventsOf('session_open_trace')).toHaveLength(0)
-        act(() => { noteSessionOpenStreamJoined(sessionId) })
         await act(async () => {
             await vi.advanceTimersByTimeAsync(SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 100)
         })
@@ -353,7 +361,7 @@ describe('useMessages telemetry', () => {
         expect(traces[0]).toMatchObject({
             outcome: 'settled', fromCache: true, firstRowMs: 32, rowCount: 51, requestCount: 3
         })
-        // Three round trips, one after another: that is what the user waited for.
+        // Three round trips: that is what the user waited for.
         expect(traces[0]!.requests).toEqual([
             { kind: 'latest', startMs: 10, ttfbMs: 25, totalMs: 50, wireBytes: 1_300, decodedBytes: 9_000, status: 200, rows: 20 },
             { kind: 'catch-up', startMs: 70, ttfbMs: 25, totalMs: 50, wireBytes: 1_300, decodedBytes: 9_000, status: 200, rows: 30 },
@@ -362,10 +370,10 @@ describe('useMessages telemetry', () => {
         expectSchemaValid('session_open_trace', traces[0])
     })
 
-    it('session_open_trace records the open as left when the user moves on while a gap recovery is pending', async () => {
+    it('session_open_trace records the open as left when the user moves on while its reconcile is still running', async () => {
         cacheWindow(sessionId)
         vi.spyOn(performance, 'getEntriesByType').mockReturnValue([] as never)
-        const api = gapApi()
+        const api = gapApi(true)
         const { result, unmount } = renderHook(() => useMessages(api, sessionId))
 
         await act(async () => {

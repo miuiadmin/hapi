@@ -15,6 +15,13 @@ import { MESSAGES_PAGE_MAX } from '@hapi/protocol/apiTypes'
  * before the request, consumed by `ApiClient.getMessages`. The client then
  * asks the hub for the fingerprints of the page's rows, and only for the rows
  * the window does not hold as the hub would now serve them.
+ *
+ * An open's reconcile follows its first page without waiting for the session's
+ * event stream, so the router starts the fingerprint list on the tap too
+ * (`prefetchSessionOpenPage`, `ApiClient.prefetchReconcileManifest`): the list
+ * needs only the epoch the persisted window was read under. A window whose
+ * epoch the hub has moved on from gets the page itself for that list, and the
+ * store checks its rows against it by id (`staleEpoch`).
  */
 
 export type ReconcileMark = {
@@ -24,6 +31,16 @@ export type ReconcileMark = {
      *  absent for rows that never got one (local rows, rows from before the
      *  hub labelled pages). */
     rows: ReadonlyMap<string, string | undefined>
+    /**
+     * The hub has moved the session's epoch on since the window read its rows
+     * (the open's first page said so). A fingerprint list asked for with the
+     * old epoch is answered with the page itself, and rows may have been
+     * removed, which no list of the survivors can show: the reconcile takes
+     * the labelled page — the one prefetched on the tap, which the hub
+     * answered the same way — and the store checks its window against it by
+     * id.
+     */
+    staleEpoch?: boolean
 }
 
 let marked: { sessionId: string; mark: ReconcileMark } | null = null
@@ -42,6 +59,20 @@ export function takeReconcilePageMark(sessionId: string): ReconcileMark | null {
     const taken = marked
     marked = null
     return taken && taken.sessionId === sessionId ? taken.mark : null
+}
+
+/** The messages query of the reconcile's fingerprint list for a window read under `epoch`. */
+export function reconcileManifestQuery(epoch: number): string {
+    return `limit=${MESSAGES_PAGE_MAX}&knownEpoch=${epoch}&withRowHashes=1&rowHashes=1`
+}
+
+/** Whether a messages query is that of a reconcile's fingerprint list, whatever epoch it asked for. */
+export function isReconcileManifestQuery(query: string): boolean {
+    const params = new URLSearchParams(query)
+    return params.get('limit') === String(MESSAGES_PAGE_MAX)
+        && params.get('rowHashes') === '1'
+        && params.get('knownEpoch') !== null
+        && !params.has('ids')
 }
 
 /** The rows of the newest page the window does not hold as the hub would serve them now. */
