@@ -1,3 +1,4 @@
+import { getLiveReasoningStreamId, getReasoningStreamId, getTextLiveStreamId, getTextStreamId } from '@hapi/protocol/messages'
 import type { DecryptedMessage } from '@/types/api'
 import { randomId } from '@/lib/randomId'
 
@@ -60,7 +61,8 @@ function clearStaleQueuedStatus(list: DecryptedMessage[]): DecryptedMessage[] {
  * fingerprint and the same content. A page that brings nothing new then
  * leaves the list as it was, object by object, and the thread is not rendered
  * again for it. Rows without a fingerprint (older hubs, local rows) never
- * count as the same — a fresh object is what there was before.
+ * count as the same — a fresh object is what there was before — save for the
+ * event stream's copy of a labelled row (`sameRowAsHeld`).
  */
 function sameMessage(held: DecryptedMessage, served: DecryptedMessage): boolean {
     return held.rowHash !== undefined
@@ -68,12 +70,42 @@ function sameMessage(held: DecryptedMessage, served: DecryptedMessage): boolean 
         && JSON.stringify(held) === JSON.stringify(served)
 }
 
+/** What the event stream never carries on a row: the fingerprint a page labels it with, and the revision counter. */
+const STREAM_ABSENT_FIELDS: ReadonlySet<string> = new Set(['rowHash', 'contentRevision'])
+
+/** A row as JSON with its keys sorted at every level, the named fields left out, and a field that
+ *  is null or absent counting for the same thing: a page writes `scheduledAt: null` where the stream
+ *  leaves the field out, and both say the row has none. */
+function stableJson(value: unknown, skip: ReadonlySet<string>): string {
+    if (value === null || value === undefined) return 'null'
+    if (typeof value !== 'object') return `${JSON.stringify(value)}`
+    if (Array.isArray(value)) return `[${value.map((item) => stableJson(item, skip)).join(',')}]`
+    const record = value as Record<string, unknown>
+    const keys = Object.keys(record).filter((key) => record[key] !== undefined && record[key] !== null && !skip.has(key)).sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(record[key], skip)}`).join(',')}}`
+}
+
+/**
+ * Whether a row served without a fingerprint is the row the window holds.
+ * The event stream serves every row that way — it is the hub's own copy of a
+ * row a page labelled, minus the fingerprint and the revision counter — and it
+ * says nothing the held row does not when everything else about the two is
+ * equal, key order aside (the hub builds the stream's copy field by field; a
+ * page's row comes off the wire in its own order). Such a copy then leaves the
+ * held row in place, fingerprint included, instead of replacing a row the
+ * reconcile just checked with one the next open has to fetch again.
+ */
+function sameRowAsHeld(held: DecryptedMessage, served: DecryptedMessage): boolean {
+    if (held.rowHash === undefined || served.rowHash !== undefined) return false
+    return stableJson(held, STREAM_ABSENT_FIELDS) === stableJson(served, STREAM_ABSENT_FIELDS)
+}
+
 export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[]): DecryptedMessage[] {
     if (existing.length === 0) {
-        return clearStaleQueuedStatus([...incoming]).sort(compareMessages)
+        return clearStaleQueuedStatus(sweepSettledSnapshots([...incoming])).sort(compareMessages)
     }
     if (incoming.length === 0) {
-        return clearStaleQueuedStatus([...existing]).sort(compareMessages)
+        return clearStaleQueuedStatus(sweepSettledSnapshots([...existing])).sort(compareMessages)
     }
 
     const byId = new Map<string, DecryptedMessage>()
@@ -101,7 +133,7 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 preserved.queueDismissed = true
             }
             const merged: DecryptedMessage = Object.keys(preserved).length > 0 ? { ...msg, ...preserved } : msg
-            byId.set(msg.id, sameMessage(existing, merged) ? existing : merged)
+            byId.set(msg.id, sameMessage(existing, merged) || sameRowAsHeld(existing, merged) ? existing : merged)
         } else {
             byId.set(msg.id, msg)
         }
@@ -217,7 +249,49 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
         result.push(optimistic)
     }
 
-    const normalized = clearStaleQueuedStatus(result)
+    const swept = sweepSettledSnapshots(result)
+    const normalized = clearStaleQueuedStatus(swept)
     normalized.sort(compareMessages)
     return normalized
+}
+
+/** Whether the row is a snapshot or the settled line of a text or reasoning stream (streamed agents). */
+function hasTextOrReasoningStream(message: DecryptedMessage): boolean {
+    return getTextStreamId(message.content) !== null || getReasoningStreamId(message.content) !== null
+}
+
+/**
+ * Live snapshots of streams whose settled line is in the list are dropped.
+ * While an agent streams, its text and reasoning arrive as growing snapshots
+ * under a stable stream id; the line they settle into carries that id. The hub
+ * sweeps a stream's snapshots the moment its line lands, so a page never holds
+ * both; the window keeps whichever of the two reaches it first — the snapshot
+ * while the stream is still going, the line once it has settled — whichever
+ * way round the event stream (a resumed stream replays the snapshot it wrote
+ * just before the line) and the pages deliver them. The timeline folds a
+ * stream's rows into one block by that id, so nothing visible changes.
+ */
+function sweepSettledSnapshots(messages: DecryptedMessage[]): DecryptedMessage[] {
+    if (!messages.some(hasTextOrReasoningStream)) return messages
+    const settledText = new Set<string>()
+    const settledReasoning = new Set<string>()
+    let snapshots = 0
+    for (const message of messages) {
+        if (getTextLiveStreamId(message.content) !== null || getLiveReasoningStreamId(message.content) !== null) {
+            snapshots += 1
+            continue
+        }
+        const text = getTextStreamId(message.content)
+        if (text !== null) settledText.add(text)
+        const reasoning = getReasoningStreamId(message.content)
+        if (reasoning !== null) settledReasoning.add(reasoning)
+    }
+    if (snapshots === 0 || (settledText.size === 0 && settledReasoning.size === 0)) return messages
+    return messages.filter((message) => {
+        const text = getTextLiveStreamId(message.content)
+        if (text !== null) return !settledText.has(text)
+        const reasoning = getLiveReasoningStreamId(message.content)
+        if (reasoning !== null) return !settledReasoning.has(reasoning)
+        return true
+    })
 }

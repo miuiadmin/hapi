@@ -1,6 +1,6 @@
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { sanitizeTelemetryText } from '@hapi/protocol/telemetry'
-import { getReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { getLiveReasoningStreamId, getReasoningStreamId, getTextLiveStreamId, getTextStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
@@ -2648,23 +2648,57 @@ export function setMessageViewMode(sessionId: string, mode: MessageViewMode): vo
     }, true)
 }
 
+/** The id of the text stream a row belongs to when that row is the stream's settled line, not one of its live snapshots. */
+function settledTextStreamId(message: DecryptedMessage): string | null {
+    return getTextLiveStreamId(message.content) === null ? getTextStreamId(message.content) : null
+}
+
+/** The same for a reasoning stream. */
+function settledReasoningStreamId(message: DecryptedMessage): string | null {
+    return getLiveReasoningStreamId(message.content) === null ? getReasoningStreamId(message.content) : null
+}
+
+/**
+ * Whether the window already holds the settled line of a live snapshot's
+ * stream. The hub sweeps a stream's live snapshots once its line lands
+ * (`addMessageSweepingLiveSnapshots`), but the event stream's replay still
+ * carries the snapshot it wrote just before. Applied after the line reached
+ * the window — a resumed stream replays after the open's reconcile — the
+ * snapshot would stand in the window as a row the hub no longer has, until a
+ * reconcile under a moved-on epoch dropped it. While a stream is still
+ * streaming (its snapshots held, its line not yet) nothing is held back.
+ */
+function settledStreamHeld(messages: ReadonlyArray<DecryptedMessage>, snapshot: DecryptedMessage): boolean {
+    const textStream = getTextLiveStreamId(snapshot.content)
+    if (textStream !== null) {
+        return messages.some((message) => settledTextStreamId(message) === textStream)
+    }
+    const reasoningStream = getLiveReasoningStreamId(snapshot.content)
+    if (reasoningStream !== null) {
+        return messages.some((message) => settledReasoningStreamId(message) === reasoningStream)
+    }
+    return false
+}
+
 export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMessage[]): void {
     if (incoming.length === 0) return
     updateState(sessionId, (previous) => {
-        let merged = mergeIntoWindow(previous, incoming, {
+        const retained = incoming.filter((message) => !settledStreamHeld(previous.messages, message))
+        if (retained.length === 0) return previous
+        let merged = mergeIntoWindow(previous, retained, {
             advanceTailRevision: true
         })
         if (merged.epoch === null || merged.requiresLatestReset) {
             return merged
         }
-        const incomingNewest = derivePosition(incoming, 'newest')
+        const incomingNewest = derivePosition(retained, 'newest')
         const currentNewest = getNewestCursor(merged)
         const newest = incomingNewest && (!currentNewest || comparePosition(incomingNewest, currentNewest) > 0)
             ? incomingNewest
             : currentNewest
         merged = buildState(merged, {
             readThroughRevision: merged.readThroughRevision === undefined ? undefined
-                : Math.max(merged.readThroughRevision, ...incoming.map(message => message.contentRevision ?? 0)),
+                : Math.max(merged.readThroughRevision, ...retained.map(message => message.contentRevision ?? 0)),
             newestPositionAt: newest?.at ?? null,
             newestPositionSeq: newest?.seq ?? null
         })
