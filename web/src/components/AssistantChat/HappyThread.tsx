@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
+import { highlightCodeBlocksNow } from '@/lib/shiki'
 import { CloseIcon } from '@/components/icons'
 import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
@@ -2935,21 +2936,40 @@ export const HappyThread = memo(function HappyThread(props: {
             start = target
         }
 
-        const snapshots: ShareTurnSnapshot[] = []
-        let current: Element | null = start
-        while (current instanceof HTMLElement) {
-            if (current !== start && current.getAttribute('data-hapi-message-role') === 'user') {
-                break
+        // verify-fix (v-render-b): rows of this turn; blocks still plain (visible-only highlighting)
+        // are highlighted first, then the same rows are read.
+        const turnRows = (from: Element): Element[] => {
+            const rows: Element[] = []
+            let current: Element | null = from
+            while (current instanceof HTMLElement) {
+                if (current !== from && current.getAttribute('data-hapi-message-role') === 'user') break
+                rows.push(current)
+                current = current.nextElementSibling
             }
-            const role = current.getAttribute('data-hapi-message-role')
-            if (role === 'user' || role === 'assistant') {
-                snapshots.push({
-                    html: current.outerHTML,
-                    text: (current.innerText || current.textContent || '').trim()
-                })
-            }
-            current = current.nextElementSibling
+            return rows
         }
+        const readSnapshots = (rows: Element[]): ShareTurnSnapshot[] => rows
+            .map((row) => ({ role: row.getAttribute('data-hapi-message-role'), row }))
+            .filter(({ role }) => role === 'user' || role === 'assistant')
+            .map(({ row }) => ({
+                html: row.outerHTML,
+                text: ((row as HTMLElement).innerText || row.textContent || '').trim()
+            }))
+        const plainLeft = (rows: Element[]) => rows.some((row) => [...row.querySelectorAll('pre.shiki')].some((pre) => !pre.querySelector('[style*="--shiki"]')))
+        if (plainLeft(turnRows(start))) {
+            const startId = start.id
+            void highlightCodeBlocksNow(turnRows(start), 2500).then(() => {
+                const again = start.isConnected || !startId ? start : document.getElementById(startId)
+                if (!again) return
+                collectShareTurn(again)
+            })
+            return
+        }
+        collectShareTurn(start)
+        return
+
+        function collectShareTurn(from: Element): void {
+        const snapshots: ShareTurnSnapshot[] = readSnapshots(turnRows(from))
 
         if (snapshots.length === 0 && target instanceof HTMLElement) {
             snapshots.push({
@@ -2967,6 +2987,7 @@ export const HappyThread = memo(function HappyThread(props: {
             snapshots: completeSnapshots,
             sourceContentWidth: sourceContentWidth > 0 ? sourceContentWidth : null,
         })
+        }
         // Reads refs and module helpers only: a stable identity keeps the chat
         // context value (and with it every row) unchanged when `session` is patched.
     }, [])

@@ -266,8 +266,34 @@ export function clearHighlightCache(): void {
 
 /** How far outside the thread viewport a block still counts as visible (one screen, like the spec says). */
 const VISIBILITY_ROOT_MARGIN = '100% 0px'
+/** Event a caller dispatches on a code block (bubbles to the hook's host) to highlight it without the debounce. */
+export const HIGHLIGHT_NOW_EVENT = 'hapi-highlight-now'
 /** Attribute on the thread's scroll container (HappyThread.tsx); the nearest one is the IO root. */
 const THREAD_VIEWPORT_SELECTOR = '[data-hapi-thread-viewport]'
+
+/** Settled for a caller that waits for highlights: has tokens, or the hook gave up on this code. */
+function isHighlightSettled(pre: Element): boolean {
+    if (pre.querySelector('[style*="--shiki"]')) return true
+    const state = pre.closest('[data-hapi-code-block], [data-hapi-code-body]')?.getAttribute('data-hapi-highlight-state')
+    return state === 'unsupported' || state === 'failed'
+}
+
+/**
+ * verify-fix (v-render-b): highlight, without the visibility gate or the debounce, every code block
+ * under `rows` that is still plain text — the share-turn snapshot reads `outerHTML`, so it must not
+ * run before the blocks of the turn carry their colors. Resolves when nothing is pending or after
+ * `timeoutMs` (a cold language still loads; the caller then snapshots whatever is on screen).
+ */
+export async function highlightCodeBlocksNow(rows: Element[], timeoutMs = 2500): Promise<{ requested: number; pending: number; waitedMs: number }> {
+    const t0 = performance.now()
+    const pending = () => rows.flatMap((row) => [...row.querySelectorAll('pre.shiki')]).filter((pre) => !isHighlightSettled(pre))
+    const targets = pending()
+    for (const pre of targets) pre.dispatchEvent(new Event(HIGHLIGHT_NOW_EVENT, { bubbles: true }))
+    while (pending().length > 0 && performance.now() - t0 < timeoutMs) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 40))
+    }
+    return { requested: targets.length, pending: pending().length, waitedMs: Math.round(performance.now() - t0) }
+}
 
 function useHighlightedCode<T>(
     code: string,
@@ -287,6 +313,7 @@ function useHighlightedCode<T>(
         let started = false
         const key = highlightCacheKey(lang, code)
         const cache = cacheFor(render)
+        const element = host?.current ?? null
 
         // `apply` only ever runs from a pump task (never from this effect body), so flushing
         // synchronously is legal there and keeps each block's DOM work inside its own task.
@@ -296,17 +323,30 @@ function useHighlightedCode<T>(
             })
         }
 
-        async function highlight() {
+        async function highlight(defer = false) {
             try {
                 const highlighter = await getLanguageHighlighter(lang)
-                if (cancelled || !highlighter) return
-                const value = render(highlighter, code, lang)
                 if (cancelled) return
-                cache.set(key, value)
-                apply(value)
+                if (!highlighter) {
+                    element?.setAttribute('data-hapi-highlight-state', 'unsupported')
+                    return
+                }
+                const run = () => {
+                    if (cancelled) return
+                    const value = render(highlighter, code, lang)
+                    cache.set(key, value)
+                    apply(value)
+                }
+                // `defer`: one block per task through the shared pump (a burst requested at once, e.g. the
+                // share snapshot), instead of every continuation in the loader promise's microtask checkpoint.
+                if (defer) enqueueHighlight(run)
+                else run()
             } catch {
                 // Offline/chunk/tokenization failures retain readable plain text.
-                if (!cancelled) setResult(null)
+                if (!cancelled) {
+                    element?.setAttribute('data-hapi-highlight-state', 'failed')
+                    setResult(null)
+                }
             }
         }
 
@@ -338,7 +378,26 @@ function useHighlightedCode<T>(
             }
         }
 
-        const element = host?.current ?? null
+        // verify-fix (v-render-b): a caller that needs the block highlighted *now* (the share-turn
+        // snapshot) dispatches `hapi-highlight-now` on the block; no debounce, cache first.
+        const highlightNow = () => {
+            if (cancelled) return
+            started = true
+            if (pending) {
+                pending()
+                pending = null
+            }
+            const cached = cache.get(key) as T | undefined
+            if (cached !== undefined) {
+                enqueueHighlight(() => {
+                    if (cancelled) return
+                    apply(cached)
+                })
+                return
+            }
+            void highlight(true)
+        }
+        element?.addEventListener('hapi-highlight-now', highlightNow)
         if (element && typeof IntersectionObserver !== 'undefined') {
             observer = new IntersectionObserver((entries) => {
                 if (cancelled) return
@@ -364,6 +423,7 @@ function useHighlightedCode<T>(
             cancelled = true
             stop()
             observer?.disconnect()
+            element?.removeEventListener('hapi-highlight-now', highlightNow)
         }
     }, [code, lang, render])
 
