@@ -200,6 +200,12 @@ export type MessagesResponse = {
         snapshotHeadSeq: number | null
         snapshotHeadAt: number | null
         hasMore: boolean
+        /**
+         * Manifest pages only (`rowHashes`): for each row the page would hold,
+         * the fingerprint the hub would serve it with — the same value as the
+         * row's `rowHash` on a labelled page.
+         */
+        rowHashes?: Array<{ id: string; hash: string }>
     }
 }
 
@@ -745,6 +751,13 @@ export type DeleteUploadRequest = z.infer<typeof DeleteUploadRequestSchema>
 /** Largest message page the hub serves. */
 export const MESSAGES_PAGE_MAX = 200
 
+/** `ids` of a messages query: up to one page of message ids, comma-separated. */
+function isIdList(value: string): boolean {
+    if (value.length === 0 || value.length > MESSAGES_PAGE_MAX * 64 || /\s/.test(value)) return false
+    const ids = value.split(',')
+    return ids.length <= MESSAGES_PAGE_MAX && ids.every((id) => id.length > 0)
+}
+
 export const MessagesQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX).optional(),
     /**
@@ -762,10 +775,59 @@ export const MessagesQuerySchema = z.object({
     untilSeq: z.coerce.number().int().min(1).optional(),
     untilAt: z.coerce.number().int().min(0).optional(),
     epoch: z.coerce.number().int().min(0).optional(),
+    /**
+     * Labels every message of the page with its fingerprint (`rowHash`).
+     * Older hubs ignore it and answer without the labels.
+     */
+    withRowHashes: z.literal('1').optional(),
+    /**
+     * Latest pages only, with `knownEpoch`. A manifest: the page as usual
+     * except that `messages` is empty — `page.rowHashes` alone lists the
+     * fingerprints of the rows the page would hold. A client that keeps the
+     * fingerprints it was handed compares the two and asks for the differing
+     * rows by `ids`, instead of downloading a page of which it already holds
+     * nearly every row unchanged.
+     */
+    rowHashes: z.literal('1').optional(),
+    /**
+     * Latest pages only, with `withRowHashes` and `knownEpoch`: the page as
+     * usual, with `messages` narrowed to these rows (those the page holds).
+     */
+    ids: z.string().optional(),
+    /**
+     * The session epoch the caller's fingerprints were handed under. The hub
+     * answers a manifest or `ids` request with the full page instead when the
+     * epoch has moved on since: rows may have been removed or reordered, and
+     * the caller has to replace its copy rather than patch it.
+     */
+    knownEpoch: z.coerce.number().int().min(0).optional(),
 })
     .refine((data) => data.minConversation === undefined || (data.beforeAt === undefined && data.afterAt === undefined), {
         message: 'minConversation requires a latest page',
         path: ['minConversation'],
+    })
+    .refine(
+        (data) => data.rowHashes === undefined
+            || (data.beforeAt === undefined && data.afterAt === undefined && data.knownEpoch !== undefined),
+        {
+            message: 'rowHashes requires a latest page and knownEpoch',
+            path: ['rowHashes'],
+        },
+    )
+    .refine(
+        (data) => data.ids === undefined
+            || (data.beforeAt === undefined
+                && data.afterAt === undefined
+                && data.withRowHashes !== undefined
+                && data.knownEpoch !== undefined),
+        {
+            message: 'ids requires a latest page with withRowHashes and knownEpoch',
+            path: ['ids'],
+        },
+    )
+    .refine((data) => data.ids === undefined || isIdList(data.ids), {
+        message: 'ids must be 1 to 200 comma-separated message ids',
+        path: ['ids'],
     })
     .refine((data) => (data.beforeAt === undefined) === (data.beforeSeq === undefined), {
         message: 'beforeAt and beforeSeq must be provided together',

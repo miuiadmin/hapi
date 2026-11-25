@@ -49,7 +49,7 @@ import {
 import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
-import { MessageService, type RetryIndeterminateMessageResult, type DeliverQueuedMessageNowResult } from './messageService'
+import { MessageService, type MessagePageRowHashes, type RetryIndeterminateMessageResult, type DeliverQueuedMessageNowResult } from './messageService'
 import type { InlineImagePreview } from './attachmentPreviews'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
 import { createPromptTitle } from './promptTitle'
@@ -726,6 +726,7 @@ export class SyncEngine {
             until?: { at: number; seq: number } | null
             epoch?: number | null
             minConversation?: number
+            rowHashes?: MessagePageRowHashes
         }
     ): MessagesResponse {
         return this.messageService.getMessagesPage(sessionId, options)

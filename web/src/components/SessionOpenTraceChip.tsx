@@ -34,6 +34,8 @@ const LEG_KIND_KEY: Record<SessionOpenTraceLeg['kind'], string> = {
     latest: 'openTrace.kind.latest',
     context: 'openTrace.kind.context',
     'catch-up': 'openTrace.kind.catch-up',
+    'manifest': 'openTrace.kind.manifest',
+    'refresh': 'openTrace.kind.refresh',
     detail: 'openTrace.kind.detail'
 }
 

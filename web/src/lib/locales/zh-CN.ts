@@ -528,6 +528,8 @@ export default {
   'openTrace.kind.latest': '最新一页',
   'openTrace.kind.context': '更早的上下文',
   'openTrace.kind.catch-up': '补差量',
+  'openTrace.kind.manifest': '指纹清单',
+  'openTrace.kind.refresh': '补取行',
   'openTrace.kind.detail': '会话详情',
   'openTrace.note': '从点开会话那一刻起算,首条按它那一帧真正显示出来算。线上大小是实际传输的字节,含响应头;0 表示浏览器缓存直接应答。',
   'openTrace.none': '这个会话还没有打开记录',

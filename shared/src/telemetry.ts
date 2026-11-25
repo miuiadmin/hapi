@@ -156,7 +156,14 @@ const DATA_LOADED_DATA = z.object({
  * (Resource Timing; same-origin, so the numbers are not zeroed by CORS).
  */
 const OPEN_TRACE_REQUEST = z.object({
-    kind: z.enum(['latest', 'context', 'catch-up', 'detail']),
+    /**
+     * latest = the newest page; context = rows before the window; catch-up =
+     * rows after the window's cursor; detail = the session itself. The
+     * reconcile after a gap may come as a pair: manifest = the fingerprints of
+     * the newest page (0 rows), refresh = the rows then fetched because they
+     * differ from what the window holds.
+     */
+    kind: z.enum(['latest', 'context', 'catch-up', 'detail', 'manifest', 'refresh']),
     startMs: intMs,
     ttfbMs: intMs.optional(),
     totalMs: intMs,

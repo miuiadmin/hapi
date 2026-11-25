@@ -691,7 +691,7 @@ describe('ApiClient message paging: a short latest page asks the hub for context
 
         // A tail of pure tool activity renders as one collapsed card; the hub then
         // answers with the full page, sparing a second, serial context request.
-        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=20&minConversation=1')
+        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=20&minConversation=1&withRowHashes=1')
     })
 
     it('leaves full pages, cursor pages and unbounded requests alone', async () => {
@@ -702,10 +702,12 @@ describe('ApiClient message paging: a short latest page asks the hub for context
         await api.getMessages('session-1', { afterAt: 5, afterSeq: 5, untilAt: 9, untilSeq: 9, limit: 20 })
         await api.getMessages('session-1', {})
 
-        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=200')
+        // (Tail pages also ask for row fingerprints — `withRowHashes` — which is
+        // the reconcile's concern, covered in client.reconcile.test.ts.)
+        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=200&withRowHashes=1')
         expect(urlOf(1)).toBe('/api/sessions/session-1/messages?beforeAt=10&beforeSeq=10&limit=200')
-        expect(urlOf(2)).toBe('/api/sessions/session-1/messages?afterAt=5&afterSeq=5&epoch=1&limit=200')
-        expect(urlOf(3)).toBe('/api/sessions/session-1/messages?afterAt=5&afterSeq=5&untilAt=9&untilSeq=9&limit=20')
+        expect(urlOf(2)).toBe('/api/sessions/session-1/messages?afterAt=5&afterSeq=5&epoch=1&limit=200&withRowHashes=1')
+        expect(urlOf(3)).toBe('/api/sessions/session-1/messages?afterAt=5&afterSeq=5&untilAt=9&untilSeq=9&limit=20&withRowHashes=1')
         expect(urlOf(4)).toBe('/api/sessions/session-1/messages')
     })
 
@@ -713,6 +715,6 @@ describe('ApiClient message paging: a short latest page asks the hub for context
         const api = new ApiClient('test-token')
         await api.getMessages('session-1', { limit: 200, minConversation: 4 })
 
-        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=200&minConversation=4')
+        expect(urlOf(0)).toBe('/api/sessions/session-1/messages?limit=200&minConversation=4&withRowHashes=1')
     })
 })

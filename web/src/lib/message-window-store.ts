@@ -9,6 +9,7 @@ import type { NormalizedMessage } from '@/chat/types'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 import { telemetryClient } from '@/lib/telemetryClient'
+import { markReconcilePage } from '@/api/reconcilePage'
 import { cancelSessionOpenSettle, noteSessionOpenPage, noteSessionOpenSync } from '@/lib/sessionOpenTrace'
 
 export type MessageViewMode = 'tail' | 'history'
@@ -84,7 +85,9 @@ export const INITIAL_PAGE_SIZE = 20
 const AGENT_RUN_WINDOW_SIZE = 800
 export const OLDER_LOAD_WINDOW_SIZE = 800
 const PAGE_SIZE = 200
-const CACHED_REENTRY_PAGE_SIZE = 20
+// A re-entry asks for the same first page as a cold open, and the tap-time
+// prefetch (prefetchSessionOpenPage) relies on that.
+const CACHED_REENTRY_PAGE_SIZE = INITIAL_PAGE_SIZE
 // ponytail: fixed budget suggested in #2045, not field-measured; tune from load timings.
 const INITIAL_CONTEXT_WAIT_MS = 500
 // Gap recovery refreshes at most this many retained non-terminal tool-call
@@ -1049,6 +1052,11 @@ function pagePosition(at: number | null, seq: number | null): MessagePosition | 
     return at !== null && seq !== null ? { at, seq } : null
 }
 
+/** The same row objects in the same order. */
+function sameRows(left: DecryptedMessage[], right: DecryptedMessage[]): boolean {
+    return left.length === right.length && left.every((message, index) => message === right[index])
+}
+
 function applyLatestResponse(
     previous: InternalState,
     response: MessagesResponse,
@@ -1085,6 +1093,10 @@ function applyLatestResponse(
     const authoritative = mergeMessages(preserved, retainedResponseMessages)
     const incoming = mergeMessages(authoritative, concurrentServerRows)
     const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(incoming, options.trimLimit ?? VISIBLE_WINDOW_SIZE, 'append')
+    // A page that left every row as it was — a reconcile whose rows all match
+    // the window — keeps the list it had, identity included: the thread renders
+    // a new list from scratch, and there is nothing new to show.
+    const messages = sameRows(kept, previous.messages) ? previous.messages : kept
     const snapshotHead = pagePosition(response.page.snapshotHeadAt, response.page.snapshotHeadSeq)
         ?? derivePosition(response.messages, 'newest')
     const newestKept = derivePosition(kept, 'newest')
@@ -1104,9 +1116,9 @@ function applyLatestResponse(
                 ? (comparePosition(responseOldest, previousOldest) <= 0 ? responseOldest : previousOldest)
                 : responseOldest ?? previousOldest)
     return buildState(previous, {
-        messages: kept,
+        messages,
         readThroughRevision: Math.max(previous.readThroughRevision ?? 0, response.page.readThroughRevision ?? 0,
-            ...kept.map(message => message.contentRevision ?? 0)),
+            ...messages.map(message => message.contentRevision ?? 0)),
         hasMore: response.page.hasMore || (!options.replaceServerRows && previous.hasMore) || dropped.length > 0,
         epoch: response.page.epoch,
         oldestPositionAt: oldest?.at ?? null,
@@ -1473,6 +1485,13 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 // original cursor and the flag survive, and the next sync
                 // retries the whole recovery.
                 const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
+                // Transport hint (web only): this page is the reconcile, not a
+                // replacement, and here is what the window holds. A client that
+                // knows nothing about it answers the plain page.
+                markReconcilePage(sessionId, {
+                    epoch: getState(sessionId).epoch ?? 0,
+                    rows: new Map(getState(sessionId).messages.map((message) => [message.id, message.rowHash]))
+                })
                 const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
                 if (!isCurrentTailSync(sessionId, generation)) return
                 noteSessionOpenPage(sessionId, 'latest', response.messages.length)
