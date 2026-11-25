@@ -1153,10 +1153,15 @@ function applyLatestResponse(
     })
 }
 
-/** A row the client owns rather than the server's page: not yet sent, waiting to be sent, or in a delivery state only the client can settle. */
+/**
+ * A row the client owns rather than the server's page: not yet sent, waiting to be sent, or in a delivery state only the client can settle.
+ *
+ * v-chain-cache fix: a queued row the hub has acknowledged (its own id, `id !== localId`) is the server's to
+ * list or not — every latest page carries the hub's uninvoked rows out-of-band — so it is not held back here.
+ * Only the client's own optimistic copy (id === localId) is.
+ */
 function isLocallyHeldRow(message: DecryptedMessage): boolean {
     return optimisticMessage(message)
-        || isQueuedForInvocation(message)
         || message.status === 'sending'
         || message.status === 'failed'
         || message.deliveryPending === true
