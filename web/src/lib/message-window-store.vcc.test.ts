@@ -11,7 +11,7 @@ import {
 } from '@/lib/message-window-store'
 
 vi.mock('@/lib/telemetryClient', () => ({
-    telemetryClient: { capture: vi.fn(), setTrigger: vi.fn() },
+    telemetryClient: { capture: vi.fn(), setTrigger: vi.fn(), getLevel: vi.fn(() => 1) },
     bindTelemetryClient: vi.fn(),
 }))
 
@@ -146,3 +146,46 @@ describe('v-chain-cache: an open that finds the epoch moved on and a server-queu
         expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
     })
 })
+
+describe('v-chain-cache: the open timeline is not held open by another session\'s background sync', () => {
+    // A is tapped, the user backs out at once and taps B. A's first page lands after B is open and arms
+    // A's own reconcile, so two syncs of A start while B's open is inside its settle grace window.
+    it('B\'s open settles on time although a sync of A starts in the grace window', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] })
+        const frames: Array<(time: number) => void> = []
+        vi.stubGlobal('requestAnimationFrame', (callback: (time: number) => void) => { frames.push(callback); return frames.length })
+        vi.stubGlobal('cancelAnimationFrame', () => {})
+        const { beginSessionOpenTrace, resetSessionOpenTrace, subscribeSessionOpenTrace, SESSION_OPEN_TRACE_SETTLE_GRACE_MS } = await import('@/lib/sessionOpenTrace')
+        resetSessionOpenTrace()
+        try {
+            const B = sessionId('timeline-B')
+            const A = sessionId('timeline-A')
+            const apiB = createApi(async (_sessionId, query) => latest(rows(1, 30), 1, { snapshotHeadAt: 300, snapshotHeadSeq: 30 }))
+            beginSessionOpenTrace(B, false)
+            activateMessageWindow(B, { reconcileAfterFirstPage: true })
+            await openWindow(apiB, B)
+            // B's open is current and its grace window is running.
+            vi.advanceTimersByTime(100)
+            let release!: (response: MessagesResponse) => void
+            const pending = new Promise<MessagesResponse>((resolve) => { release = resolve })
+            const apiA = createApi(() => pending)
+            void syncTailMessages(apiA, A)
+            const listener = vi.fn()
+            const unsubscribe = subscribeSessionOpenTrace(listener)
+            vi.advanceTimersByTime(SESSION_OPEN_TRACE_SETTLE_GRACE_MS + 500)
+            // A's sync must not have pushed B's settle out to B's next sync (the 10 s background tick).
+            expect(listener).toHaveBeenCalled()
+            release(latest(rows(1, 3), 1, { snapshotHeadAt: 30, snapshotHeadSeq: 3 }))
+            await settleAsync()
+            unsubscribe()
+        } finally {
+            resetSessionOpenTrace()
+            vi.unstubAllGlobals()
+            vi.useRealTimers()
+        }
+    })
+})
+
+async function settleAsync(): Promise<void> {
+    for (let i = 0; i < 20; i += 1) await Promise.resolve()
+}

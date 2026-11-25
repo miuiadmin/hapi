@@ -296,8 +296,17 @@ export function scheduleSessionOpenSettle(sessionId: string, rowCount: number): 
     }, SESSION_OPEN_TRACE_SETTLE_GRACE_MS)
 }
 
-/** Another sync started: the open is not settled after all. */
-export function cancelSessionOpenSettle(): void {
+/**
+ * Another sync started: the open is not settled after all.
+ *
+ * v-chain-cache fix: only a sync of the open's own session can have moved its
+ * tail. A sync of a session the reader has left (the open tapped by mistake,
+ * whose first page and reconcile are still running in the background) used to
+ * cancel the settle as well, and the open then waited for its own next sync —
+ * the 10 s background tick — to be reported as settled.
+ */
+export function cancelSessionOpenSettle(sessionId?: string): void {
+    if (sessionId !== undefined && active && active.sessionId !== sessionId) return
     if (active) {
         active.settledAt = null
         active.current = false

@@ -1238,7 +1238,7 @@ function beginTailSync(sessionId: string): number {
         })
     })
     // Open timeline (developer mode): a sync is in flight, so the open is not settled.
-    cancelSessionOpenSettle()
+    cancelSessionOpenSettle(sessionId)
     return generation
 }
 
