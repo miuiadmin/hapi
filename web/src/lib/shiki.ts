@@ -209,7 +209,9 @@ function fireWave(): void {
     }
     waitingHighlights = stillWaiting
     syncWaveTimer()
-    drainOneHighlight()
+    // verify-fix (v-render-b): only kick the pump when it is idle — drainOneHighlight() nulls the pending
+    // pump timer's handle on entry, so calling it while a pump task is pending would start a second chain.
+    if (pumpTimer === null) drainOneHighlight()
 }
 
 function drainOneHighlight(): void {
@@ -237,6 +239,14 @@ function scheduleHighlight(run: () => void, delayMs: number): () => void {
 function enqueueHighlight(run: () => void): void {
     readyHighlights.push({ due: 0, run })
     if (pumpTimer === null) pumpTimer = setTimeout(drainOneHighlight, 0)
+}
+
+/** Test seam (v-render-b verification only): the scheduler's pieces, unmodified. */
+export const __highlightSchedulerForTest = {
+    scheduleHighlight,
+    enqueueHighlight,
+    fireWave,
+    state: () => ({ waveTimer: waveTimer !== null, pumpTimer: pumpTimer !== null, waiting: waitingHighlights.length, ready: readyHighlights.length }),
 }
 
 /** Test hook: forget every cached block and drop everything still scheduled. */
