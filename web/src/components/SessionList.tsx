@@ -2129,7 +2129,7 @@ export function SessionList(props: {
     const searchChromeDirtyRef = useRef(true)
     const prevSearchExpandedRef = useRef(searchExpanded)
     const prevHasQueryRef = useRef(searchQuery.length > 0)
-    const [, bumpSearchChromeTick] = useState(0)
+    const [searchChromeTick, bumpSearchChromeTick] = useState(0)
     const searchNodeRef = useRef<HTMLElement | null>(null)
     const searchMutationObserverRef = useRef<MutationObserver | null>(null)
     const observedChromePartsRef = useRef<Set<HTMLElement>>(new Set())
@@ -3294,6 +3294,30 @@ export function SessionList(props: {
         searchMutationObserverRef.current?.disconnect()
     }, [])
 
+    // Research prototype C (perf/exp-render-firstframe): the measurement below
+    // reads offsetWidth / clientWidth / getComputedStyle, i.e. it forces a
+    // synchronous style + layout of the whole document. This effect used to run
+    // after every render of this list, and the list re-renders on every route
+    // change — so opening a session paid a forced layout of the freshly
+    // mounted thread from here, before the thread's own effects. Re-measure
+    // only when an input of the measurement can have changed:
+    //   - the search chrome (expand state, query, a size change reported by
+    //     the ResizeObserver / MutationObserver through `searchChromeTick`,
+    //     or the search control appearing);
+    //   - the set of toolbar slots (ids and their declared widths);
+    //   - the row width (published by the row observer).
+    // Without a ResizeObserver (jsdom) nothing else re-arms it, so it keeps
+    // measuring on every render there.
+    const toolbarMeasureHasQuery = searchQuery.length > 0
+    const toolbarSlotKey = [
+        renderHeader ? 'new' : '',
+        ...(props.toolbarExtras ?? []).map((extra) => `${extra.id}:${extra.keep}:${extra.widthPx ?? ''}`),
+        props.headerActions ? 'header-actions' : '',
+        unreadSessionCount > 0 ? 'mark-all' : '',
+    ].join('|')
+    const toolbarMeasureDeps = typeof ResizeObserver === 'undefined'
+        ? undefined
+        : [searchChromeTick, searchExpanded, toolbarMeasureHasQuery, showSearch, toolbarSlotKey, toolbarRowBoxPx]
     useLayoutEffect(() => {
         const hasQuery = searchQuery.length > 0
         if (prevSearchExpandedRef.current !== searchExpanded || prevHasQueryRef.current !== hasQuery) {
@@ -3355,7 +3379,7 @@ export function SessionList(props: {
             + morePx
         const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
-    })
+    }, toolbarMeasureDeps)
 
     // Pull-to-refresh on the scrollable list. Touch-only gesture mirroring the
     // pull-to-load-older pattern in HappyThread; desktop has no overscroll
