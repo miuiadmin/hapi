@@ -624,7 +624,14 @@ export const DecryptedMessageSchema = z.object({
     // A live dispatch is still unconfirmed, but is not an invitation to resend.
     deliveryPending: z.literal(true).optional(),
     // Live signal via messages-consumed (steered:true); not persisted by the hub.
-    steered: z.boolean().optional()
+    steered: z.boolean().optional(),
+    /**
+     * Fingerprint of the row as the hub serves it. Only pages asked for it
+     * carry the field (`withRowHashes`): a client keeps it with the row and
+     * compares it with a manifest page to see which of its rows the hub would
+     * now serve differently.
+     */
+    rowHash: z.string().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>

@@ -21,6 +21,7 @@ import {
     noteSessionOpenPage,
     noteSessionOpenStreamJoined,
     noteSessionOpenSync,
+    prepareSessionOpenResourceTimings,
     resetSessionOpenTrace,
     scheduleSessionOpenSettle,
     subscribeSessionOpenTrace
@@ -441,5 +442,104 @@ describe('session open trace', () => {
         vi.advanceTimersByTime(1000)
         beginSessionOpenTrace('s10', true)
         expect(getSessionOpenTrace('s10')).toMatchObject({ fromCache: true, firstRowMs: null, settledMs: null, done: false })
+    })
+})
+
+describe('session open trace: the first page leaves on the tap', () => {
+    const firstPage = '/api/sessions/s1/messages?limit=20&minConversation=1&withRowHashes=1'
+
+    it('keeps the request that left before the timeline began', () => {
+        const tapAt = Date.now()
+        recordSessionEntry('s1', 'list-click')
+        // The router prefetches the first page on the tap; the page lands while
+        // the session page is still rendering the rows it already holds.
+        prepareSessionOpenResourceTimings()
+        const clearBuffer = vi.spyOn(performance, 'clearResourceTimings')
+        serveLegs(leg(firstPage, 1, 90))
+        vi.advanceTimersByTime(160)
+        beginSessionOpenTrace('s1', true)
+        expect(clearBuffer).not.toHaveBeenCalled()
+
+        vi.advanceTimersByTime(10)
+        noteSessionOpenPage('s1', 'latest', 20)
+        noteSessionOpenFirstRow('s1')
+        presentFrame()
+        presentFrame()
+        noteSessionOpenSync('s1', true, 20)
+        noteSessionOpenStreamJoined('s1')
+        vi.advanceTimersByTime(SESSION_OPEN_TRACE_SETTLE_GRACE_MS)
+
+        expect(traces()).toHaveLength(1)
+        expect(traces()[0]).toMatchObject({ openedAt: tapAt, firstRowMs: 170, settledMs: 170 })
+        expect(requestsOf()).toEqual([
+            { kind: 'latest', startMs: 1, ttfbMs: 45, totalMs: 89, wireBytes: 1300, decodedBytes: 9000, status: 200, rows: 20 }
+        ])
+    })
+
+    it('names the reconcile\'s two requests and gives the fetched rows to the second', () => {
+        recordSessionEntry('s1', 'list-click')
+        prepareSessionOpenResourceTimings()
+        // The first page left on the tap and landed at 90ms; the session page
+        // mounts at 160ms and the catch-up and the reconcile follow.
+        serveLegs(
+            leg('/api/sessions/s1/messages?limit=20&minConversation=1&withRowHashes=1', 1, 90, { transferSize: 1500 }),
+            leg('/api/sessions/s1/messages?afterAt=1000&afterSeq=5&epoch=0&limit=200&withRowHashes=1', 165, 200, { transferSize: 476 }),
+            leg('/api/sessions/s1/messages?limit=200&knownEpoch=0&withRowHashes=1&rowHashes=1', 205, 230, { transferSize: 2300 }),
+            leg('/api/sessions/s1/messages?limit=200&knownEpoch=0&withRowHashes=1&ids=a,b', 235, 250, { transferSize: 617 })
+        )
+        vi.advanceTimersByTime(160)
+        beginSessionOpenTrace('s1', true)
+        // What the window store reports, each as its response is applied.
+        noteSessionOpenPage('s1', 'latest', 20)
+        vi.advanceTimersByTime(41)
+        noteSessionOpenPage('s1', 'catch-up', 0)
+        vi.advanceTimersByTime(51)
+        noteSessionOpenPage('s1', 'latest', 2)
+        noteSessionOpenSync('s1', true, 200)
+        noteSessionOpenStreamJoined('s1')
+        vi.advanceTimersByTime(SESSION_OPEN_TRACE_SETTLE_GRACE_MS)
+
+        expect(requestsOf()).toEqual([
+            { kind: 'latest', startMs: 1, ttfbMs: 45, totalMs: 89, wireBytes: 1500, decodedBytes: 9000, status: 200, rows: 20 },
+            { kind: 'catch-up', startMs: 165, ttfbMs: 18, totalMs: 35, wireBytes: 476, decodedBytes: 9000, status: 200, rows: 0 },
+            { kind: 'manifest', startMs: 205, ttfbMs: 13, totalMs: 25, wireBytes: 2300, decodedBytes: 9000, status: 200, rows: 0 },
+            { kind: 'refresh', startMs: 235, ttfbMs: 8, totalMs: 15, wireBytes: 617, decodedBytes: 9000, status: 200, rows: 2 }
+        ])
+        // The hub only accepts the kinds the shared schema knows.
+        expect(TELEMETRY_KINDS.session_open_trace!.data.safeParse(traces()[0]).success).toBe(true)
+    })
+
+    it('empties the request log for an open that starts without a prefetch', () => {
+        recordSessionEntry('s1', 'list-click')
+        const clearBuffer = vi.spyOn(performance, 'clearResourceTimings')
+        beginSessionOpenTrace('s1', false)
+        expect(clearBuffer).toHaveBeenCalledTimes(1)
+    })
+
+    it('empties a crowded log at the tap and leaves a roomy one alone', () => {
+        const entries = vi.spyOn(performance, 'getEntriesByType').mockReturnValue([] as unknown as PerformanceEntry[])
+        const clearBuffer = vi.spyOn(performance, 'clearResourceTimings')
+        prepareSessionOpenResourceTimings()
+        expect(clearBuffer).not.toHaveBeenCalled()
+
+        entries.mockReturnValue(Array.from({ length: 200 }, () => ({})) as unknown as PerformanceEntry[])
+        prepareSessionOpenResourceTimings()
+        expect(clearBuffer).toHaveBeenCalledTimes(1)
+    })
+
+    it('ends the previous open at the tap', () => {
+        // One that was only waiting out its grace window had settled.
+        beginSessionOpenTrace('s1', false)
+        noteSessionOpenSync('s1', true, 20)
+        noteSessionOpenStreamJoined('s1')
+        prepareSessionOpenResourceTimings()
+        expect(traces()).toHaveLength(1)
+        expect(traces()[0]).toMatchObject({ outcome: 'settled' })
+
+        // One still working was left.
+        beginSessionOpenTrace('s2', false)
+        prepareSessionOpenResourceTimings()
+        expect(traces()).toHaveLength(2)
+        expect(traces()[1]).toMatchObject({ outcome: 'left' })
     })
 })

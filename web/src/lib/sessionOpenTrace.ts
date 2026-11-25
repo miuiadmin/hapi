@@ -13,9 +13,11 @@ import { peekSessionEntry } from '@/chat/sessionVisitTelemetry'
  *
  * The timeline spans the stream join on purpose. The stream connects a moment
  * after the page, and a first connection cannot prove that nothing was missed,
- * so the client reconciles once more (a catch-up page and a latest page, the
- * heaviest requests of the whole open). Closing before that would leave the
- * most expensive leg of an open out of its timeline.
+ * so the client reconciles once more: a catch-up, then the newest page — or,
+ * now that the hub labels rows with a fingerprint, the list of those
+ * fingerprints and only the rows that differ from what the window holds.
+ * Closing before that would leave the reconcile out of the timeline, and for a
+ * long time it was the most expensive leg of an open.
  *
  * The finished timeline goes to the hub as the `session_open_trace` event (so
  * every open can be looked up later with its wall-clock time) and is shown by
@@ -29,18 +31,21 @@ export const SESSION_OPEN_TRACE_EVENT = 'session_open_trace'
 export const SESSION_OPEN_TRACE_MAX_LEGS = 12
 /**
  * A tail that stays current this long is considered settled; a sync starting in
- * the window resets it. The requests an open triggers come from several places
- * (the page itself, the stream's first connection, its reconcile), and up to
- * about a second can pass between two of them on a normal link. The background
- * tail ticker is 10 s apart at its fastest, so it never falls inside.
+ * the window resets it. It has to bridge the requests an open itself triggers
+ * once its stream has joined — the catch-up, the reconcile, the row refreshes
+ * — which follow each other within tens of milliseconds. It must not reach the
+ * syncs that come after the open because something else happened: a message
+ * the user sends, a running agent's next row. Those were measured at 1.1 s to
+ * 2.4 s after the open's last request, and a 2 s window swallowed them into
+ * the open's time. The background tail ticker is 10 s apart at its fastest.
  */
-export const SESSION_OPEN_TRACE_SETTLE_GRACE_MS = 2000
+export const SESSION_OPEN_TRACE_SETTLE_GRACE_MS = 1000
 /** How long an open waits for its event stream to join. A stream that never does
  *  (offline, blocked) must not keep the timeline open for good. */
 export const SESSION_OPEN_TRACE_STREAM_WAIT_MS = 10_000
 
-export type OpenTraceLegKind = 'latest' | 'context' | 'catch-up' | 'detail'
-type PageKind = Exclude<OpenTraceLegKind, 'detail'>
+export type OpenTraceLegKind = 'latest' | 'context' | 'catch-up' | 'detail' | 'manifest' | 'refresh'
+type PageKind = Exclude<OpenTraceLegKind, 'detail' | 'manifest' | 'refresh'>
 
 export type SessionOpenTraceLeg = {
     kind: OpenTraceLegKind
@@ -132,15 +137,41 @@ function notify(): void {
 }
 
 /**
- * Resource Timing keeps 250 entries and then silently drops every new one —
- * next to nothing in a long-lived single-page app. Nothing else reads the
- * buffer, so each open starts it over.
+ * Resource Timing keeps a few hundred entries and then silently drops every
+ * new one — next to nothing in a long-lived single-page app. Nothing else
+ * reads the buffer, so each open starts it over.
  */
+const RESOURCE_TIMINGS_CROWDED = 200
+
+/** performance.now() of the last moment the buffer was made ready for an open. */
+let resourceTimingsReadyAt = Number.NEGATIVE_INFINITY
+
 function resetResourceTimings(): void {
     try {
         performance.clearResourceTimings?.()
     } catch {
         // not supported: the legs are simply missing
+    }
+    resourceTimingsReadyAt = performance.now()
+}
+
+/**
+ * Make the request log ready for an open that starts right now, before its
+ * first request leaves: the router prefetches the first page on the tap
+ * (`prefetchSessionOpenPage`), well before the session page begins the
+ * timeline. The log must have room by then and must not be emptied again
+ * while that request is in flight or has just landed, so the timeline's own
+ * start skips the reset when this ran for it.
+ */
+export function prepareSessionOpenResourceTimings(): void {
+    if (!enabled()) return
+    // The tap that starts this open is also the moment the previous one ended.
+    endSessionOpenTrace()
+    const recorded = performance.getEntriesByType?.('resource')?.length ?? 0
+    if (recorded >= RESOURCE_TIMINGS_CROWDED) {
+        resetResourceTimings()
+    } else {
+        resourceTimingsReadyAt = performance.now()
     }
 }
 
@@ -208,7 +239,9 @@ export function beginSessionOpenTrace(sessionId: string, fromCache: boolean): vo
         opened.streamWaitTimer = null
         noteSessionOpenStreamJoined(sessionId)
     }, SESSION_OPEN_TRACE_STREAM_WAIT_MS)
-    resetResourceTimings()
+    if (resourceTimingsReadyAt < active.t0) {
+        resetResourceTimings()
+    }
     activeView = {
         sessionId,
         entry: active.entry,
@@ -314,13 +347,27 @@ function legKind(url: string, marker: string): OpenTraceLegKind | null {
     // Only what the open reads: a page (always requested with a limit or a
     // cursor) and a message's context. Sends, retries, attachment previews and
     // the composer's own requests share the prefix but are not part of the open.
-    let page: 'latest' | 'context' | null = null
+    let page: OpenTraceLegKind | null = null
     if (rest.startsWith('/messages?')) page = 'latest'
     else if (/^\/messages\/[^/?]+\/context(\?|$)/.test(rest)) page = 'context'
     if (page === null) return null
+    // The reconcile after a gap, as the web client pays it: the fingerprints
+    // of the newest page first, then only the rows that differ from the window.
+    if (page === 'latest' && /[?&]rowHashes=1(&|$)/.test(rest)) return 'manifest'
+    if (page === 'latest' && /[?&]ids=/.test(rest)) return 'refresh'
     if (page === 'latest' && rest.includes('afterAt=')) return 'catch-up'
     if (page === 'latest' && rest.includes('beforeAt=')) return 'context'
     return page
+}
+
+/**
+ * The store's page note a leg is answered by. The manifest is the client's
+ * own request (it carries no rows and gets no note); the rows fetched after
+ * it are the reconcile page's, which the store notes as a latest page.
+ */
+function noteKindOf(leg: TrackedLeg): PageKind | null {
+    if (leg.kind === 'refresh') return 'latest'
+    return leg.kind === 'manifest' || leg.kind === 'detail' ? null : leg.kind
 }
 
 function readLegs(trace: ActiveTrace): SessionOpenTraceLeg[] {
@@ -333,19 +380,21 @@ function readLegs(trace: ActiveTrace): SessionOpenTraceLeg[] {
     for (const note of notes) {
         let own: TrackedLeg | null = null
         for (const leg of legs) {
-            if (leg.kind !== note.kind || rowsByLeg.has(leg) || leg.responseEnd > note.end + 2) continue
+            if (noteKindOf(leg) !== note.kind || rowsByLeg.has(leg) || leg.responseEnd > note.end + 2) continue
             if (!own || leg.responseEnd > own.responseEnd) own = leg
         }
         if (!own) {
             // The request's timing entry went missing: fall back to the first
             // request of that kind that did get a response.
-            own = legs.find((leg) => leg.kind === note.kind && !rowsByLeg.has(leg) && leg.status !== 0) ?? null
+            own = legs.find((leg) => noteKindOf(leg) === note.kind && !rowsByLeg.has(leg) && leg.status !== 0) ?? null
         }
         if (own) rowsByLeg.set(own, note.rows)
     }
     return legs
         .map((tracked): SessionOpenTraceLeg => {
             const { responseEnd: _responseEnd, ...leg } = tracked
+            // The manifest is a list of fingerprints; it carries no rows.
+            if (leg.kind === 'manifest') return leg.status === 0 ? leg : { ...leg, rows: 0 }
             return rowsByLeg.has(tracked) ? { ...leg, rows: rowsByLeg.get(tracked) } : leg
         })
         .sort((a, b) => a.startMs - b.startMs)
@@ -460,4 +509,5 @@ export function resetSessionOpenTrace(): void {
     latestBySession.clear()
     pendingRowCount = 0
     firstRowToken += 1
+    resourceTimingsReadyAt = Number.NEGATIVE_INFINITY
 }

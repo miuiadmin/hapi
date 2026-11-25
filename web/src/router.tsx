@@ -60,6 +60,7 @@ import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/session
 import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
 import { configureSessionReadState, getSessionLastSeenAt, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { recordSessionEntry } from '@/chat/sessionVisitTelemetry'
+import { prefetchSessionOpenPage } from '@/lib/sessionOpenPrefetch'
 import { useSessionVisitTelemetry } from '@/hooks/useSessionVisitTelemetry'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
@@ -311,6 +312,12 @@ function SessionsPage() {
         } catch {
             // fail-silent
         }
+        // Start the session's first page now: the session page asks for it
+        // only once it has rendered the rows it already holds. (A search hit
+        // opens on one message and loads a context page instead.)
+        if (api && !targetMessageId) {
+            prefetchSessionOpenPage(api, sessionId)
+        }
         if (pendingRequestId) {
             navigate({
                 to: '/sessions/$sessionId',
@@ -343,7 +350,7 @@ function SessionsPage() {
             sessionId,
             isSessionSidebarHidden(sidebarSearch) ? { sidebar: 'hidden' } : undefined,
         ))
-    }, [navigate, sidebarSearch])
+    }, [api, navigate, sidebarSearch])
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
         navigate({
             to: '/sessions/new',

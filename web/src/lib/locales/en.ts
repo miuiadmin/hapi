@@ -525,6 +525,8 @@ export default {
   'openTrace.kind.latest': 'Latest page',
   'openTrace.kind.context': 'Older context',
   'openTrace.kind.catch-up': 'Catch-up',
+  'openTrace.kind.manifest': 'fingerprint list',
+  'openTrace.kind.refresh': 'changed rows',
   'openTrace.kind.detail': 'Session detail',
   'openTrace.note': 'Counted from the tap that opened the session; the first row counts once its frame was presented. Wire size is what crossed the network, headers included; 0 means the browser cache answered.',
   'openTrace.none': 'No open recorded for this session yet',

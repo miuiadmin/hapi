@@ -113,3 +113,47 @@ describe('mergeMessages', () => {
         expect(merged[0]?.seq).toBe(7)
     })
 })
+
+describe('mergeMessages keeps the rows the window already holds', () => {
+    const served = (id: string, text: string, rowHash?: string): DecryptedMessage => ({
+        id,
+        localId: null,
+        seq: 1,
+        createdAt: 1_000,
+        invokedAt: null,
+        ...(rowHash ? { rowHash } : {}),
+        content: { role: 'user', content: { type: 'text', text } }
+    })
+
+    it('returns the held row when it comes back with the same fingerprint and content', () => {
+        const held = served('m1', 'a', 'aaaaaaaaaaaa')
+        expect(mergeMessages([held], [served('m1', 'a', 'aaaaaaaaaaaa')])[0]).toBe(held)
+    })
+
+    it('takes the served row once its content moved on', () => {
+        const held = served('m1', 'a', 'aaaaaaaaaaaa')
+        const next = served('m1', 'merged', 'bbbbbbbbbbbb')
+        expect(mergeMessages([held], [next])[0]).toBe(next)
+        // Same text, other fingerprint: the hub says the row is not what was held.
+        expect(mergeMessages([held], [served('m1', 'a', 'cccccccccccc')])[0]).not.toBe(held)
+    })
+
+    it('never counts a row without a fingerprint as the same', () => {
+        const held = served('m1', 'a')
+        expect(mergeMessages([held], [served('m1', 'a')])[0]).not.toBe(held)
+        const labelled = served('m1', 'a', 'aaaaaaaaaaaa')
+        expect(mergeMessages([labelled], [served('m1', 'a')])[0]).not.toBe(labelled)
+    })
+
+    it('takes the served row when the held one carries more than it, and keeps the client-only signals', () => {
+        // A local status is not something the served copy has: the row is not the same.
+        const sending = { ...served('m1', 'a', 'aaaaaaaaaaaa'), status: 'sending' as const }
+        expect(mergeMessages([sending], [served('m1', 'a', 'aaaaaaaaaaaa')])[0]).not.toBe(sending)
+        // A late ack is carried over by the merge, so the held row is exactly what
+        // the merge would build: it stays, ack and all.
+        const acked = { ...served('m1', 'a', 'aaaaaaaaaaaa'), invokedAt: 1_234 }
+        const merged = mergeMessages([acked], [served('m1', 'a', 'aaaaaaaaaaaa')])[0]
+        expect(merged).toBe(acked)
+        expect(merged?.invokedAt).toBe(1_234)
+    })
+})

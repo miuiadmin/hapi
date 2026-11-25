@@ -1,9 +1,22 @@
 import { Hono } from 'hono'
 import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema } from '@hapi/protocol'
+import type { MessagesQuery } from '@hapi/protocol/apiTypes'
+import type { MessagePageRowHashes } from '../../sync/messageService'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 import { stripLargeInlineImagePreviews } from '../../sync/attachmentPreviews'
+
+/** The fingerprint part of a messages query; undefined when it asks for none of it. */
+function rowHashesOf(query: MessagesQuery): MessagePageRowHashes | undefined {
+    if (query.rowHashes === '1' && query.knownEpoch !== undefined) {
+        return { kind: 'manifest', knownEpoch: query.knownEpoch }
+    }
+    if (query.ids !== undefined && query.knownEpoch !== undefined && query.withRowHashes === '1') {
+        return { kind: 'ids', knownEpoch: query.knownEpoch, ids: query.ids.split(',') }
+    }
+    return query.withRowHashes === '1' ? { kind: 'label' } : undefined
+}
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -41,7 +54,8 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             after,
             until,
             epoch: parsed.data.epoch ?? null,
-            minConversation: parsed.data.minConversation
+            minConversation: parsed.data.minConversation,
+            rowHashes: rowHashesOf(parsed.data)
         })
         // Large inline image previews do not ride along on pages; the web
         // fetches them on demand from the attachment preview route below.

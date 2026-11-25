@@ -10,6 +10,7 @@ import {
     SendMessageRequestSchema,
     UpdateHubSettingsRequestSchema
 } from './apiTypes'
+import { DecryptedMessageSchema } from './schemas'
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
     it('preserves Codex session messages when parsing runner RPC responses', () => {
@@ -123,6 +124,49 @@ describe('MessagesQuerySchema', () => {
 
     it('rejects epoch without a forward cursor', () => {
         expect(MessagesQuerySchema.safeParse({ epoch: 1 }).success).toBe(false)
+    })
+
+    it('accepts a label, a manifest and an id list', () => {
+        expect(MessagesQuerySchema.parse({ limit: '200', withRowHashes: '1' })).toEqual({ limit: 200, withRowHashes: '1' })
+        expect(MessagesQuerySchema.parse({ limit: '200', rowHashes: '1', knownEpoch: '3' }))
+            .toEqual({ limit: 200, rowHashes: '1', knownEpoch: 3 })
+        expect(MessagesQuerySchema.parse({ limit: '200', withRowHashes: '1', knownEpoch: '3', ids: 'a,b' }))
+            .toEqual({ limit: 200, withRowHashes: '1', knownEpoch: 3, ids: 'a,b' })
+        // A label also rides along on a catch-up.
+        expect(MessagesQuerySchema.safeParse({ afterAt: 1, afterSeq: 1, withRowHashes: '1' }).success).toBe(true)
+        // An id list may name a whole page.
+        expect(MessagesQuerySchema.safeParse({ withRowHashes: '1', knownEpoch: '1', ids: Array(200).fill('id').join(',') }).success).toBe(true)
+    })
+
+    it('rejects half-specified or misdirected fingerprint requests', () => {
+        const rejected = [
+            { rowHashes: '1' },
+            { rowHashes: '1', knownEpoch: '1', afterAt: '1', afterSeq: '1' },
+            { rowHashes: '1', knownEpoch: '1', beforeAt: '1', beforeSeq: '1' },
+            { ids: 'a' },
+            { ids: 'a', withRowHashes: '1' },
+            { ids: 'a', knownEpoch: '1' },
+            { withRowHashes: '1', knownEpoch: '1', afterAt: '1', afterSeq: '1', ids: 'a' },
+            { withRowHashes: 'true' },
+            { withRowHashes: '0' },
+            { rowHashes: '0' },
+            { withRowHashes: '1', knownEpoch: '1', ids: '' },
+            { withRowHashes: '1', knownEpoch: '1', ids: 'a,,b' },
+            { withRowHashes: '1', knownEpoch: '1', ids: 'a, b' },
+            { withRowHashes: '1', knownEpoch: '1', ids: Array(201).fill('id').join(',') },
+            { withRowHashes: '1', knownEpoch: '-1', ids: 'a' }
+        ]
+        for (const query of rejected) {
+            expect(MessagesQuerySchema.safeParse(query).success, JSON.stringify(query)).toBe(false)
+        }
+    })
+})
+
+describe('DecryptedMessageSchema rowHash', () => {
+    it('carries a row fingerprint when the page was labelled, and nothing when it was not', () => {
+        const message = { id: 'm1', seq: 1, localId: null, content: {}, createdAt: 1 }
+        expect(DecryptedMessageSchema.parse({ ...message, rowHash: '0123456789ab' })).toEqual({ ...message, rowHash: '0123456789ab' })
+        expect(DecryptedMessageSchema.parse(message)).toEqual(message)
     })
 })
 

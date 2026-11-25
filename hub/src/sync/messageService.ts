@@ -106,8 +106,27 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
     }
 }
 
-function toVisibleDecryptedMessages(messages: StoredMessageForDelivery[]): DecryptedMessage[] {
-    return messages.filter(isWebVisibleStoredMessage).map(toDecryptedMessage)
+/**
+ * What a page request does with row fingerprints (the `withRowHashes`, `rowHashes`
+ * and `ids` parameters of the messages query).
+ */
+export type MessagePageRowHashes =
+    /** Label every message of the page with its fingerprint. */
+    | { kind: 'label' }
+    /** The page's fingerprints only; no messages. */
+    | { kind: 'manifest'; knownEpoch: number }
+    /** The page with only the given messages. */
+    | { kind: 'ids'; knownEpoch: number; ids: string[] }
+
+function toVisibleDecryptedMessages(
+    messages: StoredMessageForDelivery[],
+    withRowHash: boolean = false
+): DecryptedMessage[] {
+    return messages.filter(isWebVisibleStoredMessage).map((message) => (
+        withRowHash && message.rowHash !== undefined
+            ? { ...toDecryptedMessage(message), rowHash: message.rowHash }
+            : toDecryptedMessage(message)
+    ))
 }
 
 function jsonByteLength(value: unknown): number {
@@ -425,23 +444,31 @@ export class MessageService {
             until?: MessagePosition | null
             epoch?: number | null
             minConversation?: number
+            rowHashes?: MessagePageRowHashes
         }
     ): MessagesResponse {
         const epoch = this.store.messages.getMessageEpoch(sessionId)
+        const requested = options.rowHashes
+        // Manifests and id lists describe the newest page only; a label rides
+        // along on every shape. A reset verdict replaces the caller's rows
+        // wholesale, so its rows are the caller's from then on and get labelled.
+        const label = requested?.kind === 'label' ? requested : undefined
         if (options.after) {
             if (options.epoch !== undefined && options.epoch !== null && options.epoch !== epoch) {
-                return this.getLatestOrBeforeMessagesPage(sessionId, options.limit, null, epoch, true)
+                return this.getLatestOrBeforeMessagesPage(sessionId, options.limit, null, epoch, true, label)
             }
             return this.getAfterMessagesPage(
                 sessionId,
                 options.limit,
                 options.after,
                 options.until ?? null,
-                epoch
+                epoch,
+                label !== undefined
             )
         }
         const before = options.before ?? null
-        const page = this.getLatestOrBeforeMessagesPage(sessionId, options.limit, before, epoch, false)
+        const pageRowHashes = before === null ? requested : undefined
+        const page = this.getLatestOrBeforeMessagesPage(sessionId, options.limit, before, epoch, false, pageRowHashes)
         if (
             options.minConversation !== undefined
             && before === null
@@ -453,7 +480,7 @@ export class MessageService {
             // The newest rows are pure tool activity, which the web folds into
             // one collapsed card: answer with the full page so the client does
             // not need a second, serial request for the context before first paint.
-            return this.getLatestOrBeforeMessagesPage(sessionId, MESSAGES_PAGE_MAX, null, epoch, false)
+            return this.getLatestOrBeforeMessagesPage(sessionId, MESSAGES_PAGE_MAX, null, epoch, false, label)
         }
         return page
     }
@@ -463,12 +490,14 @@ export class MessageService {
         limit: number,
         requestedBefore: MessagePosition | null,
         epoch: number,
-        reset: boolean
+        reset: boolean,
+        rowHashes?: MessagePageRowHashes
     ): MessagesResponse {
         const direction = requestedBefore ? 'before' as const : 'latest' as const
+        const withRowHash = rowHashes !== undefined
         const snapshotHead = this.store.messages.getNewestMessagePosition(sessionId)
         let before = requestedBefore ?? undefined
-        let pageRows = this.store.messages.getMessagesByPosition(sessionId, limit, requestedBefore ?? undefined)
+        let pageRows = this.store.messages.getMessagesByPosition(sessionId, limit, requestedBefore ?? undefined, { withRowHash })
 
         // Latest-page request (no cursor): also include uninvoked local user messages
         // out-of-band, so refresh / secondary clients can still see queued rows even
@@ -476,7 +505,7 @@ export class MessageService {
         // The cursor stays anchored to pageRows so out-of-band rows don't affect
         // pagination of older pages.
         let queuedRows = requestedBefore === null
-            ? this.store.messages.getUninvokedLocalMessages(sessionId)
+            ? this.store.messages.getUninvokedLocalMessages(sessionId, { withRowHash })
             : []
 
         let byId = new Map<string, typeof pageRows[number]>()
@@ -488,7 +517,7 @@ export class MessageService {
             return at !== 0 ? at : a.seq - b.seq
         })
 
-        let messages = toVisibleDecryptedMessages(stored)
+        let messages = toVisibleDecryptedMessages(stored, withRowHash)
 
         // The cursor is the oldest row in the actual position-ordered page (pageRows[0]).
         // Out-of-band queued rows are not part of the cursor — they are pinned to
@@ -508,7 +537,7 @@ export class MessageService {
 
         while (messages.length === 0 && hasMore && oldestSeq !== null && oldestPositionAt !== null) {
             before = { at: oldestPositionAt, seq: oldestSeq }
-            pageRows = this.store.messages.getMessagesByPosition(sessionId, limit, before)
+            pageRows = this.store.messages.getMessagesByPosition(sessionId, limit, before, { withRowHash })
             queuedRows = []
 
             byId = new Map<string, typeof pageRows[number]>()
@@ -519,7 +548,7 @@ export class MessageService {
                 const at = (a.invokedAt ?? a.createdAt) - (b.invokedAt ?? b.createdAt)
                 return at !== 0 ? at : a.seq - b.seq
             })
-            messages = toVisibleDecryptedMessages(stored)
+            messages = toVisibleDecryptedMessages(stored, withRowHash)
 
             oldest = pageRows[0] ?? null
             oldestSeq = oldest?.seq ?? null
@@ -534,8 +563,28 @@ export class MessageService {
                 ).length > 0
         }
 
+        // Everything above — the cursor, hasMore, the snapshot head — describes
+        // the whole page and stays as it is. Only what is served narrows, so a
+        // client that upserts by id ends up with exactly what the whole page
+        // would have left it with.
+        let served = messages
+        let manifest: MessagesResponse['page']['rowHashes']
+        if (rowHashes) {
+            // The caller's fingerprints belong to an earlier epoch: rows may
+            // have been removed or reordered since, and patching its copy by
+            // id would leave deleted rows standing. It gets the whole page.
+            const stale = 'knownEpoch' in rowHashes && rowHashes.knownEpoch !== epoch
+            if (rowHashes.kind === 'manifest' && !stale) {
+                served = []
+                manifest = messages.map((message) => ({ id: message.id, hash: message.rowHash ?? '' }))
+            } else if (rowHashes.kind === 'ids' && !stale) {
+                const wanted = new Set(rowHashes.ids)
+                served = messages.filter((message) => wanted.has(message.id))
+            }
+        }
+
         return {
-            messages,
+            messages: served,
             page: {
                 ...(direction === 'latest' ? { readThroughRevision: this.store.sessions.getSession(sessionId)?.contentRevision ?? 0 } : {}),
                 direction,
@@ -548,7 +597,8 @@ export class MessageService {
                 nextAfterAt: null,
                 snapshotHeadSeq: snapshotHead?.seq ?? null,
                 snapshotHeadAt: snapshotHead?.at ?? null,
-                hasMore
+                hasMore,
+                ...(manifest ? { rowHashes: manifest } : {})
             }
         }
     }
@@ -558,7 +608,8 @@ export class MessageService {
         limit: number,
         after: MessagePosition,
         requestedUntil: MessagePosition | null,
-        epoch: number
+        epoch: number,
+        withRowHash: boolean = false
     ): MessagesResponse {
         const currentHead = this.store.messages.getNewestMessagePosition(sessionId)
         const snapshotHead = currentHead && requestedUntil
@@ -591,14 +642,15 @@ export class MessageService {
             sessionId,
             limit,
             after,
-            snapshotHead
+            snapshotHead,
+            { withRowHash }
         )
         const last = pageRows[pageRows.length - 1] ?? null
         const nextAfter = last ? messagePosition(last) : snapshotHead
         const hasMore = last !== null && comparePosition(nextAfter, snapshotHead) < 0
 
         return {
-            messages: toVisibleDecryptedMessages(pageRows),
+            messages: toVisibleDecryptedMessages(pageRows, withRowHash),
             page: {
                 ...(!hasMore && readThroughRevision !== undefined ? { readThroughRevision } : {}),
                 direction: 'after',

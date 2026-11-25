@@ -48,6 +48,10 @@ export type MessageDeliveryState = 'indeterminate'
 export type StoredMessage = {
     deliveryPending?: true
     contentRevision?: number
+    /** Fingerprint of the row as it is served; only computed for callers that
+     *  ask for it (`withRowHash` on the page queries). It becomes the message's
+     *  `rowHash` on pages that asked for it, and is never served otherwise. */
+    rowHash?: string
     id: string
     sessionId: string
     content: unknown

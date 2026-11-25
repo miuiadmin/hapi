@@ -55,6 +55,19 @@ function clearStaleQueuedStatus(list: DecryptedMessage[]): DecryptedMessage[] {
     )
 }
 
+/**
+ * Whether a row served again is the row the window already holds: the same
+ * fingerprint and the same content. A page that brings nothing new then
+ * leaves the list as it was, object by object, and the thread is not rendered
+ * again for it. Rows without a fingerprint (older hubs, local rows) never
+ * count as the same — a fresh object is what there was before.
+ */
+function sameMessage(held: DecryptedMessage, served: DecryptedMessage): boolean {
+    return held.rowHash !== undefined
+        && held.rowHash === served.rowHash
+        && JSON.stringify(held) === JSON.stringify(served)
+}
+
 export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[]): DecryptedMessage[] {
     if (existing.length === 0) {
         return clearStaleQueuedStatus([...incoming]).sort(compareMessages)
@@ -87,7 +100,8 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
             ) {
                 preserved.queueDismissed = true
             }
-            byId.set(msg.id, Object.keys(preserved).length > 0 ? { ...msg, ...preserved } : msg)
+            const merged: DecryptedMessage = Object.keys(preserved).length > 0 ? { ...msg, ...preserved } : msg
+            byId.set(msg.id, sameMessage(existing, merged) ? existing : merged)
         } else {
             byId.set(msg.id, msg)
         }

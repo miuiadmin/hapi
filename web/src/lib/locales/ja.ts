@@ -465,6 +465,8 @@ export default {
   'openTrace.kind.latest': '最新ページ',
   'openTrace.kind.context': 'より前の文脈',
   'openTrace.kind.catch-up': '差分の取得',
+  'openTrace.kind.manifest': 'フィンガープリント一覧',
+  'openTrace.kind.refresh': '変更行の取得',
   'openTrace.kind.detail': 'セッション詳細',
   'openTrace.note': 'セッションを開いた操作の時点から計測し、最初の行はそのフレームが実際に表示された時点とします。転送サイズはレスポンスヘッダを含む実際の通信量で、0 はブラウザのキャッシュが応答したことを指します。',
   'openTrace.none': 'このセッションを開いた記録はまだありません',

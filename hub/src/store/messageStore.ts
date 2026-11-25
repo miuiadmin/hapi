@@ -4,6 +4,7 @@ import { hasConversationMessageContent } from '@hapi/protocol/messages'
 import { decodeMessageContent } from './contentCodec'
 import { prepareCached } from './statementCache'
 
+import type { RowHashOptions } from './messages'
 import type { StoredMessage } from './types'
 import {
     addMessage,
@@ -171,17 +172,23 @@ export class MessageStore {
         return getDeliverableMessagesAfter(this.db, sessionId, afterSeq, now, limit)
     }
 
-    getMessagesByPosition(sessionId: string, limit: number, before?: { at: number; seq: number }): StoredMessage[] {
-        return getMessagesByPosition(this.db, sessionId, limit, before)
+    getMessagesByPosition(
+        sessionId: string,
+        limit: number,
+        before?: { at: number; seq: number },
+        options?: RowHashOptions
+    ): StoredMessage[] {
+        return getMessagesByPosition(this.db, sessionId, limit, before, options)
     }
 
     getMessagesAfterPosition(
         sessionId: string,
         limit: number,
         after: MessagePosition,
-        until?: MessagePosition
+        until?: MessagePosition,
+        options?: RowHashOptions
     ): StoredMessage[] {
-        return getMessagesAfterPosition(this.db, sessionId, limit, after, until)
+        return getMessagesAfterPosition(this.db, sessionId, limit, after, until, options)
     }
 
     getNewestMessagePosition(sessionId: string): MessagePosition | null {
@@ -200,7 +207,7 @@ export class MessageStore {
         return getLocalMessageStates(this.db, sessionId, localIds)
     }
 
-    getUninvokedLocalMessages(sessionId: string, options?: { deliverableOnly?: boolean }): StoredMessage[] {
+    getUninvokedLocalMessages(sessionId: string, options?: { deliverableOnly?: boolean; withRowHash?: boolean }): StoredMessage[] {
         return getUninvokedLocalMessages(this.db, sessionId, options)
     }
 

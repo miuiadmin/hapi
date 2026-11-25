@@ -115,6 +115,32 @@ export function addImportedMessage(
         return { message: toStoredMessage(row), inserted: true }
     })()
 }
+/** Ask a page query to fingerprint every row it returns (`StoredMessage.rowHash`). */
+export type RowHashOptions = { withRowHash?: boolean }
+
+/**
+ * A short fingerprint of a stored row as it is served: its content bytes and
+ * every column a served message is built from. Two rows with the same hash
+ * serve as the same message; a row changed in place gets a new one.
+ *
+ * It only ever has to agree between answers of the same hub process — a client
+ * compares the hash it was handed with the one the hub hands out now — so a
+ * hub upgrade may change every hash at once. That costs each client one plain
+ * page; nothing goes stale because of it.
+ */
+function rowHashOf(row: DbMessageRow): string {
+    const content = typeof row.content === 'string' ? Buffer.from(row.content, 'utf8') : row.content
+    const meta = Buffer.from(
+        [row.created_at, row.seq, row.local_id ?? '', row.invoked_at ?? '', row.scheduled_at ?? '', row.delivery_state ?? '']
+            .join('\u0000'),
+        'utf8'
+    )
+    const input = new Uint8Array(content.length + meta.length)
+    input.set(content, 0)
+    input.set(meta, content.length)
+    return (BigInt(Bun.hash(input)) & 0xFFFFFFFFFFFFn).toString(16).padStart(12, '0')
+}
+
 function toStoredMessage(row: DbMessageRow): StoredMessage {
     return {
         id: row.id,
@@ -129,6 +155,11 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
         ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
     }
+}
+
+/** `toStoredMessage`, fingerprinted when the caller asked for it (`withRowHash`). */
+function toServedRow(row: DbMessageRow, options?: RowHashOptions): StoredMessage {
+    return options?.withRowHash ? { ...toStoredMessage(row), rowHash: rowHashOf(row) } : toStoredMessage(row)
 }
 
 export type CopyStoredMessageInput = Pick<
@@ -1105,7 +1136,8 @@ export function getMessagesByPosition(
     db: Database,
     sessionId: string,
     limit: number,
-    before?: MessagePosition
+    before?: MessagePosition,
+    options?: RowHashOptions
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
     const beforeClause = before
@@ -1125,7 +1157,7 @@ export function getMessagesByPosition(
         limit: safeLimit
     }) as DbMessageRow[]
     // Reverse so results are in ascending display order (oldest first)
-    return rows.reverse().map(toStoredMessage)
+    return rows.reverse().map((row) => toServedRow(row, options))
 }
 
 /** Return messages strictly after a display-position cursor in ascending order.
@@ -1136,7 +1168,8 @@ export function getMessagesAfterPosition(
     sessionId: string,
     limit: number,
     after: MessagePosition,
-    until?: MessagePosition
+    until?: MessagePosition,
+    options?: RowHashOptions
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
     const untilClause = until
@@ -1164,7 +1197,7 @@ export function getMessagesAfterPosition(
         untilSeq: until?.seq ?? null,
         limit: safeLimit
     }) as DbMessageRow[]
-    return rows.map(toStoredMessage)
+    return rows.map((row) => toServedRow(row, options))
 }
 
 export function getNewestMessagePosition(db: Database, sessionId: string): MessagePosition | null {
@@ -1201,13 +1234,13 @@ export function bumpMessageEpoch(db: Database, sessionId: string): number {
 export function getUninvokedLocalMessages(
     db: Database,
     sessionId: string,
-    options?: { deliverableOnly?: boolean }
+    options?: { deliverableOnly?: boolean; withRowHash?: boolean }
 ): StoredMessage[] {
     const deliverableClause = options?.deliverableOnly ? " AND delivery_state = 'queued'" : ''
     const rows = prepareCached(db,
         `SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL${deliverableClause} ORDER BY seq ASC`
     ).all(sessionId) as DbMessageRow[]
-    return rows.map(toStoredMessage)
+    return rows.map((row) => toServedRow(row, options))
 }
 
 export type LocalMessageState = {

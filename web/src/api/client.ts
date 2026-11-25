@@ -1,6 +1,15 @@
 import type { AttachedJob } from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import { MESSAGES_PAGE_MAX } from '@hapi/protocol/apiTypes'
+import {
+    RECONCILE_MAX_IDS,
+    RECONCILE_MIN_LABELLED_ROWS,
+    isFullLatestPage,
+    labelledRowCount,
+    rowsToFetch,
+    takeReconcilePageMark,
+    type ReconcileMark
+} from './reconcilePage'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -261,11 +270,31 @@ export class ApiError extends Error {
 /** Conversation rows a short latest page must contain before the hub stops widening it. */
 export const FIRST_PAINT_MIN_CONVERSATION = 1
 
+/** How long a first page started on the tap waits for the session page to ask for it. */
+export const PREFETCHED_PAGE_TTL_MS = 5_000
+
+export type MessagesPageOptions = {
+    beforeSeq?: number | null
+    beforeAt?: number | null
+    afterSeq?: number | null
+    afterAt?: number | null
+    untilSeq?: number | null
+    untilAt?: number | null
+    epoch?: number | null
+    limit?: number
+    /** Latest pages only: the hub widens the page to the full size when
+     *  fewer than this many conversation rows are in it (tool-only tail).
+     *  Short latest pages ask for one conversation row unless told otherwise. */
+    minConversation?: number
+}
+
 export class ApiClient {
     private token: string
     private readonly baseUrl: string | null
     private readonly getToken: (() => string | null) | null
     private readonly onUnauthorized: (() => Promise<string | null>) | null
+    /** First pages started before anything asked for them (`prefetchMessages`), one per session. */
+    private readonly prefetchedPages = new Map<string, { query: string; at: number; response: Promise<MessagesResponse> }>()
 
     constructor(token: string, options?: ApiClientOptions) {
         this.token = token
@@ -635,23 +664,8 @@ export class ApiClient {
         )
     }
 
-    async getMessages(
-        sessionId: string,
-        options: {
-            beforeSeq?: number | null
-            beforeAt?: number | null
-            afterSeq?: number | null
-            afterAt?: number | null
-            untilSeq?: number | null
-            untilAt?: number | null
-            epoch?: number | null
-            limit?: number
-            /** Latest pages only: the hub widens the page to the full size when
-             *  fewer than this many conversation rows are in it (tool-only tail).
-             *  Short latest pages ask for one conversation row unless told otherwise. */
-            minConversation?: number
-        }
-    ): Promise<MessagesResponse> {
+    /** A messages query: the caller's options, plus what this client adds for its own needs. */
+    private messagesQuery(options: MessagesPageOptions): { query: string; latestPage: boolean; catchUp: boolean } {
         const params = new URLSearchParams()
         if (options.beforeAt !== undefined && options.beforeAt !== null) {
             params.set('beforeAt', `${options.beforeAt}`)
@@ -688,10 +702,120 @@ export class ApiClient {
         if (minConversation !== undefined) {
             params.set('minConversation', `${minConversation}`)
         }
+        return {
+            query: params.toString(),
+            latestPage,
+            catchUp: params.has('afterAt')
+        }
+    }
 
-        const qs = params.toString()
-        const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`
-        return await this.request<MessagesResponse>(url)
+    private messagesUrl(sessionId: string, query: string): string {
+        return `/api/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ''}`
+    }
+
+    private async fetchMessagesPage(sessionId: string, query: string, fingerprinted: boolean): Promise<MessagesResponse> {
+        // Tail rows carry the fingerprint of what was served, so that a later
+        // reconcile can tell the rows that changed from the ones the window
+        // already holds. Older hubs ignore the flag.
+        const full = fingerprinted ? `${query}${query ? '&' : ''}withRowHashes=1` : query
+        const prefetched = this.takePrefetchedPage(sessionId, full)
+        if (prefetched) {
+            return await prefetched
+        }
+        return await this.request<MessagesResponse>(this.messagesUrl(sessionId, full))
+    }
+
+    private dropExpiredPrefetchedPages(now: number = Date.now()): void {
+        for (const [sessionId, entry] of this.prefetchedPages) {
+            if (now - entry.at > PREFETCHED_PAGE_TTL_MS) {
+                this.prefetchedPages.delete(sessionId)
+            }
+        }
+    }
+
+    /** The page prefetched for `sessionId` when it is exactly the one now asked for. */
+    private takePrefetchedPage(sessionId: string, query: string): Promise<MessagesResponse> | null {
+        this.dropExpiredPrefetchedPages()
+        const entry = this.prefetchedPages.get(sessionId)
+        if (!entry) return null
+        // One shot either way: the session's next page request was what the
+        // prefetch guessed at, and a different shape means it guessed wrong.
+        this.prefetchedPages.delete(sessionId)
+        return entry.query === query ? entry.response : null
+    }
+
+    async getMessages(sessionId: string, options: MessagesPageOptions): Promise<MessagesResponse> {
+        const { query, latestPage, catchUp } = this.messagesQuery(options)
+        if (isFullLatestPage(options.limit ?? null, latestPage)) {
+            const mark = takeReconcilePageMark(sessionId)
+            if (mark) {
+                return await this.getReconcilePage(sessionId, mark)
+            }
+        }
+        return await this.fetchMessagesPage(sessionId, query, (latestPage && options.limit != null) || catchUp)
+    }
+
+    /**
+     * Start a session's first page before anything asks for it. The session
+     * page only asks once it has rendered the rows it already holds — 150 ms
+     * and more on a slow phone — and the request then has to wait for the
+     * network on top of that. The router calls this on the tap.
+     *
+     * The next `getMessages` for the session that asks for exactly this page
+     * gets this response, in flight or not. Any other request lets it go, and
+     * an unconsumed page is dropped after `PREFETCHED_PAGE_TTL_MS`. A failure
+     * of an unconsumed page is swallowed; a consumed one surfaces to the caller
+     * like any failed request.
+     */
+    prefetchMessages(sessionId: string, options: MessagesPageOptions): void {
+        const { query, latestPage } = this.messagesQuery(options)
+        if (!latestPage) return
+        const full = `${query}${query ? '&' : ''}withRowHashes=1`
+        const response = this.request<MessagesResponse>(this.messagesUrl(sessionId, full))
+        void response.catch(() => {})
+        this.dropExpiredPrefetchedPages()
+        this.prefetchedPages.set(sessionId, { query: full, at: Date.now(), response })
+    }
+
+    /**
+     * The gap-recovery reconcile (see ./reconcilePage). The page metadata —
+     * cursors, hasMore, snapshot head, epoch — is always the whole page's;
+     * only `messages` narrows to what the window is missing or holds stale.
+     */
+    private async getReconcilePage(sessionId: string, mark: ReconcileMark): Promise<MessagesResponse> {
+        const wholePage = `limit=${MESSAGES_PAGE_MAX}`
+        // A cold open, or a window saved before the hub labelled pages, differs
+        // in most of the page: the page itself is the cheaper request.
+        if (labelledRowCount(mark) < RECONCILE_MIN_LABELLED_ROWS) {
+            return await this.fetchMessagesPage(sessionId, wholePage, true)
+        }
+        const pageUrl = (query: string) => (
+            this.messagesUrl(sessionId, `limit=${MESSAGES_PAGE_MAX}&knownEpoch=${mark.epoch}&${query}`)
+        )
+        const manifest = await this.request<MessagesResponse>(pageUrl('withRowHashes=1&rowHashes=1'))
+        // An older hub answers the plain page. The hub also answers with the
+        // page itself once the session's epoch has moved on: rows may have
+        // been removed or reordered, and the window has to replace its copy
+        // rather than patch it.
+        if (manifest.page.rowHashes === undefined || manifest.page.epoch !== mark.epoch) {
+            return manifest
+        }
+        const changed = rowsToFetch(mark, manifest.page.rowHashes)
+        if (changed.length > RECONCILE_MAX_IDS) {
+            return await this.fetchMessagesPage(sessionId, wholePage, true)
+        }
+        let messages: MessagesResponse['messages'] = []
+        if (changed.length > 0) {
+            const rows = await this.request<MessagesResponse>(
+                pageUrl(`withRowHashes=1&ids=${changed.map(encodeURIComponent).join(',')}`)
+            )
+            if (rows.page.epoch !== mark.epoch) {
+                return rows
+            }
+            messages = rows.messages
+        }
+        const { rowHashes: _rowHashes, ...page } = manifest.page
+        return { messages, page }
     }
 
     async getMessageContext(sessionId: string, messageId: string): Promise<MessageContextResponse | null> {
