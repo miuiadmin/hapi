@@ -36,15 +36,34 @@ const ALL_NUMERIC: Intl.DateTimeFormatOptions = {
 // Keyed by the module-level option objects above (stable identity), then locale.
 let formatters = new WeakMap<Intl.DateTimeFormatOptions, Map<string, Intl.DateTimeFormat>>()
 let formattersZoneOffset = Number.NaN
+let formattersZoneName: string | null = null
+let formattersZoneCheckedAt = Number.NEGATIVE_INFINITY
+/** v1-F1: the time zone's name is re-read at most this often; the offset check below runs on every call. */
+const ZONE_NAME_CHECK_INTERVAL_MS = 30_000
 
 function formatWithCachedFormatter(date: Date, locales: string | string[] | undefined, options: Intl.DateTimeFormatOptions): string {
     if (Number.isNaN(date.getTime())) return 'Invalid Date' // what toLocaleString returns; DateTimeFormat#format would throw
     // A formatter pins its resolved time zone. toLocale* re-resolves on every call, so
-    // follow a system time-zone change (offset at the epoch) by starting over.
+    // follow a system time-zone change by starting over. The offset at the epoch is
+    // the cheap check (every call); it does not tell two zones with the same 1970
+    // offset and other rules apart (America/Denver → America/Phoenix: one hour apart
+    // all summer), so the zone's name is compared as well, at a throttled point
+    // (v1-F1, verification report v1).
+    const now = Date.now()
     const zoneOffset = new Date(0).getTimezoneOffset()
-    if (zoneOffset !== formattersZoneOffset) {
-        formatters = new WeakMap()
-        formattersZoneOffset = zoneOffset
+    if (zoneOffset !== formattersZoneOffset || formattersZoneName === null || now - formattersZoneCheckedAt >= ZONE_NAME_CHECK_INTERVAL_MS) {
+        formattersZoneCheckedAt = now
+        let zoneName = ''
+        try {
+            zoneName = new Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''
+        } catch {
+            zoneName = ''
+        }
+        if (zoneOffset !== formattersZoneOffset || zoneName !== formattersZoneName) {
+            formatters = new WeakMap()
+            formattersZoneOffset = zoneOffset
+            formattersZoneName = zoneName
+        }
     }
     let byLocale = formatters.get(options)
     if (!byLocale) {

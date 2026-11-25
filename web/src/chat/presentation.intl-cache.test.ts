@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     formatMessageTimestamp,
     formatMessageTimestampTitle,
@@ -96,3 +96,32 @@ function formatReference(date: Date, now: Date): string {
     }
     return date.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', ...TIME_H23 })
 }
+
+describe('the formatters follow the time zone (v1-F1)', () => {
+    afterEach(() => {
+        vi.restoreAllMocks()
+    })
+
+    it('a zone with the same offset at the epoch but other rules is followed: Denver → Phoenix', () => {
+        // Both are UTC-7 on 1970-01-01; in July Denver is on daylight time (UTC-6) and Phoenix is not.
+        const previous = process.env.TZ
+        try {
+            process.env.TZ = 'America/Denver'
+            const summerNoonUtc = new Date(Date.UTC(2026, 6, 1, 12, 0))
+            expect(formatMessageTimestamp(summerNoonUtc, new Date(Date.UTC(2026, 6, 1, 18, 0)))).toBe('06:00')
+
+            process.env.TZ = 'America/Phoenix'
+            // Thirty seconds later, at the throttled check point.
+            const later = Date.now() + 31_000
+            vi.spyOn(Date, 'now').mockReturnValue(later)
+            expect(formatMessageTimestamp(summerNoonUtc, new Date(Date.UTC(2026, 6, 1, 18, 0)))).toBe('05:00')
+        } finally {
+            if (previous === undefined) delete process.env.TZ
+            else process.env.TZ = previous
+            vi.restoreAllMocks()
+            // Let the next test start from a clean slate whatever the clock says.
+            vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+            formatUnixTimestamp(0)
+        }
+    })
+})
