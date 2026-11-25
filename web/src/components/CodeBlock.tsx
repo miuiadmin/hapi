@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode } from 'react'
+import { type CSSProperties, useRef, type ReactNode } from 'react'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useCodeWrap } from '@/hooks/useCodeWrap'
 import { useShikiHighlightedLines, splitCodeLines } from '@/lib/shiki'
@@ -50,7 +50,9 @@ export function CodeBlock(props: {
     const showWrapToggle = props.showWrapToggle ?? true
     const { copied, copy } = useCopyToClipboard()
     const { codeWrap, setCodeWrap } = useCodeWrap()
-    const highlightedLines = useShikiHighlightedLines(props.code, props.language)
+    // The block's own element: highlighting waits until it is near the thread viewport.
+    const hostRef = useRef<HTMLDivElement>(null)
+    const highlightedLines = useShikiHighlightedLines(props.code, props.language, hostRef)
     const isCollapsed = Boolean(props.collapseLongContent) && shouldCollapseCode(
         props.code,
         props.collapseLineThreshold ?? DEFAULT_COLLAPSE_LINE_THRESHOLD,
@@ -94,7 +96,7 @@ export function CodeBlock(props: {
             : { overflowY: 'hidden' as const }
 
     return (
-        <div data-hapi-code-block="true" className="aui-code-surface relative min-w-0 max-w-full overflow-hidden rounded-xl bg-[var(--app-code-bg)] shadow-none">
+        <div ref={hostRef} data-hapi-code-block="true" className="aui-code-surface relative min-w-0 max-w-full overflow-hidden rounded-xl bg-[var(--app-code-bg)] shadow-none">
             <div className="aui-code-surface-header flex items-center justify-between gap-3 bg-[var(--app-code-header-bg)] pl-[22px] pr-[10px] py-2">
                 <div className="min-w-0 flex-1 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
                     {label}

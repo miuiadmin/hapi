@@ -1,5 +1,5 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
-import type { CSSProperties, ReactNode } from 'react'
+import { useRef, type CSSProperties, type ReactNode } from 'react'
 import { useShikiHighlightedLines, splitCodeLines } from '@/lib/shiki'
 import { getCodeGutterTrack } from '@/lib/code-gutter'
 import { useCodeWrap } from '@/hooks/useCodeWrap'
@@ -11,7 +11,9 @@ import { useCodeWrap } from '@/hooks/useCodeWrap'
 // CodeBlock: a line-number cell and a code cell share each grid row, so the
 // number stays aligned with its line even when the code cell wraps.
 export function SyntaxHighlighter(props: SyntaxHighlighterProps) {
-    const highlightedLines = useShikiHighlightedLines(props.code, props.language)
+    // The block's own element: highlighting waits until it is near the thread viewport.
+    const hostRef = useRef<HTMLDivElement>(null)
+    const highlightedLines = useShikiHighlightedLines(props.code, props.language, hostRef)
     const { codeWrap } = useCodeWrap()
     const codeLines: ReactNode[] = highlightedLines ?? splitCodeLines(props.code)
     const lineNumberWidth = Math.max(String(codeLines.length).length, 3)
@@ -29,7 +31,7 @@ export function SyntaxHighlighter(props: SyntaxHighlighterProps) {
         : { whiteSpace: 'pre' as const }
 
     return (
-        <div data-hapi-code-body="true" className={`aui-md-codeblock min-w-0 w-full max-w-full overflow-y-hidden rounded-b-xl bg-[var(--app-code-bg)] ${codeWrap ? '' : 'overflow-x-auto'}`}>
+        <div ref={hostRef} data-hapi-code-body="true" className={`aui-md-codeblock min-w-0 w-full max-w-full overflow-y-hidden rounded-b-xl bg-[var(--app-code-bg)] ${codeWrap ? '' : 'overflow-x-auto'}`}>
             <pre
                 data-hapi-code-grid="true"
                 className={`shiki m-0 grid ${codeWrap ? 'w-full' : 'w-max min-w-full'} text-sm font-mono`}
