@@ -182,6 +182,19 @@ class HighlightCache {
 }
 /** The characters of code in a cache key (`lang + '\0' + code`). */
 const codeChars = (key: string): number => key.length - key.indexOf('\0') - 1
+/**
+ * verify-fix VRB-03 (v-render-b): a block that streams is tokenized again at every pause of 150ms or more,
+ * and each of those half-written states used to take a cache entry — one slow block could push dozens of
+ * complete blocks out. The newest state of a block now replaces the one before it: the cache keeps one entry
+ * per block element, its latest.
+ */
+const hostCacheKeys = new WeakMap<Element, string>()
+function cacheForHost(cache: HighlightCache, host: Element | null, key: string): void {
+    if (!host) return
+    const previous = hostCacheKeys.get(host)
+    if (previous !== undefined && previous !== key) cache.delete(previous)
+    hostCacheKeys.set(host, key)
+}
 // Module-level (survives every mount/unmount, i.e. every session open) and keyed by the two
 // module-level render functions, so a plain Map is fine.
 const highlightCaches = new Map<Function, HighlightCache>()
@@ -359,6 +372,7 @@ function useHighlightedCode<T>(
                 const run = () => {
                     if (cancelled) return
                     const value = render(highlighter, code, lang)
+                    cacheForHost(cache, element, key)
                     cache.set(key, value)
                     apply(value)
                 }

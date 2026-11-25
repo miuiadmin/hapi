@@ -236,6 +236,32 @@ describe('verify-fix (v-render-b): what the cache keeps', () => {
         return hook
     }
 
+    it('VRB-03: a block that streams keeps one entry — its newest state — not one per pause', async () => {
+        const host = hostRef()
+        const hook = renderHook(({ code }: { code: string }) => useShikiHighlightedLines(code, 'python', host), {
+            initialProps: { code: 'line 1' }
+        })
+        bringIntoView(true)
+        await act(() => vi.advanceTimersByTimeAsync(150))
+        // Three further states, each shown for longer than the 150ms debounce.
+        for (const next of ['line 1\nline 2', 'line 1\nline 2\nline 3', 'line 1\nline 2\nline 3\nline 4']) {
+            hook.rerender({ code: next })
+            await act(() => vi.advanceTimersByTimeAsync(300))
+        }
+        expect(load).toHaveBeenCalledTimes(4)
+        hook.unmount()
+
+        // The intermediate states are gone from the cache; the last one is kept.
+        await mount('line 1')
+        expect(load).toHaveBeenCalledTimes(5)
+        await mount('line 1\nline 2')
+        expect(load).toHaveBeenCalledTimes(6)
+        await mount('line 1\nline 2\nline 3')
+        expect(load).toHaveBeenCalledTimes(7)
+        await mount('line 1\nline 2\nline 3\nline 4')
+        expect(load).toHaveBeenCalledTimes(7)
+    })
+
     it(`VRB-02: a block over ${150_000} characters of code is not cached`, async () => {
         const huge = 'x'.repeat(HIGHLIGHT_CACHE_MAX_ENTRY_CHARS + 1)
         await mount(huge)
