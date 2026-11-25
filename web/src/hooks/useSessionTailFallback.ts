@@ -3,6 +3,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { SessionsResponse, SyncEvent } from '@/types/api'
 import {
+    activateMessageWindow,
     clearMessageWindow,
     getMessageWindowState,
     ingestIncomingMessages,
@@ -82,6 +83,10 @@ export function useSessionTailFallback(options: {
                 rewindMessageWindow(selectedId, event.truncateFromLocalId)
             } else {
                 clearMessageWindow(selectedId)
+                // The window is rebuilt from its first page's twenty rows; the
+                // stream is connected, so no handshake follows to ask for the
+                // page behind them. The rebuild is an open, and reconciles as one.
+                activateMessageWindow(selectedId, { reconcileAfterFirstPage: true })
             }
             const currentApi = apiRef.current
             if (currentApi) {

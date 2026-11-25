@@ -8,6 +8,7 @@ import {
     useSessionTailFallback
 } from './useSessionTailFallback'
 import {
+    activateMessageWindow,
     clearMessageWindow,
     getMessageWindowState,
     ingestIncomingMessages,
@@ -17,6 +18,7 @@ import {
 import type { MessageWindowState } from '@/lib/message-window-store'
 
 vi.mock('@/lib/message-window-store', () => ({
+    activateMessageWindow: vi.fn(),
     clearMessageWindow: vi.fn(),
     getMessageWindowState: vi.fn(),
     ingestIncomingMessages: vi.fn(),
@@ -125,6 +127,8 @@ describe('useSessionTailFallback', () => {
 
         expect(rewindMessageWindow).toHaveBeenCalledWith('sess-1', 'local-9')
         expect(syncTailMessages).toHaveBeenCalledWith(api, 'sess-1')
+        // The window kept its rows: nothing to reconcile.
+        expect(activateMessageWindow).not.toHaveBeenCalled()
     })
 
     it('clears the window on non-rewind invalidations', () => {
@@ -134,6 +138,20 @@ describe('useSessionTailFallback', () => {
         })
 
         expect(clearMessageWindow).toHaveBeenCalledWith('sess-1')
+        expect(syncTailMessages).toHaveBeenCalledWith(api, 'sess-1')
+    })
+
+    it("arms the open's reconcile before the resync that rebuilds a cleared window", () => {
+        // A rewind from elsewhere (the CLI, another device) clears the window while the stream stays
+        // connected: the rebuild's first page is twenty rows, and only the open's own reconcile asks for
+        // the page behind them. Without it the window stayed at twenty rows until the user left and returned.
+        const { result } = render('sess-1')
+        act(() => {
+            result.current({ type: 'messages-invalidated', sessionId: 'sess-1', reason: 'rewind' } as unknown as SyncEvent)
+        })
+
+        expect(clearMessageWindow).toHaveBeenCalledTimes(1)
+        expect(activateMessageWindow).toHaveBeenCalledWith('sess-1', { reconcileAfterFirstPage: true })
         expect(syncTailMessages).toHaveBeenCalledWith(api, 'sess-1')
     })
 

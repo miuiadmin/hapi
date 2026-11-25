@@ -24,7 +24,7 @@ import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { getAppSseResyncQueryKeys } from '@/lib/sseResync'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages, windowNeedsReconcile } from '@/lib/message-window-store'
+import { activateMessageWindow, clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages, windowNeedsReconcile } from '@/lib/message-window-store'
 import { sessionHandshakeAction } from '@/lib/sessionStreamHandshake'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useSessionTailFallback } from '@/hooks/useSessionTailFallback'
@@ -391,6 +391,9 @@ function AppInner() {
             rewindMessageWindow(event.sessionId, event.truncateFromLocalId)
         } else {
             clearMessageWindow(event.sessionId)
+            // Rebuilt from its first page's twenty rows with the stream already
+            // connected: nothing would ask for the page behind them otherwise.
+            activateMessageWindow(event.sessionId, { reconcileAfterFirstPage: true })
         }
         void syncTailMessages(api, event.sessionId)
     }, [api, selectedSessionId])
