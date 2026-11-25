@@ -939,7 +939,20 @@ export const HappyThread = memo(function HappyThread(props: {
             const gutter = supportsStableBothEdges
                 ? Math.max(0, (viewport.offsetWidth - viewport.clientWidth) / 2)
                 : 0
-            viewport.style.setProperty('--chat-scroll-gutter-inline', `${gutter}px`)
+            // Research prototype C (perf/exp-render-firstframe): index.css reads this
+            // variable with a `0px` fallback, so an absent property and `0px` are the
+            // same value — and on mobile (overlay scrollbars) the gutter is always 0.
+            // Writing the inline custom property anyway invalidated the style of
+            // every row under the viewport, so the next layout read in this same
+            // commit (the session-reset effect below) forced a second full layout of
+            // the thread (~360ms of a 60k-row mount). Only write when the value changes.
+            const next = gutter > 0 ? `${gutter}px` : ''
+            if (viewport.style.getPropertyValue('--chat-scroll-gutter-inline') === next) return
+            if (next) {
+                viewport.style.setProperty('--chat-scroll-gutter-inline', next)
+            } else {
+                viewport.style.removeProperty('--chat-scroll-gutter-inline')
+            }
         }
 
         updateScrollbarGutter()
