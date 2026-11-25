@@ -8,6 +8,7 @@ import {
     clearMessageWindow,
     getReconcileManifestEpoch,
     getMessageWindowState,
+    ingestIncomingMessages,
     syncTailMessages,
     windowNeedsReconcile,
 } from '@/lib/message-window-store'
@@ -332,6 +333,33 @@ describe('an open that finds the session\'s epoch moved on keeps its window', ()
             expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
         })
 
+        it(`keeps a row that reached the window over the event stream while the first page was in flight — ${shapeName(shape)}`, async () => {
+            // The list (or the page) was read by the hub on the tap. A row that
+            // arrives after that — an answer settling while the open's first
+            // page is still on the wire — reaches the window over the global
+            // stream, is shown, and is not named by that page. It is newer
+            // than the page, not removed: the reconcile must not drop it.
+            const id = sessionId(`epoch-streamed-${shape}`)
+            persistWindow(id, cached, 1)
+            activateMessageWindow(id, { reconcileAfterFirstPage: true })
+            const page = cached.filter((message) => message.id !== 'm60')
+            const streamed = agentMessage('streamed', 101, 1_010)
+            const api = createApi(async (_sessionId, query) => {
+                if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
+                if (query.limit === INITIAL_PAGE_SIZE) {
+                    ingestIncomingMessages(id, [streamed])
+                    return latest(cached.slice(-20), 2, FIRST)
+                }
+                takeReconcilePageMark(id)
+                return answer(shape, page, [], PAGE)
+            })
+
+            await openWindow(api, id)
+
+            expect(idsOf(id)).toEqual([...page.map((message) => message.id), 'streamed'])
+            expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null, isSyncingTail: false })
+        })
+
         it(`drops what a whole-session page no longer lists, wherever the row sat — ${shapeName(shape)}`, async () => {
             const id = sessionId(`epoch-shrunk-${shape}`)
             persistWindow(id, rows(21, 100), 1)
@@ -377,6 +405,29 @@ describe('an open that finds the session\'s epoch moved on keeps its window', ()
 
         expect(queries).toEqual([{ limit: INITIAL_PAGE_SIZE }, { limit: 200 }])
         expect(idsOf(id)).toEqual(page.map((message) => message.id))
+        expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
+    })
+
+    it(`keeps a row that reached the window over the event stream while the first page was in flight, when a page too different to patch replaces the window`, async () => {
+        const id = sessionId('epoch-streamed-rewind')
+        persistWindow(id, cached, 1)
+        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+        const page = rows(201, 270).map((message) => ({ ...message, rowHash: `h${message.seq}` }))
+        const whole = { snapshotHeadAt: 2_700, snapshotHeadSeq: 270, hasMore: false, nextBeforeAt: 2_010, nextBeforeSeq: 201 }
+        const streamed = agentMessage('streamed', 271, 2_710)
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
+            if (query.limit === INITIAL_PAGE_SIZE) {
+                ingestIncomingMessages(id, [streamed])
+                return latest(page.slice(-20), 2, whole)
+            }
+            takeReconcilePageMark(id)
+            return answer('page', page, page, whole)
+        })
+
+        await openWindow(api, id)
+
+        expect(idsOf(id)).toEqual([...page.map((message) => message.id), 'streamed'])
         expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null })
     })
 

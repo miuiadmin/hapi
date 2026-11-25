@@ -161,8 +161,11 @@ type OpenReconcile =
     /** The first page landed: what the reconcile needs to know. `epoch` is
      *  the one that page was read under — the newest the window has read a
      *  page under, which is not the one its other rows are labelled with once
-     *  `epochChanged`. */
-    | { requested: false; cursor: MessagePosition | null; epochChanged: boolean; epoch: number }
+     *  `epochChanged`. `heldIds` are the rows the window held when the open
+     *  began together with the rows its first page brought: a row outside
+     *  them reached the window over the event stream after the open began,
+     *  later than the page the reconcile checks against was read. */
+    | { requested: false; cursor: MessagePosition | null; epochChanged: boolean; epoch: number; heldIds: ReadonlySet<string> }
 const openReconciles = new Map<string, OpenReconcile>()
 
 export const MAX_RETAINED_INACTIVE_WINDOWS = 12
@@ -1487,6 +1490,9 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             const epochChanged = armReconcile
                 && initial.epoch !== null
                 && response.page.epoch !== initial.epoch
+            // The rows the window held when the open began (the cached window
+            // on a re-entry), joined below by the rows its first page brought.
+            const heldIds = new Set(initial.messages.map((message) => message.id))
             let holeAhead = false
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous
@@ -1502,7 +1508,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 // Gap recovery reconciles by id so already-loaded history
                 // outside the latest page survives; only a structural
                 // reset or a server reset verdict may replace rows.
-                const cachedIds = new Set(initial.messages.map((message) => message.id))
+                const cachedIds = heldIds
                 const overlapsCached = response.messages.some((message) => cachedIds.has(message.id))
                 let next = applyLatestResponse(previous, response, {
                     // An open that found the epoch moved keeps its rows and
@@ -1552,7 +1558,8 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 })
             })
             if (armReconcile) {
-                openReconciles.set(sessionId, { requested: false, cursor: initialCursor, epochChanged, epoch: response.page.epoch })
+                for (const message of response.messages) heldIds.add(message.id)
+                openReconciles.set(sessionId, { requested: false, cursor: initialCursor, epochChanged, epoch: response.page.epoch, heldIds })
                 const controller = tailSyncControllers.get(sessionId)
                 if (controller) controller.trailingRequested = true
             }
@@ -1696,6 +1703,20 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 // original cursor and the flag survive, and the next sync
                 // retries the whole recovery.
                 const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
+                // The open found the epoch moved on, and the reconcile checks
+                // the window against a page the hub read on the tap (the list
+                // prefetched next to the first page) or reads now. A row that
+                // reached the window after the open began — over the event
+                // stream, while the first page was in flight — is later than
+                // that page and is not named by it: an answer settling just
+                // then, shown the moment it arrived. Left out of the baseline
+                // it reads as a row that changed while the request was out,
+                // and is kept rather than dropped as a removal the page cannot
+                // show.
+                const checkedIds = openReconcile?.epochChanged === true ? openReconcile.heldIds : null
+                const reconcileBaseline = checkedIds
+                    ? new Map([...requestBaseline].filter(([id]) => checkedIds.has(id)))
+                    : requestBaseline
                 const windowEpoch = getState(sessionId).epoch ?? 0
                 // Transport hint (web only): this page is the reconcile, not a
                 // replacement, and here is what the window holds. A client that
@@ -1724,7 +1745,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         const next = applyReconcileResponse(
                             previous,
                             response,
-                            requestBaseline,
+                            reconcileBaseline,
                             trimLimit,
                             openReconcile?.epochChanged === true
                         )
