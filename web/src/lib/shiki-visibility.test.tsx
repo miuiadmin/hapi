@@ -4,7 +4,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HighlighterCore } from 'shiki/core'
 import { getLanguageHighlighter } from './shiki-loader'
-import { clearHighlightCache, useShikiHighlightedLines } from './shiki'
+import { HIGHLIGHT_CACHE_CHAR_BUDGET, HIGHLIGHT_CACHE_MAX_ENTRY_CHARS, clearHighlightCache, useShikiHighlightedLines } from './shiki'
 
 vi.mock('./shiki-loader', () => ({ getLanguageHighlighter: vi.fn() }))
 const load = vi.mocked(getLanguageHighlighter)
@@ -225,5 +225,35 @@ describe('one block per task', () => {
         gone.unmount()
         await act(() => vi.advanceTimersByTimeAsync(500))
         expect(load).not.toHaveBeenCalled()
+    })
+})
+
+describe('verify-fix (v-render-b): what the cache keeps', () => {
+    async function mount(code: string, lang = 'python', host?: { current: Element | null }) {
+        const hook = renderHook(() => useShikiHighlightedLines(code, lang, host))
+        bringIntoView(true)
+        await act(() => vi.advanceTimersByTimeAsync(150))
+        return hook
+    }
+
+    it(`VRB-02: a block over ${150_000} characters of code is not cached`, async () => {
+        const huge = 'x'.repeat(HIGHLIGHT_CACHE_MAX_ENTRY_CHARS + 1)
+        await mount(huge)
+        expect(load).toHaveBeenCalledTimes(1)
+        await mount(huge)
+        expect(load).toHaveBeenCalledTimes(2)
+    })
+
+    it('VRB-02: the cache is bounded in code characters — past the budget the least recently used block goes', async () => {
+        const size = 100_000
+        const blocks = Math.ceil(HIGHLIGHT_CACHE_CHAR_BUDGET / size) + 1
+        const codes = Array.from({ length: blocks }, (_, index) => `${index}`.padEnd(4, '.') + 'y'.repeat(size - 4))
+        for (const code of codes) await mount(code)
+        expect(load).toHaveBeenCalledTimes(blocks)
+        // `blocks × size` characters is over the budget: the first block was evicted, the last is still there.
+        await mount(codes[0]!)
+        expect(load).toHaveBeenCalledTimes(blocks + 1)
+        await mount(codes[codes.length - 1]!)
+        expect(load).toHaveBeenCalledTimes(blocks + 1)
     })
 })

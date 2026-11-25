@@ -129,10 +129,21 @@ function highlightToNode(highlighter: HighlighterCore, code: string, lang: strin
 
 /** Cached blocks per renderer. One entry is a React node tree (a few hundred spans), so 200 ≈ a few MB. */
 const HIGHLIGHT_CACHE_LIMIT = 200
+/**
+ * verify-fix VRB-02 (v-render-b): the count alone did not bound the cache. An entry costs roughly 200 bytes of
+ * React elements per token, so a block of a few thousand lines (a file read, a JSON dump — common in agent
+ * sessions) is 2MB on its own, and 200 such blocks would be hundreds of MB, never evicted while under the
+ * count. The cache also has a budget in code characters; past it the least recently used entry goes.
+ */
+export const HIGHLIGHT_CACHE_CHAR_BUDGET = 1_500_000
+/** A single block above this many characters of code is not cached at all: it would hold most of the budget by itself. */
+export const HIGHLIGHT_CACHE_MAX_ENTRY_CHARS = 150_000
 
 /** LRU keyed by `lang + '\0' + code`; one instance per render function (they return different shapes). */
 class HighlightCache {
     private readonly entries = new Map<string, unknown>()
+    private readonly sizes = new Map<string, number>()
+    private chars = 0
 
     get(key: string): unknown {
         const value = this.entries.get(key)
@@ -144,19 +155,33 @@ class HighlightCache {
     }
 
     set(key: string, value: unknown): void {
-        this.entries.delete(key)
+        const size = codeChars(key)
+        if (size > HIGHLIGHT_CACHE_MAX_ENTRY_CHARS) return
+        this.delete(key)
         this.entries.set(key, value)
-        while (this.entries.size > HIGHLIGHT_CACHE_LIMIT) {
+        this.sizes.set(key, size)
+        this.chars += size
+        while (this.entries.size > HIGHLIGHT_CACHE_LIMIT || this.chars > HIGHLIGHT_CACHE_CHAR_BUDGET) {
             const oldest = this.entries.keys().next().value
             if (oldest === undefined) break
-            this.entries.delete(oldest)
+            this.delete(oldest)
         }
+    }
+
+    delete(key: string): void {
+        if (!this.entries.delete(key)) return
+        this.chars -= this.sizes.get(key) ?? 0
+        this.sizes.delete(key)
     }
 
     clear(): void {
         this.entries.clear()
+        this.sizes.clear()
+        this.chars = 0
     }
 }
+/** The characters of code in a cache key (`lang + '\0' + code`). */
+const codeChars = (key: string): number => key.length - key.indexOf('\0') - 1
 // Module-level (survives every mount/unmount, i.e. every session open) and keyed by the two
 // module-level render functions, so a plain Map is fine.
 const highlightCaches = new Map<Function, HighlightCache>()
