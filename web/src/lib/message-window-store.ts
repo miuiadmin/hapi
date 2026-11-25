@@ -85,6 +85,12 @@ export const INITIAL_PAGE_SIZE = 20
 const AGENT_RUN_WINDOW_SIZE = 800
 export const OLDER_LOAD_WINDOW_SIZE = 800
 const PAGE_SIZE = 200
+// X3-4 (v3 report): an open's catch-up starts where the cached window ended,
+// so a window left far behind walks page after page before it is current —
+// serial round trips that grow with the time the reader was away. Past this
+// many pages the newest page itself replaces the window instead: one request,
+// no hole, what a cold open would have shown.
+const MAX_CATCH_UP_PAGES = 3
 // A re-entry asks for the same first page as a cold open, and the tap-time
 // prefetch (prefetchSessionOpenPage) relies on that.
 const CACHED_REENTRY_PAGE_SIZE = INITIAL_PAGE_SIZE
@@ -1593,6 +1599,10 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
         let after = recoveryCursor
         let until: MessagePosition | null = null
         let catchUpReset = false
+        // The catch-up was still behind after MAX_CATCH_UP_PAGES pages (X3-4):
+        // the window is replaced by the newest page below.
+        let catchUpOverflow = false
+        let catchUpPages = 0
         // Nothing to catch up when the open's first page found the session's
         // head exactly where the cached window ended: the hub answers a
         // catch-up from there with an empty page, and the page below is read
@@ -1668,10 +1678,45 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             ) {
                 break
             }
+            catchUpPages += 1
+            if (catchUpPages >= MAX_CATCH_UP_PAGES) {
+                // Still behind, and the next page would be the fourth: the rows
+                // between what was caught up and the first page would be a
+                // hole nothing else walks. The newest page replaces the window.
+                catchUpOverflow = true
+                break
+            }
             if (comparePosition(nextAfter, after) <= 0) {
                 throw new Error('Message tail cursor did not advance')
             }
             after = nextAfter
+        }
+
+        if (catchUpOverflow) {
+            // X3-4: the catch-up stopped at its page cap with the window still
+            // behind. The newest page is read once more and replaces the window
+            // whole, as a reset verdict would: the rows the catch-up brought are
+            // dropped with the rest, so the window is exactly the page — no hole
+            // between the old tail and the first page — and the reconcile the
+            // open armed has nothing left to check.
+            const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
+            const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+            if (!isCurrentTailSync(sessionId, generation)) return
+            noteSessionOpenPage(sessionId, 'latest', response.messages.length)
+            updateState(sessionId, (previous) => {
+                if (previous.syncGeneration !== generation) return previous
+                const next = applyLatestResponse(previous, response, {
+                    replaceServerRows: true,
+                    requestBaseline
+                })
+                return buildState(next, {
+                    pendingGapRecovery: false,
+                    preferLatestOnActivation: false
+                })
+            })
+            noteAuthoritativeSync(sessionId)
+            finishTailSync(sessionId, generation, null)
+            return
         }
 
         if (pendingGapRecovery) {
@@ -1765,7 +1810,39 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 let response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
                 if (!isCurrentTailSync(sessionId, generation)) return
                 noteSessionOpenPage(sessionId, 'latest', response.messages.length)
-                if (applyReconcilePage(response)) {
+                // The open found the epoch moved, so the catch-up was skipped:
+                // the page it checks against carries every row the window lacks
+                // — as long as the window's tail when the open began is inside
+                // the page's range. When that tail is older than the page's
+                // oldest row and the session has older rows beyond it, the rows
+                // between are neither in the window nor in the page, and no
+                // later sync walks them (the catch-up starts at the newest
+                // cursor): a silent hole. The page then replaces the window, as
+                // it does when too different to patch.
+                const rangeStart = pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
+                const holeBeforePage = openReconcile?.epochChanged === true
+                    && response.page.reset !== true
+                    && response.page.hasMore === true
+                    && rangeStart !== null
+                    && recoveryCursor !== null
+                    && comparePosition(recoveryCursor, rangeStart) < 0
+                if (holeBeforePage) {
+                    if (response.page.rowHashes !== undefined) {
+                        // The list names the page's rows and carries only the
+                        // ones that differ: the page itself is wanted.
+                        response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+                        if (!isCurrentTailSync(sessionId, generation)) return
+                        noteSessionOpenPage(sessionId, 'latest', response.messages.length)
+                    }
+                    updateState(sessionId, (previous) => {
+                        if (previous.syncGeneration !== generation) return previous
+                        const next = applyLatestResponse(previous, response, {
+                            replaceServerRows: true,
+                            requestBaseline
+                        })
+                        return buildState(next, { preferLatestOnActivation: false })
+                    })
+                } else if (applyReconcilePage(response)) {
                     response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
                     if (!isCurrentTailSync(sessionId, generation)) return
                     noteSessionOpenPage(sessionId, 'latest', response.messages.length)

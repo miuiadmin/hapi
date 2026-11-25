@@ -108,6 +108,12 @@ async function openWindow(api: ApiClient, id: string): Promise<void> {
 
 const idsOf = (id: string) => getMessageWindowState(id).messages.map((message) => message.id)
 
+/** `m<seq>` ids in a row with no position missing between them. */
+function contiguous(ids: string[]): boolean {
+    const seqs = ids.map((id) => Number(id.slice(1)))
+    return seqs.every((seq, index) => index === 0 || seq === seqs[index - 1]! + 1)
+}
+
 beforeEach(() => {
     resetReconcilePageForTests()
     sessionStorage.clear()
@@ -182,6 +188,72 @@ describe('an open reconciles as soon as its first page has landed', () => {
         expect(queries[1]).toMatchObject({ afterAt: 1_000, afterSeq: 100, epoch: 1, limit: 200 })
         expect(idsOf(id)).toEqual(rows(31, 150).map((message) => message.id))
         expect(getMessageWindowState(id)).toMatchObject({ pendingGapRecovery: false, warning: null, epoch: 1 })
+    })
+
+    // The server's rows `from`…`to` after a catch-up request, `hasMore` saying whether more follow.
+    const caughtUp = (from: number, to: number, hasMore: boolean): MessagesResponse => (
+        after(rows(from, to), 1, { nextAfterAt: to * 10, nextAfterSeq: to, snapshotHeadAt: 18_300, snapshotHeadSeq: 1_830, hasMore })
+    )
+
+    it('stops the catch-up at three pages when the window is far behind, and the newest page replaces the window (X3-4)', async () => {
+        const id = sessionId('far-behind')
+        // The cached window ended at m1030; the server has eight hundred rows more.
+        persistWindow(id, rows(831, 1030), 1)
+        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+
+        const queries: Query[] = []
+        const api = createApi(async (_sessionId, query) => {
+            queries.push(query)
+            if (query.afterAt !== undefined) {
+                const page = Math.floor((query.afterAt! - 10_300) / 2_000)
+                return caughtUp(1_031 + page * 200, 1_230 + page * 200, true)
+            }
+            if (query.limit === INITIAL_PAGE_SIZE) {
+                return latest(rows(1_811, 1_830), 1, { snapshotHeadAt: 18_300, snapshotHeadSeq: 1_830, hasMore: true, nextBeforeAt: 18_110, nextBeforeSeq: 1_811 })
+            }
+            return latest(rows(1_631, 1_830), 1, { snapshotHeadAt: 18_300, snapshotHeadSeq: 1_830, hasMore: true, nextBeforeAt: 16_310, nextBeforeSeq: 1_631 })
+        })
+
+        await openWindow(api, id)
+
+        // The first page, three catch-up pages from the cached tail, then the page itself: no fourth catch-up, no reconcile.
+        expect(queries).toHaveLength(5)
+        expect(queries.slice(1, 4).map((query) => query.afterSeq)).toEqual([1_030, 1_230, 1_430])
+        expect(queries[4]).toEqual({ limit: 200 })
+        const ids = idsOf(id)
+        expect(ids).toEqual(rows(1_631, 1_830).map((message) => message.id))
+        expect(contiguous(ids)).toBe(true)
+        expect(getMessageWindowState(id)).toMatchObject({ isSyncingTail: false, pendingGapRecovery: false, warning: null, epoch: 1, hasMore: true })
+    })
+
+    it('walks the whole way when the window is three pages behind: the third page is the last, nothing is replaced', async () => {
+        const id = sessionId('three-pages-behind')
+        // Six hundred rows more (m1031–m1630): exactly three pages, the last of them the end of it.
+        persistWindow(id, rows(831, 1030), 1)
+        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+
+        const queries: Query[] = []
+        const api = createApi(async (_sessionId, query) => {
+            queries.push(query)
+            if (query.afterAt !== undefined) {
+                const page = Math.floor((query.afterAt! - 10_300) / 2_000)
+                return caughtUp(1_031 + page * 200, 1_230 + page * 200, page < 2)
+            }
+            if (query.limit === INITIAL_PAGE_SIZE) {
+                return latest(rows(1_611, 1_630), 1, { snapshotHeadAt: 16_300, snapshotHeadSeq: 1_630, hasMore: true, nextBeforeAt: 16_110, nextBeforeSeq: 1_611 })
+            }
+            takeReconcilePageMark(id)
+            return latest(rows(1_431, 1_630), 1, { snapshotHeadAt: 16_300, snapshotHeadSeq: 1_630, hasMore: true, nextBeforeAt: 14_310, nextBeforeSeq: 1_431 })
+        })
+
+        await openWindow(api, id)
+
+        // The first page, the three catch-up pages from the cached tail, then the reconcile: no replacement.
+        expect(queries.map((query) => query.afterSeq ?? query.limit)).toEqual([INITIAL_PAGE_SIZE, 1_030, 1_230, 1_430, 200])
+        const ids = idsOf(id)
+        expect(ids).toEqual(rows(1_231, 1_630).map((message) => message.id))
+        expect(contiguous(ids)).toBe(true)
+        expect(getMessageWindowState(id)).toMatchObject({ isSyncingTail: false, pendingGapRecovery: false, warning: null })
     })
 
     it('a cold open always reconciles: the first page, the catch-up, then the newest page', async () => {
@@ -381,6 +453,41 @@ describe('an open that finds the session\'s epoch moved on keeps its window', ()
             expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, hasMore: false, pendingGapRecovery: false, warning: null })
         })
     }
+
+    it('replaces the window with the page when its tail when the open began is older than the page\'s range: no silent hole between them', async () => {
+        // The cached window ended at m1030 under epoch 1; the server went on to m1280 and moved the epoch to 2.
+        // The newest page (m1081–m1280) does not reach the window, so the rows m1031–m1080 are in neither.
+        // The list names the page and differs in ten rows only — a patch would leave the hole for good.
+        const id = sessionId('epoch-moved-hole')
+        persistWindow(id, rows(831, 1030), 1)
+        activateMessageWindow(id, { reconcileAfterFirstPage: true })
+
+        const queries: Query[] = []
+        const api = createApi(async (_sessionId, query) => {
+            queries.push(query)
+            if (query.afterAt !== undefined) throw new Error('no catch-up after an epoch change')
+            if (query.limit === INITIAL_PAGE_SIZE) {
+                return latest(rows(1_261, 1_280), 2, { snapshotHeadAt: 12_800, snapshotHeadSeq: 1_280, hasMore: true, nextBeforeAt: 12_610, nextBeforeSeq: 1_261 })
+            }
+            if (takeReconcilePageMark(id) !== null) {
+                const page = rows(1_081, 1_280)
+                return latest(page.slice(0, 10), 2, {
+                    snapshotHeadAt: 12_800, snapshotHeadSeq: 1_280, hasMore: true, nextBeforeAt: 10_810, nextBeforeSeq: 1_081,
+                    rowHashes: page.map((message) => ({ id: message.id, hash: message.rowHash ?? '' }))
+                })
+            }
+            return latest(rows(1_081, 1_280), 2, { snapshotHeadAt: 12_800, snapshotHeadSeq: 1_280, hasMore: true, nextBeforeAt: 10_810, nextBeforeSeq: 1_081 })
+        })
+
+        await openWindow(api, id)
+
+        // The first page, the list, then the page itself: the window is the page, as a cold open's would be.
+        expect(queries).toEqual([{ limit: INITIAL_PAGE_SIZE }, { limit: 200 }, { limit: 200 }])
+        const ids = idsOf(id)
+        expect(ids).toEqual(rows(1_081, 1_280).map((message) => message.id))
+        expect(contiguous(ids)).toBe(true)
+        expect(getMessageWindowState(id)).toMatchObject({ epoch: 2, pendingGapRecovery: false, warning: null, isSyncingTail: false })
+    })
 
     it(`replaces the window with the labelled page when more than ${RECONCILE_MAX_IDS} rows of it differ (a hub without the any-epoch list)`, async () => {
         const id = sessionId('epoch-rewind-page')
