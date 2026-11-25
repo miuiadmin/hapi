@@ -12,6 +12,7 @@ import {
     setMessageViewMode,
     subscribeMessageWindow,
     syncTailMessages,
+    willPreferLatestOnActivation,
     type MessageViewMode,
     type MessageWindowState,
     type NewerLoadOutcome,
@@ -97,6 +98,16 @@ export function useMessages(
         useCallback(() => sessionId ? getMessageWindowState(sessionId) : EMPTY_STATE, [sessionId]),
         () => EMPTY_STATE
     )
+    // Research prototype C (perf/exp-render-firstframe): activation no longer
+    // publishes synchronously when it only flips `preferLatestOnActivation`
+    // (see activateMessageWindow), so the mounting commit — the one that
+    // paints the first frame — would otherwise not know yet that these rows
+    // are the preferred tail. Ask the store directly, from the state as it is
+    // before activation, with the same condition activation uses.
+    const cachedTailFirstFrame = (state.preferLatestOnActivation
+        || (sessionId ? willPreferLatestOnActivation(sessionId) : false))
+        && state.viewMode === 'tail'
+        && !state.requiresLatestReset
     useLayoutEffect(() => {
         if (sessionId && !options.skipInitialTailSync) {
             // The open reconciles by itself once its first page has landed,
@@ -319,9 +330,7 @@ export function useMessages(
             || (state.requiresLatestReset && state.viewMode === 'tail')
             || (initialSyncKey !== null && initialSyncReadyKey !== initialSyncKey),
         isCatchingUpFromCache: state.preferLatestOnActivation,
-        cachedTailFirstFrame: state.preferLatestOnActivation
-            && state.viewMode === 'tail'
-            && !state.requiresLatestReset,
+        cachedTailFirstFrame,
         isLoadingMore: state.isLoadingMore,
         hasMore: state.hasMore,
         hasMoreNewer: state.hasMoreNewer,

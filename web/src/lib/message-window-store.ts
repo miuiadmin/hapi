@@ -1992,6 +1992,22 @@ function enterTailMode(previous: InternalState): InternalState {
     })
 }
 
+/**
+ * Whether `activateMessageWindow` would keep the rows this window holds and
+ * mark them as the preferred tail (the "cached tail first frame" condition),
+ * evaluated on the state as it is now — before activation has run. Pure read:
+ * does not hydrate, create or touch access order.
+ */
+export function willPreferLatestOnActivation(sessionId: string): boolean {
+    const state = states.get(sessionId)
+    if (!state || state.requiresLatestReset) {
+        return false
+    }
+    return state.messages.length > 0
+        && state.epoch !== null
+        && getNewestCursor(state) !== null
+}
+
 export function activateMessageWindow(
     sessionId: string,
     options: {
@@ -2013,7 +2029,10 @@ export function activateMessageWindow(
         openReconciles.set(sessionId, { requested: true })
     }
     let requestedLatest = false
-    updateState(sessionId, (previous) => {
+    // Set when this activation only flips `preferLatestOnActivation` and leaves
+    // the rendered rows exactly as they are (the ordinary cached re-entry).
+    let rowsUnchanged = false
+    const updater = (previous: InternalState): InternalState => {
         const { kept } = trimPreservingQueued(previous.messages, VISIBLE_WINDOW_SIZE, 'append')
         const forceLatest = previous.requiresLatestReset
         const hasUsableCursor = getNewestCursor(previous) !== null
@@ -2042,6 +2061,7 @@ export function activateMessageWindow(
             && kept.length === previous.messages.length
             && !forceLatest
         ) {
+            rowsUnchanged = true
             return preferLatestOnActivation
                 ? buildState(previous, activationUpdates)
                 : previous
@@ -2050,7 +2070,22 @@ export function activateMessageWindow(
         return preferLatestOnActivation
             ? buildState(next, activationUpdates)
             : next
-    }, true)
+    }
+    const previous = getState(sessionId)
+    const next = updater(previous)
+    if (next !== previous) {
+        // Research prototype C (perf/exp-render-firstframe): when the rows are
+        // untouched, publish through the normal throttle instead of notifying
+        // synchronously. This runs from a layout effect on the session page's
+        // mounting commit; an immediate notification makes React re-render the
+        // whole thread a second time before the first frame (the rows did not
+        // change — only `preferLatestOnActivation` did). `useMessages` derives
+        // the first-frame-at-bottom signal from `willPreferLatestOnActivation`
+        // instead, so the first commit still lands at the bottom. An activation
+        // that does change the window (retained history window, over-long
+        // window trimmed back to the tail) keeps the immediate publication.
+        setState(sessionId, next, !rowsUnchanged)
+    }
     if (requestedLatest) {
         const controller = tailSyncControllers.get(sessionId)
         if (controller?.running) {
