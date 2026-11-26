@@ -1382,16 +1382,16 @@ function SessionChatInner(props: SessionChatProps) {
             : undefined
     ), [agentFlavor, dshModelsState.availableModels])
     // dsh advertises its `reasoning_effort` config option (category
-    // thought_level) through the session catalog: prefer the live options —
-    // they honor thinking=disabled setups (off-only) and future providers —
-    // and fall back to the static off/low/high/max presets while discovery
-    // is pending or failed. The composer maps the empty value onto its null
-    // "Default" entry.
+    // thought_level) through the session catalog. `effortOptions` is
+    // undefined while discovery is pending or on a runner that predates the
+    // field (the static off/low/high/max presets stand in) and an EMPTY list
+    // once the catalog says the current model has no thought levels (the
+    // picker hides, like opencode).
     const dshReasoningEffortOptions = useMemo(
         () => agentFlavor === 'dsh'
-            ? (dshModelsState.effortOptions?.length
-                ? dshModelsState.effortOptions.map((option) => ({ value: option.value, name: option.name }))
-                : getDshReasoningEffortSourceOptions())
+            ? (dshModelsState.effortOptions === undefined
+                ? getDshReasoningEffortSourceOptions()
+                : dshModelsState.effortOptions.map((option) => ({ value: option.value, name: option.name })))
             : undefined,
         [agentFlavor, dshModelsState.effortOptions]
     )
@@ -2737,9 +2737,11 @@ function SessionChatInner(props: SessionChatProps) {
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode'
                             ? props.session.modelReasoningEffort
                             : agentFlavor === 'dsh'
-                                // dsh's unset value is '' (Provider default); normalize
-                                // it onto the composer's null "Default" entry.
-                                ? (props.session.modelReasoningEffort?.trim() || null)
+                                // dsh has no provider-default level: while HAPI
+                                // stores none, show what the agent really runs with.
+                                ? (props.session.modelReasoningEffort?.trim()
+                                    || dshModelsState.currentEffortId?.trim()
+                                    || null)
                                 : agentFlavor === 'hermes'
                                     // hermes's reset value is 'default' (Provider
                                     // default); normalize it onto the null "Default"

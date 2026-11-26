@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { PermissionMode } from '@hapi/protocol/types'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol/modes'
-import { MAX_LOCAL_SESSION_IMPORTS, type LocalTranscript } from '@hapi/protocol/localTranscript'
+import { MAX_LOCAL_SESSION_IMPORTS, type LocalTranscript, type LocalTranscriptSummary } from '@hapi/protocol/localTranscript'
 import type { CodexCollaborationMode } from '@hapi/protocol/types'
 import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 import type { Store, StoredSession } from '../../../store'
@@ -203,6 +203,11 @@ export function createLocalSessionRoutes(options: {
             const transcripts = new Map(fetched.sessions
                 .filter((session): session is LocalTranscript => 'messages' in session)
                 .map((session) => [session.id, session]))
+            // Sessions the runner listed but cannot hand over (too large for
+            // one frame, log unreadable) carry their own reason.
+            const rejections = new Map(fetched.sessions
+                .filter((session): session is LocalTranscriptSummary => !('messages' in session) && session.importError !== undefined)
+                .map((session) => [session.id, session.importError!]))
             const resultIdKey = source.legacy?.resultIdKey ?? `${source.flavor}SessionId`
             const requestMetadata = source.requestMetadata?.(body)
             const results: Array<LocalImportOutcome & Record<string, unknown>> = []
@@ -212,7 +217,8 @@ export function createLocalSessionRoutes(options: {
                     results.push({
                         sessionId,
                         [resultIdKey]: sessionId,
-                        error: { code: 'not_found', message: `${source.displayName} session transcript not found` }
+                        error: rejections.get(sessionId)
+                            ?? { code: 'not_found', message: `${source.displayName} session transcript not found` }
                     })
                     if (source.batch === 'stopOnFirstError') break
                     continue

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
@@ -12,20 +12,21 @@ import type { DshLocalSessionSummary, DshLocalSessionWithMessages } from '@hapi/
  * session.v4.jsonl.zstd` — a concatenation of independent zstd frames (one
  * header frame, then one frame per append batch) — plus a projection cache
  * at `~/.dsh/storages/session_projcache/sessions/<id>.json` that folds the
- * interesting state (title, turn boundaries, token usage, model selection,
- * permissions). ACP `session/list` exposes none of that (only {sessionId,
- * cwd}, subagents hidden, createdAt computed then dropped), so the import
- * list is built straight from disk:
+ * interesting state (title, first prompt, turn boundaries, model selection).
+ * ACP `session/list` exposes none of that (only {sessionId, cwd}, subagents
+ * hidden, createdAt computed then dropped), so the import list is built
+ * straight from disk:
  *
- * - summaries: 8KB header read through node:zlib (whose zstdDecompressSync
- *   only decodes the FIRST frame — exactly the header) + the projcache JSON.
- * - transcripts: full-frame decode through Bun.zstdDecompressSync, folding
- *   user/message, assistant/message, tool/call, tool/result and terminal
- *   turn/end events into the CodexMessage payload shapes the web renders.
+ * - summaries: an 8KB header read (node:zlib's zstdDecompressSync decodes
+ *   only the FIRST frame — exactly the header) plus the projection cache;
+ * - transcripts: a full decode folded into the CodexMessage payload shapes
+ *   the web already renders for live DSH sessions.
  *
  * Everything is read-only: the log is append-only under flock and must never
- * be written from outside. Sessions whose header says version !== 4 or whose
- * cwd has disappeared are skipped / flagged rather than failing the scan.
+ * be written from outside. Shapes below were taken from real 0.2.2-rc.1 logs
+ * (`turn/end.data.reason` is an OBJECT, tool results are re-emitted with
+ * pruned content after every compaction, assistant messages carry several
+ * reasoning/text blocks on one seq).
  */
 
 /** Env override for custom DSH_HOME layouts (mirrors HAPI_DSH_PROFILE_DIR). */
@@ -35,32 +36,50 @@ export function resolveDshHome(env: NodeJS.ProcessEnv = process.env, home: strin
     return join(home, '.dsh')
 }
 
-/** Compressed-size cap for full-transcript reads: beyond this the decode
- * buffer risk outweighs the import value; the session stays listable but
- * is skipped as a transcript (the hub reports it not found). */
-const MAX_TRANSCRIPT_COMPRESSED_BYTES = 96 * 1024 * 1024
+/** Only the first 8KB of a log are read for the header frame (real header
+ * frames compress to ~230 bytes). */
+const HEADER_READ_BYTES = 8192
+const HEADER_READ_MAX_BYTES = 65536
+
+/**
+ * Transcript bounds. The runner answers one socket.io frame per request and
+ * the hub caps a frame at 48MB (`SOCKET_MAX_HTTP_BUFFER_SIZE`), so a folded
+ * transcript must stay well under that on its own:
+ * - logs above `MAX_TRANSCRIPT_COMPRESSED_BYTES` are never decoded (folded
+ *   JSON tracks compressed size closely on real data);
+ * - folding stops once the approximate size or row budget is blown.
+ * Oversized sessions stay listable but import with `transcript_too_large`
+ * instead of killing the runner's machine socket.
+ */
+export const MAX_TRANSCRIPT_COMPRESSED_BYTES = 16 * 1024 * 1024
+const MAX_TRANSCRIPT_JSON_BYTES = 24 * 1024 * 1024
+const MAX_FOLDED_CHARS = 12 * 1024 * 1024
+const MAX_FOLDED_MESSAGES = 60_000
+
+/** Preview length for list rows and the imported summary (Pi uses 140). */
+const PREVIEW_CHARS = 140
 
 type DshSessionHeader = {
     id: string
     createdAt?: number
     cwd?: string
-    parentSession?: string
     origin?: string
     version?: number
 }
 
-type ProjcacheRow = { ver?: number; seq?: number; val?: unknown }
+type ProjcacheRow = { val?: unknown }
 
 type DshProjcache = {
-    record?: {
-        identity?: { createdAt?: number; cwd?: string }
-        rows?: Record<string, ProjcacheRow>
-    }
+    record?: { rows?: Record<string, ProjcacheRow> }
 }
 
-/** Folded transcript message content — the CodexMessage payload shapes the
- * web chat normalizer already renders for live DSH sessions. */
+type DshLogEvent = { type: string; seq?: number; time?: number; data?: unknown }
+
+/** Folded transcript row — the agent/user payload shapes `convertAgentMessage`
+ * produces for the live stream, wrapped the way the other importers do. */
 export type DshFoldedMessage = DshLocalSessionWithMessages['messages'][number]
+
+export type DshTranscriptError = NonNullable<DshLocalSessionSummary['importError']>
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -72,37 +91,121 @@ function asString(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-/** Read the log's first zstd frame (the header row) via node:zlib, whose
- * zstdDecompressSync stops after one frame. Returns null on any mismatch —
- * a torn header or a foreign format skips the session instead of failing
- * the scan. */
-function readSessionHeader(path: string): DshSessionHeader | null {
-    let buffer: Buffer
-    try {
-        const fd = statSync(path)
-        if (!fd.isFile()) return null
-        buffer = readFileSync(path).subarray(0, 8192)
-    } catch {
-        return null
+function truncatePreview(text: string): string {
+    const singleLine = text.replace(/\s+/g, ' ').trim()
+    return singleLine.length > PREVIEW_CHARS ? `${singleLine.slice(0, PREVIEW_CHARS)}…` : singleLine
+}
+
+// ---------------------------------------------------------------------------
+// zstd decoding
+// ---------------------------------------------------------------------------
+
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+
+function isBunRuntime(): boolean {
+    return typeof Bun !== 'undefined' && typeof Bun.zstdDecompressSync === 'function'
+}
+
+/**
+ * Decode one multi-frame zstd buffer into text.
+ *
+ * Bun (the shipped runtime) decodes every frame in one call. node:zlib — what
+ * vitest runs on — decodes only the first frame per call, so there the buffer
+ * is walked frame by frame: `zstdDecompressSync(buf, { info: true })` reports
+ * how many input bytes the frame consumed through `engine.bytesWritten`,
+ * which is an exact boundary (a magic byte sequence inside a compressed
+ * payload would fool a byte scan).
+ */
+export function decodeZstdFrames(raw: Buffer): Buffer {
+    if (isBunRuntime()) {
+        return Bun.zstdDecompressSync(raw)
     }
+    const parts: Buffer[] = []
+    let offset = 0
+    while (offset < raw.length) {
+        const slice = raw.subarray(offset)
+        const result = zstdDecompressSync(slice, { info: true }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } }
+        parts.push(result.buffer)
+        const consumed = result.engine.bytesWritten
+        // A zero-length step would spin forever; a frame that consumed
+        // nothing means the input is not a frame start anymore.
+        if (consumed <= 0) throw new Error('zstd frame consumed no input')
+        offset += consumed
+    }
+    return parts.length === 1 ? parts[0]! : Buffer.concat(parts)
+}
+
+/**
+ * Decode a log to text, tolerating a torn TAIL frame. DSH appends one frame
+ * per batch with a single write + fsync and repairs a torn tail before its
+ * next append (`truncateTornTail`); a reader that races a crash can still see
+ * one. Bun's one-shot decoder rejects the whole file for it, so on failure the
+ * last frame boundaries (newest first) are tried as cut points and the torn
+ * tail is dropped.
+ */
+export function decodeZstdFramesTolerant(raw: Buffer): Buffer {
     try {
-        const decompressed = zstdDecompressSync(buffer)
-        const newline = decompressed.indexOf(0x0a)
-        const firstLine = (newline >= 0 ? decompressed.subarray(0, newline) : decompressed).toString('utf8')
-        const parsed = asRecord(JSON.parse(firstLine))
-        if (!parsed || parsed.type !== 'session') return null
-        const id = asString(parsed.id)
-        if (!id) return null
-        return {
-            id,
-            ...(typeof parsed.createdAt === 'number' ? { createdAt: parsed.createdAt } : {}),
-            ...(asString(parsed.cwd) ? { cwd: asString(parsed.cwd)! } : {}),
-            ...(asString(parsed.parentSession) ? { parentSession: asString(parsed.parentSession)! } : {}),
-            ...(asString(parsed.origin) ? { origin: asString(parsed.origin)! } : {}),
-            ...(typeof parsed.version === 'number' ? { version: parsed.version } : {})
+        return decodeZstdFrames(raw)
+    } catch (error) {
+        const cutPoints: number[] = []
+        for (let at = raw.lastIndexOf(ZSTD_MAGIC); at > 0; at = raw.lastIndexOf(ZSTD_MAGIC, at - 1)) {
+            cutPoints.push(at)
+            if (cutPoints.length >= 8) break
         }
+        for (const cut of cutPoints) {
+            try {
+                return decodeZstdFrames(raw.subarray(0, cut))
+            } catch {
+                // try the previous boundary
+            }
+        }
+        throw error
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Summaries
+// ---------------------------------------------------------------------------
+
+/** Read the log's first frame (the header row). The header frame is tiny;
+ * the read grows to `HEADER_READ_MAX_BYTES` only if its newline is missing. */
+function readSessionHeader(path: string, compressed: boolean): DshSessionHeader | null {
+    let handle: number | null = null
+    try {
+        const size = statSync(path).size
+        handle = openSync(path, 'r')
+        let readBytes = Math.min(HEADER_READ_BYTES, size)
+        while (readBytes > 0) {
+            const buffer = Buffer.allocUnsafe(readBytes)
+            const read = readSync(handle, buffer, 0, readBytes, 0)
+            if (read <= 0) return null
+            const slice = buffer.subarray(0, read)
+            // Only the first frame decodes here; a torn second frame in the
+            // slice is ignored, a torn FIRST frame yields partial text that
+            // fails the JSON parse below (the session is skipped).
+            const text = (compressed ? zstdDecompressSync(slice) : slice).toString('utf8')
+            const newline = text.indexOf('\n')
+            if (newline < 0 && read < size && readBytes < HEADER_READ_MAX_BYTES) {
+                readBytes = Math.min(HEADER_READ_MAX_BYTES, size)
+                continue
+            }
+            const firstLine = newline >= 0 ? text.slice(0, newline) : text
+            const parsed = asRecord(JSON.parse(firstLine))
+            if (!parsed || parsed.type !== 'session') return null
+            const id = asString(parsed.id)
+            if (!id) return null
+            return {
+                id,
+                ...(typeof parsed.createdAt === 'number' ? { createdAt: parsed.createdAt } : {}),
+                ...(asString(parsed.cwd) ? { cwd: parsed.cwd as string } : {}),
+                ...(asString(parsed.origin) ? { origin: parsed.origin as string } : {})
+            }
+        }
+        return null
     } catch {
         return null
+    } finally {
+        if (handle !== null) closeSync(handle)
     }
 }
 
@@ -118,53 +221,36 @@ function rowVal(cache: DshProjcache | null, key: string): unknown {
     return cache?.record?.rows?.[key]?.val
 }
 
-function rowString(cache: DshProjcache | null, key: string, field?: string): string | null {
-    const value = rowVal(cache, key)
-    const target = field !== undefined ? asRecord(value)?.[field] : value
-    return asString(target)
-}
-
-/** The opaque ACP model value the model rail sends back verbatim. */
-function launchModelTuple(cache: DshProjcache | null): { model: string; reasoningEffort: string | null } | null {
-    const lastUsed = asRecord(rowVal(cache, 'modelSelection'))?.lastUsed
-    const record = asRecord(lastUsed)
-    const provider = asString(record?.provider)
-    const model = asString(record?.model)
+/** The opaque ACP model value the dsh model rail sends back verbatim is a
+ * JSON `[provider, model]` tuple; expose the readable model id as well. */
+function launchModel(cache: DshProjcache | null): { model: string; modelId: string | null } | null {
+    const lastUsed = asRecord(asRecord(rowVal(cache, 'modelSelection'))?.lastUsed)
+    const provider = asString(lastUsed?.provider)
+    const model = asString(lastUsed?.model)
     if (!provider || !model) return null
-    const reasoning = asString(record?.reasoningEffort)
-    return { model: JSON.stringify([provider, model]), reasoningEffort: reasoning }
+    return { model: JSON.stringify([provider, model]), modelId: model }
 }
 
-function existsDir(path: string | null | undefined): boolean {
-    if (!path) return false
-    try {
-        return statSync(path).isDirectory()
-    } catch {
-        return false
-    }
-}
-
-export type DshSessionScan = {
-    summaries: DshLocalSessionSummary[]
-    /** Session ids skipped because their durable cwd no longer exists. */
-    unresumableIds: string[]
-}
-
-/** Scan the DSH home for durable root sessions, richest data first from the
- * projection cache with the log header as the identity source of truth.
- * Subagent sessions are excluded (ACP resume rejects them and the import
- * list mirrors session/list). */
-export function listDshSessionSummaries(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): DshSessionScan {
+/**
+ * Scan the DSH home for durable ROOT sessions.
+ *
+ * Excluded: subagent sessions (ACP `session/list` and `session/resume` both
+ * refuse `origin === "subagent"`), sessions without an absolute cwd, other
+ * log generations, and BLANK sessions — ones that never started a turn. DSH
+ * itself marks a session blank until its first `turn/start`; every model-catalog
+ * probe leaves such a session behind (`session/close` keeps the log), and
+ * they are more than half of a long-lived `~/.dsh`.
+ */
+export function listDshSessionSummaries(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): DshLocalSessionSummary[] {
     const dshHome = resolveDshHome(env, home)
     const sessionsRoot = join(dshHome, 'sessions')
     const cacheRoot = join(dshHome, 'storages', 'session_projcache', 'sessions')
     const summaries: DshLocalSessionSummary[] = []
-    const unresumableIds: string[] = []
     let projects: string[]
     try {
         projects = readdirSync(sessionsRoot)
     } catch {
-        return { summaries, unresumableIds }
+        return summaries
     }
     for (const project of projects) {
         const projectDir = join(sessionsRoot, project)
@@ -176,217 +262,153 @@ export function listDshSessionSummaries(env: NodeJS.ProcessEnv = process.env, ho
             continue
         }
         for (const segment of segments) {
-            const logPath = join(projectDir, segment, 'session.v4.jsonl.zstd')
-            const header = readSessionHeader(logPath)
+            // DSH defaults to zstd; a profile may configure plain JSONL.
+            const zstdPath = join(projectDir, segment, 'session.v4.jsonl.zstd')
+            const plainPath = join(projectDir, segment, 'session.v4.jsonl')
+            let logPath = zstdPath
+            let compressed = true
+            try {
+                statSync(zstdPath)
+            } catch {
+                try {
+                    statSync(plainPath)
+                } catch {
+                    continue
+                }
+                logPath = plainPath
+                compressed = false
+            }
+            const header = readSessionHeader(logPath, compressed)
             if (!header) continue
-            if (header.version !== undefined && header.version !== 4) continue
-            if (header.origin === 'subagent' || header.parentSession) continue
+            if (header.origin === 'subagent') continue
             const cwd = header.cwd ?? null
             if (!cwd || !cwd.startsWith('/')) continue
+
             const cache = readProjcache(join(cacheRoot, `${header.id}.json`))
             const firstPrompt = asString(asRecord(asRecord(rowVal(cache, 'titleInput'))?.first)?.text)
-            const title = rowString(cache, 'title') ?? rowString(cache, 'title', 'title')
-                ?? firstPrompt?.split('\n')[0] ?? ''
-            const turns = asRecord(rowVal(cache, 'turnBoundary'))?.lastTurn
-            const tokens = asRecord(rowVal(cache, 'tokenUsage'))
-            const totals = asRecord(tokens?.totals)
-            const permissionPreset = rowString(cache, 'permissions', 'preset')
-                ?? rowString(cache, 'sandboxMode')
-            const contextTokens = asRecord(rowVal(cache, 'contextPressure'))?.surfaceTokens
-            const workingDirectory = rowString(cache, 'workingDirectory')
-                ?? rowString(cache, 'workingDirectory', 'cwd')
-            const resumable = existsDir(cwd)
-            if (!resumable) unresumableIds.push(header.id)
+            const title = asString(rowVal(cache, 'title')) ?? (firstPrompt ? truncatePreview(firstPrompt) : '') ?? ''
+            const turnBoundary = asRecord(rowVal(cache, 'turnBoundary'))
+            const turns = typeof turnBoundary?.lastTurn === 'number' ? turnBoundary.lastTurn : null
+            // Blank = no turn ever started (a blank probe session carries
+            // `lastTurn: 0`) AND no operator prompt was ever recorded — a
+            // missing cache row alone does not make a session blank.
+            const startedTurn = turns !== null && turns >= 1
+            if (!startedTurn && !firstPrompt && !asString(rowVal(cache, 'title'))) continue
+
             let modifiedAt = header.createdAt ?? 0
             try {
                 modifiedAt = statSync(logPath).mtimeMs
             } catch {
                 // createdAt fallback already in place
             }
-            const launch = launchModelTuple(cache)
+            const launch = launchModel(cache)
             summaries.push({
                 id: header.id,
                 title,
-                ...(firstPrompt ? { lastUserMessage: firstPrompt } : {}),
+                ...(firstPrompt ? { lastUserMessage: truncatePreview(firstPrompt) } : {}),
                 cwd,
                 file: logPath,
                 modifiedAt,
-                ...(launch ? { model: launch.model, reasoningEffort: launch.reasoningEffort } : {})
+                ...(launch ? { model: launch.model } : {}),
+                extra: {
+                    turns,
+                    model: launch?.modelId ?? null
+                }
             })
-            // Display extras ride the generic list item; numeric/string/null only.
-            summaries[summaries.length - 1].extra = {
-                turns: typeof turns === 'number' ? turns : null,
-                inputTokens: typeof totals?.uncachedInputTokens === 'number' ? totals.uncachedInputTokens : null,
-                outputTokens: typeof totals?.outputTokens === 'number' ? totals.outputTokens : null,
-                cacheReadTokens: typeof totals?.cacheReadTokens === 'number' ? totals.cacheReadTokens : null,
-                contextTokens: typeof contextTokens === 'number' ? contextTokens : null,
-                permissionPreset: permissionPreset,
-                workingDirectory: workingDirectory,
-                resumable: resumable ? 1 : 0
-            }
         }
     }
     summaries.sort((a, b) => b.modifiedAt - a.modifiedAt)
-    return { summaries, unresumableIds }
+    return summaries
 }
 
-type DshLogEvent = { type: string; seq?: number; time?: number; data?: unknown }
+// ---------------------------------------------------------------------------
+// Transcript folding
+// ---------------------------------------------------------------------------
 
-/** The zstd frame magic (LE 0xFD2FB528) — every dsh append frame starts it. */
-const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+const FOLDABLE_EVENT_TYPES = new Set(['user/message', 'assistant/message', 'tool/call', 'tool/result', 'turn/end'])
 
 /**
- * Decode a multi-frame zstd buffer. Bun's one-shot zstdDecompressSync handles
- * concatenated frames (verified against real dsh logs); node:zlib — what
- * vitest/CI runs on — silently stops after the FIRST frame, so there we walk
- * the frame boundaries (magic positions, greedy-merge on false positives
- * where the magic appears inside compressed payload) and decode each frame.
+ * Imported rows are identified by `<flavor>:<nativeId>:` + a position, which
+ * is the prefix the hub importer uses to find its own rows again on a
+ * re-import. One event folds to one or more rows; every row of an event after
+ * the first carries its block index.
  */
-function decompressAllFrames(raw: Buffer): Buffer {
-    if (typeof Bun !== 'undefined' && typeof Bun.zstdDecompressSync === 'function') {
-        return Bun.zstdDecompressSync(raw)
-    }
-    const positions: number[] = []
-    let at = raw.indexOf(ZSTD_MAGIC)
-    while (at >= 0) {
-        positions.push(at)
-        at = raw.indexOf(ZSTD_MAGIC, at + 1)
-    }
-    if (positions.length === 0) {
-        // Not a frame concatenation we understand; surface the raw failure.
-        return zstdDecompressSync(raw)
-    }
-    const parts: Buffer[] = []
-    let start = 0
-    let index = 0
-    while (index < positions.length) {
-        // Greedy: try the next magic as the boundary; on decode failure merge
-        // the following magic-delimited span (the magic occurred inside this
-        // frame's compressed payload) and retry.
-        let end = index + 1 < positions.length ? positions[index + 1]! : raw.length
-        let slice = raw.subarray(positions[index]!, end)
-        while (true) {
-            try {
-                parts.push(zstdDecompressSync(slice))
-                start = end
-                break
-            } catch (error) {
-                if (end >= raw.length) throw error
-                const next = raw.indexOf(ZSTD_MAGIC, end + 1)
-                end = next >= 0 ? next : raw.length
-                slice = raw.subarray(start, end)
-            }
-        }
-        index = positions.indexOf(end, index)
-        if (index < 0) break
-    }
-    // Trailing bytes after the last magic-delimited frame (checksum padding
-    // etc.) carry no events.
-    return Buffer.concat(parts)
+function localId(nativeId: string, event: DshLogEvent, index: number, fallback: { seq: number }): string {
+    const position = typeof event.seq === 'number' ? String(event.seq) : `x${fallback.seq}`
+    return index === 0 ? `dsh:${nativeId}:${position}` : `dsh:${nativeId}:${position}:${index}`
 }
 
-/** Decode the full multi-frame zstd log and split it back into event rows. */
-function readLogEvents(path: string): DshLogEvent[] {
-    const raw = readFileSync(path)
-    if (raw.length > MAX_TRANSCRIPT_COMPRESSED_BYTES) {
-        throw new Error(`DSH transcript too large to import (${Math.round(raw.length / 1048576)}MB compressed)`)
-    }
-    const decompressed = decompressAllFrames(raw)
-    const text = decompressed.toString('utf8')
-    const events: DshLogEvent[] = []
-    for (const line of text.split('\n')) {
-        if (!line.trim()) continue
-        try {
-            const parsed = asRecord(JSON.parse(line))
-            if (parsed && typeof parsed.type === 'string') {
-                events.push(parsed as unknown as DshLogEvent)
-            }
-        } catch {
-            // A torn tail line is never written by dsh (fsync batches), but a
-            // foreign/corrupt file must not fail the whole import.
-        }
-    }
-    return events
+function agentContent(data: unknown, meta: { sentFrom: 'cli' }) {
+    return { role: 'agent' as const, content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data }, meta }
 }
 
-function textOfBlocks(blocks: unknown): string {
-    if (!Array.isArray(blocks)) return ''
+function textOfBlocks(blocks: unknown, imagePlaceholder: string): { text: string; images: number } {
     const parts: string[] = []
+    let images = 0
+    if (!Array.isArray(blocks)) return { text: '', images }
     for (const block of blocks) {
         const record = asRecord(block)
         if (!record) continue
         if (record.type === 'text' && typeof record.text === 'string' && record.text.length > 0) {
             parts.push(record.text)
+        } else if (record.type === 'image') {
+            images += 1
+            parts.push(imagePlaceholder)
         }
     }
-    return parts.join('')
+    return { text: parts.join(''), images }
 }
 
-function foldToolOutput(blocks: unknown): string {
-    if (!Array.isArray(blocks)) return ''
-    const parts: string[] = []
-    for (const block of blocks) {
-        const record = asRecord(block)
-        if (!record) continue
-        if (typeof record.text === 'string' && record.text.length > 0) {
-            parts.push(record.text)
-        }
-    }
-    return parts.join('\n')
-}
+class TranscriptFold {
+    private readonly messages: DshFoldedMessage[] = []
+    private chars = 0
+    private fallbackSeq = 0
+    private lastUserMessage: string | null = null
+    /** callIds of folded tool calls that have no result yet. */
+    private readonly openCalls = new Set<string>()
+    /** tool results are re-emitted with pruned content after every
+     * compaction; only the first (original, complete) one is folded. */
+    private readonly resultsSeen = new Set<string>()
+    exceeded = false
 
-let localIdCounter = 0
-function nextLocalId(seq: number | undefined): string {
-    if (typeof seq === 'number') return `dsh:${seq}`
-    // Seq is the stable identity; the counter only backs foreign logs.
-    localIdCounter += 1
-    return `dsh:foreign:${localIdCounter}`
-}
+    constructor(
+        private readonly nativeId: string,
+        private readonly limits: { maxChars: number; maxMessages: number }
+    ) {}
 
-/** Fold one durable log into importable transcript messages. Only real
- * operator turns (source.kind === 'user') become user rows; injected
- * notices (model-change banners, queued follow-ups) stay out of the chat.
- * Tool activity folds from tool/call + tool/result events — the tool-call
- * blocks inside assistant/message would double-count it. Terminal
- * turn/end states other than completed/aborted become error rows so the
- * transcript shows WHY a session stopped. */
-export function foldDshLogEvents(events: DshLogEvent[]): DshFoldedMessage[] {
-    const messages: DshFoldedMessage[] = []
-    for (const event of events) {
-        const time = typeof event.time === 'number' ? event.time : Date.now()
+    push(event: DshLogEvent): void {
+        if (this.exceeded || !FOLDABLE_EVENT_TYPES.has(event.type)) return
         const data = asRecord(event.data)
         switch (event.type) {
             case 'user/message': {
+                // Only operator turns. DSH logs injected context under the
+                // same event (runtime-context, skill-catalog, agent-instructions,
+                // tool-jobs, relays from other agents, …) with other source kinds.
                 if (asRecord(data?.source)?.kind !== 'user') break
-                const text = textOfBlocks(data?.content)
-                if (!text.trim()) break
-                messages.push({
-                    localId: nextLocalId(event.seq),
-                    createdAt: time,
-                    content: { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'cli' } }
-                })
+                const { text, images } = textOfBlocks(data?.content, '[image]')
+                if (!text.trim() && images === 0) break
+                this.lastUserMessage = text
+                this.add(event, 0, text.length, { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'cli' } })
                 break
             }
             case 'assistant/message': {
                 const message = asRecord(data?.message)
                 const blocks = message?.content
                 if (!Array.isArray(blocks)) break
+                let index = 0
                 for (const block of blocks) {
                     const record = asRecord(block)
-                    if (!record) continue
-                    if (record.type === 'reasoning' && typeof record.text === 'string' && record.text.length > 0) {
-                        messages.push({
-                            localId: nextLocalId(event.seq),
-                            createdAt: time,
-                            content: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: record.text, id: `dsh-r:${event.seq ?? time}` } }, meta: { sentFrom: 'cli' } }
-                        })
-                    } else if (record.type === 'text' && typeof record.text === 'string' && record.text.length > 0) {
-                        messages.push({
-                            localId: nextLocalId(event.seq),
-                            createdAt: time,
-                            content: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: record.text, id: asString(message?.id) ?? `dsh-m:${event.seq ?? time}` } }, meta: { sentFrom: 'cli' } }
-                        })
+                    const text = typeof record?.text === 'string' ? record.text : ''
+                    if (text.length === 0) continue
+                    if (record?.type === 'reasoning') {
+                        this.add(event, index, text.length, agentContent({ type: 'reasoning', message: text, id: `dsh-r:${this.nativeId}:${event.seq ?? index}` }, { sentFrom: 'cli' }))
+                    } else if (record?.type === 'text') {
+                        this.add(event, index, text.length, agentContent({ type: 'message', message: text, id: asString(message?.id) ?? `dsh-m:${this.nativeId}:${event.seq ?? index}` }, { sentFrom: 'cli' }))
+                    } else {
+                        // tool-call blocks are folded from their tool/call events
+                        continue
                     }
+                    index += 1
                 }
                 break
             }
@@ -396,79 +418,211 @@ export function foldDshLogEvents(events: DshLogEvent[]): DshFoldedMessage[] {
                 if (!callId || !name) break
                 let input: unknown = data?.arguments
                 if (typeof input === 'string') {
-                    try { input = JSON.parse(input) } catch { /* opaque string input */ }
+                    try { input = JSON.parse(input) } catch { /* opaque model output kept as text */ }
                 }
-                messages.push({
-                    localId: nextLocalId(event.seq),
-                    createdAt: time,
-                    content: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call', name, callId, input, status: 'in_progress' } }, meta: { sentFrom: 'cli' } }
-                })
+                this.openCalls.add(callId)
+                this.add(event, 0, name.length + (typeof input === 'string' ? input.length : 64), agentContent({ type: 'tool-call', name, callId, input, status: 'in_progress' }, { sentFrom: 'cli' }))
                 break
             }
             case 'tool/result': {
                 const result = asRecord(data?.message)
                 const callId = asString(result?.toolCallId)
-                if (!callId) break
-                messages.push({
-                    localId: nextLocalId(event.seq),
-                    createdAt: time,
-                    content: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call-result', callId, output: foldToolOutput(result?.content), is_error: result?.isError === true } }, meta: { sentFrom: 'cli' } }
-                })
+                if (!callId || this.resultsSeen.has(callId)) break
+                this.resultsSeen.add(callId)
+                this.openCalls.delete(callId)
+                const { text } = textOfBlocks(result?.content, '[image]')
+                this.add(event, 0, text.length, agentContent({ type: 'tool-call-result', callId, output: text, is_error: result?.isError === true }, { sentFrom: 'cli' }))
                 break
             }
             case 'turn/end': {
-                const reason = asString(data?.reason)
-                if (!reason || reason === 'completed' || reason === 'aborted') break
-                const detail = asString(data?.message) ?? asString(asRecord(data?.error)?.message)
-                messages.push({
-                    localId: nextLocalId(event.seq),
-                    createdAt: time,
-                    content: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'error', message: detail ? `Turn ended (${reason}): ${detail}` : `Turn ended (${reason})` } }, meta: { sentFrom: 'cli' } }
-                })
+                // `data.reason` is an object: { kind, error?: { message, code, status? }, reason? }.
+                const reason = asRecord(data?.reason)
+                const kind = asString(reason?.kind)
+                if (!kind || kind === 'completed' || kind === 'aborted') break
+                const failure = asRecord(reason?.error)
+                const detail = [asString(failure?.code), asString(failure?.message)].filter(Boolean).join(': ')
+                this.add(event, 0, kind.length + detail.length, agentContent({ type: 'error', message: detail ? `Turn ended (${kind}): ${detail}` : `Turn ended (${kind})` }, { sentFrom: 'cli' }))
                 break
             }
             default:
                 break
         }
     }
-    return messages
-}
 
-// Local alias helper removed — AGENT_MESSAGE_PAYLOAD_TYPE is imported above.
+    private add(event: DshLogEvent, index: number, textLength: number, content: DshFoldedMessage['content']): void {
+        this.chars += textLength + 192
+        if (this.chars > this.limits.maxChars || this.messages.length >= this.limits.maxMessages) {
+            this.exceeded = true
+            return
+        }
+        this.fallbackSeq += 1
+        const createdAt = typeof event.time === 'number' ? event.time : undefined
+        this.messages.push({
+            localId: localId(this.nativeId, event, index, { seq: this.fallbackSeq }),
+            ...(createdAt !== undefined ? { createdAt } : {}),
+            content
+        })
+    }
 
-/** Full transcript read for import: header identity + folded messages. */
-export function readDshSessionTranscriptById(id: string, env: NodeJS.ProcessEnv = process.env, home: string = homedir()): DshLocalSessionWithMessages | null {
-    const summaries = listDshSessionSummaries(env, home).summaries
-    const summary = summaries.find((session) => session.id === id)
-    if (!summary) return null
-    const events = readLogEvents(summary.file)
-    return {
-        ...summary,
-        messages: foldDshLogEvents(events)
+    /** Close tool calls that never got a result (the turn was aborted or
+     * failed mid-tool) with a synthetic failed result right after the call,
+     * so no imported card spins forever. */
+    finalize(): { messages: DshFoldedMessage[]; lastUserMessage: string | null; exceeded: boolean } {
+        if (this.exceeded || this.openCalls.size === 0) {
+            return { messages: this.messages, lastUserMessage: this.lastUserMessage, exceeded: this.exceeded }
+        }
+        const output: DshFoldedMessage[] = []
+        for (const message of this.messages) {
+            output.push(message)
+            const data = (message.content as { content?: { data?: { type?: string; callId?: string } } }).content?.data
+            if (data?.type !== 'tool-call' || !data.callId || !this.openCalls.has(data.callId)) continue
+            output.push({
+                localId: `${message.localId}:aborted`,
+                ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
+                content: agentContent({ type: 'tool-call-result', callId: data.callId, output: 'Tool call did not complete: the turn ended before a result was recorded.', is_error: true }, { sentFrom: 'cli' })
+            })
+        }
+        return { messages: output, lastUserMessage: this.lastUserMessage, exceeded: false }
     }
 }
 
-export function readDshSessionTranscriptsByIds(ids: readonly string[], env: NodeJS.ProcessEnv = process.env, home: string = homedir()): DshLocalSessionWithMessages[] {
-    // One scan serves the whole batch; missing ids surface as hub-side
-    // not_found results exactly like the other flavors.
+const DEFAULT_FOLD_LIMITS = { maxChars: MAX_FOLDED_CHARS, maxMessages: MAX_FOLDED_MESSAGES }
+
+/** The event type of one log line, read without a JSON parse (every log line
+ * starts with `{"type":"<kind>"`). Lines of other kinds — the large majority
+ * (step/start, request/header, job/*, …) — are never parsed. */
+function lineEventType(text: string, start: number, end: number): string | null {
+    const head = text.slice(start, Math.min(end, start + 96))
+    const open = head.indexOf('"type":"')
+    if (open < 0) {
+        // Not near the start: either not an event line or an unusual key
+        // order. Only a line that mentions a foldable type anywhere is worth
+        // parsing, so a cheap containment check guards the JSON.parse.
+        for (const type of FOLDABLE_EVENT_TYPES) {
+            const at = text.indexOf(`"type":"${type}"`, start)
+            if (at >= 0 && at < end) return type
+        }
+        return null
+    }
+    const close = head.indexOf('"', open + 8)
+    return close < 0 ? null : head.slice(open + 8, close)
+}
+
+/** Fold decoded log text. Yields to the event loop between chunks so a large
+ * transcript never blocks the runner (it serves live sessions) for long. */
+export async function foldDshLogText(text: string, nativeId: string, limits = DEFAULT_FOLD_LIMITS): Promise<ReturnType<TranscriptFold['finalize']>> {
+    const fold = new TranscriptFold(nativeId, limits)
+    let start = 0
+    let lines = 0
+    while (start < text.length) {
+        let end = text.indexOf('\n', start)
+        if (end < 0) end = text.length
+        if (end > start && !fold.exceeded) {
+            const type = lineEventType(text, start, end)
+            if (type && FOLDABLE_EVENT_TYPES.has(type)) {
+                try {
+                    fold.push(JSON.parse(text.slice(start, end)) as DshLogEvent)
+                } catch {
+                    // a torn tail line is dropped; the rest of the log stands
+                }
+            }
+        }
+        start = end + 1
+        lines += 1
+        if ((lines & 4095) === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+    return fold.finalize()
+}
+
+/** Sync fold of already-parsed events (tests and small inputs). */
+export function foldDshLogEvents(events: DshLogEvent[], nativeId: string, limits = DEFAULT_FOLD_LIMITS): DshFoldedMessage[] {
+    const fold = new TranscriptFold(nativeId, limits)
+    for (const event of events) fold.push(event)
+    return fold.finalize().messages
+}
+
+// ---------------------------------------------------------------------------
+// Transcripts
+// ---------------------------------------------------------------------------
+
+function readLogText(path: string, compressed: boolean): string {
+    const raw = readFileSync(path)
+    return (compressed ? decodeZstdFramesTolerant(raw) : raw).toString('utf8')
+}
+
+type DshTranscriptResult =
+    | { kind: 'transcript'; transcript: DshLocalSessionWithMessages }
+    | { kind: 'error'; error: DshTranscriptError }
+
+async function readTranscript(summary: DshLocalSessionSummary): Promise<DshTranscriptResult> {
+    const tooLarge = (detail: string): DshTranscriptResult => ({
+        kind: 'error',
+        error: { code: 'transcript_too_large', message: `DSH session is too large to import (${detail}).` }
+    })
+    const compressed = summary.file.endsWith('.zstd')
+    let size: number
+    try {
+        size = statSync(summary.file).size
+    } catch {
+        return { kind: 'error', error: { code: 'not_found', message: 'DSH session log is no longer readable.' } }
+    }
+    // Folded JSON tracks the compressed size closely on real logs; refuse
+    // before decoding so an oversized log never enters memory at all.
+    if (size > MAX_TRANSCRIPT_COMPRESSED_BYTES) {
+        return tooLarge(`${(size / 1048576).toFixed(1)}MB compressed log`)
+    }
+    let text: string
+    try {
+        text = readLogText(summary.file, compressed)
+    } catch (error) {
+        return { kind: 'error', error: { code: 'transcript_unreadable', message: `DSH session log could not be decoded: ${error instanceof Error ? error.message : String(error)}` } }
+    }
+    const folded = await foldDshLogText(text, summary.id)
+    if (folded.exceeded) return tooLarge('more messages than one import can carry')
+    const jsonBytes = Buffer.byteLength(JSON.stringify(folded.messages))
+    if (jsonBytes > MAX_TRANSCRIPT_JSON_BYTES) return tooLarge(`${(jsonBytes / 1048576).toFixed(1)}MB of messages`)
+    return {
+        kind: 'transcript',
+        transcript: {
+            ...summary,
+            // The list preview is the FIRST prompt (all the cache knows);
+            // the imported summary uses the last user turn like every other flavor.
+            ...(folded.lastUserMessage ? { lastUserMessage: truncatePreview(folded.lastUserMessage) } : {}),
+            messages: folded.messages
+        }
+    }
+}
+
+/**
+ * Full transcript read for import: one session at a time, each bounded by
+ * size, each reported on its own. A session that cannot be imported (too
+ * large, unreadable) comes back with `importError` and no messages instead of
+ * failing the batch — the hub turns that into a per-session result.
+ */
+export async function readDshSessionTranscriptsByIds(
+    ids: readonly string[],
+    env: NodeJS.ProcessEnv = process.env,
+    home: string = homedir()
+): Promise<DshLocalSessionWithMessages[]> {
     const wanted = new Set(ids)
-    const summaries = listDshSessionSummaries(env, home).summaries.filter((session) => wanted.has(session.id))
+    const summaries = listDshSessionSummaries(env, home).filter((session) => wanted.has(session.id))
     const transcripts: DshLocalSessionWithMessages[] = []
     for (const summary of summaries) {
-        try {
-            transcripts.push({
-                ...summary,
-                messages: foldDshLogEvents(readLogEvents(summary.file))
-            })
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            console.warn(`[dsh-import] skipping transcript ${summary.id}: ${message}`)
+        const result = await readTranscript(summary)
+        if (result.kind === 'transcript') {
+            transcripts.push(result.transcript)
+        } else {
+            transcripts.push({ ...summary, messages: [], importError: result.error })
         }
     }
     return transcripts
 }
 
-/** Exists for tests + callers that only need the presence check. */
-export function dshSessionsRootExists(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): boolean {
-    return existsSync(join(resolveDshHome(env, home), 'sessions'))
+export async function readDshSessionTranscriptById(
+    id: string,
+    env: NodeJS.ProcessEnv = process.env,
+    home: string = homedir()
+): Promise<DshLocalSessionWithMessages | null> {
+    const transcripts = await readDshSessionTranscriptsByIds([id], env, home)
+    return transcripts[0] ?? null
 }

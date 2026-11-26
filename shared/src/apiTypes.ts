@@ -1469,11 +1469,15 @@ export const DshLocalSessionSummarySchema = z.object({
     /** Opaque ACP model value (`JSON.stringify([provider, model])`) the
      * session last ran with; a launch hint like OpenCode's v2 model. */
     model: z.string().nullable().optional(),
-    /** Reasoning-effort id of the last selection ('' = provider default). */
+    /** Reasoning-effort id of the last selection. */
     reasoningEffort: z.string().nullable().optional(),
-    /** Display extras (turns / token totals / permission preset / resumable),
-     * flattened into list responses unchanged. */
-    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional()
+    /** Display extras (turns, readable model id), flattened into list
+     * responses unchanged. */
+    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+    /** Set when this session was requested as a transcript but cannot be
+     * imported (too large for one transport frame, log unreadable). The item
+     * then carries no messages and the hub reports it per session. */
+    importError: z.object({ code: z.string().min(1), message: z.string() }).optional()
 })
 
 export type DshLocalSessionSummary = z.infer<typeof DshLocalSessionSummarySchema>
@@ -1485,7 +1489,9 @@ export const DshImportedMessageContentSchema = CodexImportedMessageSchema
 
 export const DshImportedMessageSchema = z.object({
     localId: z.string().min(1),
-    createdAt: z.number(),
+    /** The log event time; absent only on a foreign log (the importer then
+     * stamps the import time, like Codex rows). */
+    createdAt: z.number().optional(),
     content: DshImportedMessageContentSchema
 })
 

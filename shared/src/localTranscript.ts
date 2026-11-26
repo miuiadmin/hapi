@@ -68,10 +68,17 @@ export const LocalTranscriptSummarySchema = z.object({
     /** Launch hints carried by the source (Pi model/thinkingLevel, OpenCode v2 model). */
     launch: z.object({
         model: z.string().nullable().optional(),
-        effort: z.string().nullable().optional()
+        /** Claude-style launch effort (`session.effort`). */
+        effort: z.string().nullable().optional(),
+        /** Codex-style reasoning effort (`session.modelReasoningEffort` — the
+         * axis DSH and Codex/OpenCode read). */
+        modelReasoningEffort: z.string().nullable().optional()
     }).optional(),
     /** Flavor-only display fields, flattened into list responses unchanged. */
-    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional()
+    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+    /** The source could list this session but cannot hand over its
+     * transcript (too large for one transport frame, log unreadable). */
+    importError: z.object({ code: z.string().min(1), message: z.string() }).optional()
 })
 
 export type LocalTranscriptSummary = z.infer<typeof LocalTranscriptSummarySchema>
@@ -122,6 +129,7 @@ function transcriptSummaryBase(parts: {
     messageCount?: number
     launch?: LocalTranscriptSummary['launch']
     extra?: LocalTranscriptSummary['extra']
+    importError?: LocalTranscriptSummary['importError']
 }): LocalTranscriptSummary {
     return {
         flavor: parts.flavor,
@@ -133,7 +141,8 @@ function transcriptSummaryBase(parts: {
         modifiedAt: parts.modifiedAt,
         ...(parts.messageCount !== undefined ? { messageCount: parts.messageCount } : {}),
         ...(parts.launch ? { launch: parts.launch } : {}),
-        ...(parts.extra ? { extra: parts.extra } : {})
+        ...(parts.extra ? { extra: parts.extra } : {}),
+        ...(parts.importError ? { importError: parts.importError } : {})
     }
 }
 
@@ -278,8 +287,12 @@ export function dshToTranscriptSummary(session: DshLocalSessionSummary): LocalTr
         file: session.file,
         modifiedAt: session.modifiedAt,
         // Only a real value becomes a launch hint, like OpenCode's v2 model.
-        ...(session.model ? { launch: { model: session.model, effort: session.reasoningEffort ?? null } } : {}),
-        ...(session.extra ? { extra: session.extra } : {})
+        // DSH's reasoning effort rides the Codex-style axis, not `effort`.
+        ...(session.model
+            ? { launch: { model: session.model, modelReasoningEffort: session.reasoningEffort ?? null } }
+            : {}),
+        extra: session.extra ?? {},
+        ...(session.importError ? { importError: session.importError } : {})
     })
 }
 

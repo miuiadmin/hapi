@@ -114,9 +114,8 @@ describe('getCodexComposerReasoningEffortOptions', () => {
             { value: 'medium', label: 'Medium' }
         ])
     })
-    it('builds DSH options from the fixed thought_level presets', () => {
+    it('builds DSH options from the fixed thought_level presets (no Default row)', () => {
         expect(getCodexComposerReasoningEffortOptions(null, 'dsh')).toEqual([
-            { value: null, label: 'Default' },
             { value: 'off', label: 'Off' },
             { value: 'low', label: 'Low' },
             { value: 'high', label: 'High' },
@@ -129,7 +128,6 @@ describe('getCodexComposerReasoningEffortOptions', () => {
             { value: 'low', name: 'Low' },
             { value: 'ultra', name: 'Ultra' }
         ])).toEqual([
-            { value: null, label: 'Default' },
             { value: 'low', label: 'Low' },
             { value: 'ultra', label: 'Ultra' }
         ])
@@ -138,8 +136,9 @@ describe('getCodexComposerReasoningEffortOptions', () => {
 
 describe('getCodexComposerReasoningEffortOptions — dsh thought_level', () => {
     // DSH advertises a single session-wide `reasoning_effort` config option
-    // (category thought_level) with a fixed value set: off/low/high/max plus
-    // '' meaning "Provider default" (mapped onto the null Default entry).
+    // (category thought_level). Its stock adapter always declares a default
+    // effort, so the option never offers "" and dsh rejects "" — there is no
+    // Default row unless the live list itself carries the provider default.
     it('advertises the fixed dsh value set: off/low/high/max', () => {
         expect([...DSH_REASONING_EFFORT_PRESETS]).toEqual(['off', 'low', 'high', 'max'])
         expect(getDshReasoningEffortSourceOptions()).toEqual([
@@ -150,9 +149,10 @@ describe('getCodexComposerReasoningEffortOptions — dsh thought_level', () => {
         ])
     })
 
-    it('builds Default + off/low/high/max without dynamic options', () => {
+    it('builds off/low/high/max without dynamic options — and no Default row', () => {
+        // dsh's stock adapter always declares a default effort, so "" is not a
+        // selectable level: a Default row would be a pick dsh rejects.
         expect(getCodexComposerReasoningEffortOptions(null, 'dsh')).toEqual([
-            { value: null, label: 'Default' },
             { value: 'off', label: 'Off' },
             { value: 'low', label: 'Low' },
             { value: 'high', label: 'High' },
@@ -162,22 +162,30 @@ describe('getCodexComposerReasoningEffortOptions — dsh thought_level', () => {
 
     it('prefers discovered dynamic options when provided', () => {
         expect(getCodexComposerReasoningEffortOptions(null, 'dsh', [{ value: 'low' }, { value: 'high' }])).toEqual([
-            { value: null, label: 'Default' },
             { value: 'low', label: 'Low' },
             { value: 'high', label: 'High' }
         ])
     })
 
-    it('normalizes the dsh empty value (Provider default) onto the null Default entry', () => {
-        const options = getCodexComposerReasoningEffortOptions('', 'dsh')
-        expect(options[0]).toEqual({ value: null, label: 'Default' })
-        // No duplicate '' entry: '' is the provider default.
-        expect(options.filter((option) => option.value === '' || option.value === null)).toHaveLength(1)
+    it('adds the Default row only when the live list offers the provider default', () => {
+        expect(getCodexComposerReasoningEffortOptions(null, 'dsh', [
+            { value: '', name: 'Provider default' },
+            { value: 'high', name: 'High' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'high', label: 'High' }
+        ])
+    })
+
+    it('hides the picker when the live list says the model has no thought levels', () => {
+        // An EMPTY list is the catalog's positive "nothing to pick" answer
+        // (undefined means undiscovered and falls back to the presets).
+        expect(getCodexComposerReasoningEffortOptions(null, 'dsh', [])).toEqual([])
+        expect(getCodexComposerReasoningEffortOptions(null, 'dsh', undefined)).toHaveLength(4)
     })
 
     it('keeps an out-of-set current effort visible so the picker never loses the selection', () => {
         expect(getCodexComposerReasoningEffortOptions('medium', 'dsh')).toEqual([
-            { value: null, label: 'Default' },
             { value: 'medium', label: 'Medium' },
             { value: 'off', label: 'Off' },
             { value: 'low', label: 'Low' },

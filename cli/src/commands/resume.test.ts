@@ -187,6 +187,30 @@ describe('resumeCommand', () => {
         })
     })
 
+    it('seeds the stored reasoning effort into the resumed DSH session', async () => {
+        // The web reopen path forwards session.modelReasoningEffort; the CLI
+        // resume path must agree with it or the launcher starts untracked.
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'acp-session-1',
+            permissionMode: 'default',
+            modelReasoningEffort: 'max'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(runDshMock).toHaveBeenCalledWith(expect.objectContaining({
+            resumeSessionId: 'acp-session-1',
+            modelReasoningEffort: 'max'
+        }))
+    })
+
     it('hands off an active DSH target to the local terminal before dispatching to runDsh', async () => {
         // Active targets are stopped via the HandoffLocal RPC first; runDsh
         // must register that handler, and resume must await the handoff before

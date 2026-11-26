@@ -1,5 +1,5 @@
 ---
-description: "Import Claude Code, Codex, OpenCode and Pi conversations started outside HAPI and continue them from the web app."
+description: "Import Claude Code, Codex, OpenCode, Pi and DeepSeek Harness conversations started outside HAPI and continue them from the web app."
 ---
 
 # Import local sessions
@@ -16,12 +16,17 @@ Importing copies the native transcript into the hub as a HAPI session on the mac
 | Codex | `~/.codex/sessions/` (or `$CODEX_HOME/sessions/`) | Imported |
 | OpenCode | `opencode.db` under `~/.local/share/opencode` (or `$OPENCODE_HOME`, `$XDG_DATA_HOME/opencode`) | Archived |
 | Pi | `~/.pi/agent/sessions/` (or `$PI_CODING_AGENT_DIR/sessions`, `$PI_CODING_AGENT_SESSION_DIR`) | Archived |
+| DeepSeek Harness | `~/.dsh/sessions/` (or `$DSH_HOME/sessions/`): one compressed session log per session, plus DSH's projection cache for titles and turn counts | Archived |
 
-All four go through one import pipeline on the hub, so they behave the same way: same machine selection, same duplicate handling, same limits. Other agents do not support history import.
+All of them go through one import pipeline on the hub, so they behave the same way: same machine selection, same duplicate handling, same limits. Other agents do not support history import.
+
+::: tip DeepSeek Harness specifics
+DSH's ACP `session/list` carries neither titles nor timestamps, so the runner reads the session logs on disk directly and no DSH process is started to list them. Sessions that never ran a turn (every model-catalog probe leaves one behind) and subagent sessions are not listed. A session whose log is too large for a single transport frame is reported on its own (`transcript_too_large`) while the rest of the batch still imports. Importing needs a runner that ships the DSH reader; there is no legacy fallback path.
+:::
 
 ## Importing from the web app
 
-1. Open **New session** and pick the machine and agent (Claude, Codex, OpenCode or Pi).
+1. Open **New session** and pick the machine and agent (Claude, Codex, OpenCode, Pi or DeepSeek Harness).
 2. Below the agent picker, find **Import \<agent\> history** and choose **Choose history**.
 3. The dialog lists the most recent local sessions on that machine, newest first. Filter by working directory or search by title, prompt, path or ID. Sessions already in HAPI are marked **Imported** (for Codex, this badge is remembered by the browser that imported them).
 4. Select one or more sessions:
@@ -29,7 +34,7 @@ All four go through one import pipeline on the hub, so they behave the same way:
    - **Several selections** are imported right away when you press **Import**, without opening any of them. A toast reports how many succeeded, and the sessions appear in the session list.
 
 ::: warning Close other copies first
-Several processes can open the same native session. Before continuing an imported session in HAPI, close or reload any other Claude / Codex / OpenCode / Pi process that has it open, so the two do not write diverging histories.
+Several processes can open the same native session. Before continuing an imported session in HAPI, close or reload any other Claude / Codex / OpenCode / Pi / DeepSeek Harness process that has it open, so the two do not write diverging histories.
 :::
 
 The iOS and Android apps do not have an import picker. Sessions imported from the web appear in their session lists like any other.

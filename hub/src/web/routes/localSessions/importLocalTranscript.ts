@@ -468,6 +468,10 @@ export function runLocalImportSync(options: {
                 if (transcript.launch?.effort !== undefined) {
                     store.sessions.setSessionEffort(hapiSessionId, transcript.launch.effort, namespace, { touchUpdatedAt: false })
                 }
+                // Codex-style reasoning effort (DSH reads this axis, not `effort`).
+                if (transcript.launch?.modelReasoningEffort) {
+                    store.sessions.setSessionModelReasoningEffort(hapiSessionId, transcript.launch.modelReasoningEffort, namespace, { touchUpdatedAt: false })
+                }
             }
             const outcome: LocalImportOutcome = {
                 sessionId: transcript.id,

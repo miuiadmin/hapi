@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import type {
     ClaudeLocalSessionWithMessages,
     CodexLocalSessionWithMessages,
+    DshLocalSessionWithMessages,
     OpencodeLocalSessionWithMessages,
     PiLocalSessionWithMessages
 } from './apiTypes'
@@ -10,6 +11,8 @@ import {
     LocalTranscriptSchema,
     claudeToTranscript,
     codexToTranscript,
+    dshToTranscript,
+    dshToTranscriptSummary,
     opencodeToTranscript,
     piToTranscript
 } from './localTranscript'
@@ -214,5 +217,51 @@ describe('local transcript mappers', () => {
             sessions: [piToTranscript(piSession), opencodeToTranscript(opencodeSession)]
         }).success).toBe(true)
         expect(ListLocalSessionsRpcResponseSchema.parse({ success: false, error: 'nope' }).success).toBe(false)
+    })
+})
+
+describe('dshToTranscript', () => {
+    const native: DshLocalSessionWithMessages = {
+        id: 'dsh-native-1',
+        title: '修复登录页',
+        lastUserMessage: '再跑下测试',
+        cwd: '/workspace/b',
+        file: '/home/u/.dsh/sessions/--workspace-b--/dsh-native-1/session.v4.jsonl.zstd',
+        modifiedAt: 1,
+        model: '["deepseek-official","glm-5.4"]',
+        reasoningEffort: 'max',
+        extra: { turns: 2, model: 'glm-5.4' },
+        // the reader's row convention: `<flavor>:<nativeId>:<seq>` (+ block index)
+        messages: [
+            { localId: 'dsh:dsh-native-1:2', createdAt: 1_000, content: { role: 'user', content: { type: 'text', text: '帮我修一下登录页' }, meta: { sentFrom: 'cli' } } },
+            { localId: 'dsh:dsh-native-1:4', createdAt: 1_100, content: { role: 'agent', content: { type: 'codex', data: { type: 'reasoning', message: 'think', id: 'r' } }, meta: { sentFrom: 'cli' } } },
+            { localId: 'dsh:dsh-native-1:4:1', createdAt: 1_100, content: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'hi', id: 'm' } }, meta: { sentFrom: 'cli' } } }
+        ]
+    }
+
+    it('maps the reasoning effort onto the Codex-style axis and keeps the readable model searchable', () => {
+        const summary = dshToTranscriptSummary(native)
+        expect(summary).toMatchObject({
+            flavor: 'dsh',
+            id: 'dsh-native-1',
+            launch: { model: '["deepseek-official","glm-5.4"]', modelReasoningEffort: 'max' },
+            extra: { turns: 2, model: 'glm-5.4' }
+        })
+        // dsh never reads the Claude-style `effort` axis.
+        expect(summary.launch).not.toHaveProperty('effort')
+    })
+
+    it('keeps the reader row ids verbatim — they are what the hub matches on re-import', () => {
+        const transcript = dshToTranscript(native)
+        const parsed = ListLocalSessionsRpcResponseSchema.parse({ success: true, sessions: [transcript] })
+        expect(parsed.success && 'messages' in parsed.sessions[0]! && parsed.sessions[0].messages.map((message) => message.id))
+            .toEqual(['dsh:dsh-native-1:2', 'dsh:dsh-native-1:4', 'dsh:dsh-native-1:4:1'])
+    })
+
+    it('carries importError so an unimportable session is reported, not treated as missing', () => {
+        const transcript = dshToTranscript({ ...native, messages: [], importError: { code: 'transcript_too_large', message: 'too big' } })
+        const parsed = ListLocalSessionsRpcResponseSchema.parse({ success: true, sessions: [transcript] })
+        expect(parsed.success && parsed.sessions[0]!.importError).toEqual({ code: 'transcript_too_large', message: 'too big' })
+        expect(LocalTranscriptSchema.parse(transcript).importError?.code).toBe('transcript_too_large')
     })
 })

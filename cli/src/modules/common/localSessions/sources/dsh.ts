@@ -15,9 +15,11 @@ export const dshLocalSessionSource: CliLocalSessionSource = {
     list: async ({ sessionIds }) => {
         // The disk reader folds durable logs straight off ~/.dsh — no dsh
         // child process is started, so scanning never touches a live agent.
+        // Transcripts are read one session at a time, each size-bounded; a
+        // session that cannot be imported comes back with `importError`.
         const sessions = sessionIds
-            ? readDshSessionTranscriptsByIds(sessionIds)
-            : listDshSessionSummaries().summaries
+            ? await readDshSessionTranscriptsByIds(sessionIds)
+            : listDshSessionSummaries()
         return sessions.map((session) => toItem(session)) as Array<LocalTranscriptSummary | LocalTranscript>
     }
 }

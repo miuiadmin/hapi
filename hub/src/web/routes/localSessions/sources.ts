@@ -74,6 +74,9 @@ export type HubLocalSessionSource = {
     localIdPrefix?: string
     /** Per-request import cap enforced by the route (400 above it). */
     importLimit?: number
+    /** Fetch transcripts one session per RPC. Every transcript otherwise
+     * travels in a single runner answer capped at one 48MB socket frame. */
+    chunkedTranscriptFetch?: boolean
     /**
      * Fallback for runners that do not advertise `local-session-import`:
      * fetch via the flavor's legacy RPC and convert raw rows to transcripts.
@@ -276,5 +279,9 @@ export const DSH_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     lifecycleOnCreate: 'archived',
     batch: 'continue',
     importLimit: 200,
+    // DSH transcripts fold whole tool-heavy logs (tens of thousands of rows
+    // for a long session); one RPC per session keeps a multi-select batch
+    // under the transport's frame limit.
+    chunkedTranscriptFetch: true,
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport
 }

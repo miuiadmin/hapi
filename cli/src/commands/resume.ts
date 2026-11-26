@@ -265,7 +265,10 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as DshPermissionMode | undefined,
-            model: target.model ?? undefined
+            model: target.model ?? undefined,
+            // Seed the stored reasoning effort like the web reopen path does
+            // (the launcher adopts the agent's live level when none is stored).
+            modelReasoningEffort: target.modelReasoningEffort ?? undefined
         })
         return
     }

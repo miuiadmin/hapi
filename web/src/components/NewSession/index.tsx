@@ -274,6 +274,8 @@ export function NewSession(props: {
         || isBulkImportingOpencodeSessions
         || isImportingClaudeSession
         || isBulkImportingClaudeSessions
+        || isImportingDshSession
+        || isBulkImportingDshSessions
     )
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
@@ -1453,9 +1455,14 @@ export function NewSession(props: {
     }, [t])
 
     const formatDshImportError = useCallback((code?: string, message?: string): string => {
+        const detail = message?.trim() || ''
+        if (code === 'transcript_diverged') return t('dshSync.error.diverged')
+        // The runner reports these per session, with the size or decode reason.
+        if (code === 'transcript_too_large') return t('dshSync.error.tooLarge', { detail })
+        if (code === 'transcript_unreadable') return t('dshSync.error.unreadable', { detail })
         if (code === 'already_in_hapi') return t('dshSync.error.alreadyImported')
         if (code === 'session_active') return t('dshSync.error.active')
-        return message?.trim() || t('dshSync.failed.body')
+        return detail || t('dshSync.failed.body')
     }, [t])
 
     const normalizeCodexScriptError = useCallback((message: string | null | undefined, fallback: string): string => {
@@ -2256,7 +2263,10 @@ export function NewSession(props: {
                     cwd: selectedDshImportSession.cwd ?? trimmedDirectory,
                     machineId: dshImport.machineId ?? machineId,
                     model: resolvedModel ?? null,
-                    modelReasoningEffort: resolvedModelReasoningEffort ?? null,
+                    // Only name the effort when one was picked: the key's
+                    // presence (even as null) would wipe the level the
+                    // transcript carried over from the native session.
+                    ...(resolvedModelReasoningEffort ? { modelReasoningEffort: resolvedModelReasoningEffort } : {}),
                     permissionMode: nativePermissionMode
                 })
                 const imported = result.results.find((item) => item.dshSessionId === selectedDshImportSession.id)
@@ -2373,6 +2383,7 @@ export function NewSession(props: {
             setIsImportingPiSession(false)
             setIsImportingOpencodeSession(false)
             setIsImportingClaudeSession(false)
+            setIsImportingDshSession(false)
             haptic.notification('error')
             setError(apiErrorMessage(e, 'Failed to create session'))
         } finally {
@@ -2777,7 +2788,7 @@ export function NewSession(props: {
             ) : null}
 
             <ActionButtons
-                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession || isImportingClaudeSession}
+                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession || isImportingClaudeSession || isImportingDshSession}
                 canCreate={canCreate}
                 isDisabled={isFormDisabled}
                 createLabel={createLabel}

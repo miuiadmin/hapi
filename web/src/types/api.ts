@@ -394,6 +394,8 @@ export type OpencodeImportSessionsResponse = {
     error?: string
 }
 
+/** One DSH session as the hub LISTS it: display extras are flattened and
+ *  `launch` is stripped (hub createLocalSessionRoutes). */
 export type DshLocalSessionSummary = {
     id: string
     title: string
@@ -401,9 +403,10 @@ export type DshLocalSessionSummary = {
     cwd?: string | null
     file: string
     modifiedAt: number
+    /** Turns the native session ran. */
+    turns?: number | null
+    /** Readable model id (parsed from the opaque picker value). */
     model?: string | null
-    reasoningEffort?: string | null
-    extra?: Record<string, string | number | null>
     hapiSessionId?: string
 }
 

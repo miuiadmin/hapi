@@ -125,6 +125,14 @@ export function useSessionActions(
         await queryClient.invalidateQueries({ queryKey: ['machine-cursor-models'] })
     }
 
+    // dsh's session catalog carries live state: its effort options describe
+    // the CURRENT model, and a model switch changes them (the hub drops its
+    // cached copy on the switch as well).
+    const invalidateDshModels = async () => {
+        if (!sessionId || agentFlavor !== 'dsh') return
+        await queryClient.invalidateQueries({ queryKey: queryKeys.sessionDshModels(sessionId) })
+    }
+
     const abortMutation = useMutation({
         mutationFn: async () => {
             if (!api || !sessionId) {
@@ -234,6 +242,7 @@ export function useSessionActions(
         onSuccess: async () => {
             await invalidateSession()
             await invalidateCursorModels()
+            await invalidateDshModels()
         },
     })
 

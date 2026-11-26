@@ -46,7 +46,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 | GitHub Copilot | — | ✓ | — | — | — |
 | Kimi | — | ✓ | — | — | — |
 | OpenCode | ✓ | ✓ (reasoning effort) | Probed (OpenCode v2) | — | ✓ |
-| DeepSeek Harness | — | — | — | — | — |
+| DeepSeek Harness | — | ✓ (reasoning effort) | — | — | ✓ |
 | Antigravity | ✓ (ACP sessions) | ✓ | — | — | — |
 | Pi | ✓ | ✓ | Probed | — | ✓ |
 
@@ -394,6 +394,17 @@ export HAPI_DSH_ACP_COMMAND=pnpm
 export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "demo:acp"]'
 hapi dsh
 ```
+
+Reasoning effort is switched through DSH's `reasoning_effort` ACP config option.
+The levels come from the model catalog (`GET /api/sessions/:id/dsh-models` →
+`effortOptions`, per model in the machine catalog as `reasoningEfforts`): `off`,
+`low`, `high` and `max` on the stock DeepSeek adapter, which always declares a default
+effort, so there is no "Default" level to pick. A session that was never given a
+level shows the one DSH actually runs with, and the level is re-asserted after a
+model switch (DSH itself resets it to the new model's default).
+
+Existing DSH sessions can be imported from `~/.dsh/sessions/` (see
+[Import local sessions](./import-local-sessions.md)).
 
 DSH sessions are remote-only. HAPI resumes DSH sessions through their native
 ACP session ids (`session/resume`); sessions without a native id report resume
