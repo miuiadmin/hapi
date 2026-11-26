@@ -1,4 +1,10 @@
-import type { AttachedJob } from '@hapi/protocol'
+import type {
+    AttachedJob,
+    CreateSessionTaskRequest,
+    SessionTaskListResponse,
+    SessionTaskResponse,
+    UpdateSessionTaskRequest
+} from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import { MESSAGES_PAGE_MAX } from '@hapi/protocol/apiTypes'
 import {
@@ -1033,6 +1039,43 @@ export class ApiClient {
                 method: 'POST',
                 body: JSON.stringify({ localIds })
             }
+        )
+    }
+
+    async listSessionTasks(sessionId: string): Promise<SessionTaskListResponse> {
+        return await this.request<SessionTaskListResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks`
+        )
+    }
+
+    async createSessionTask(sessionId: string, request: CreateSessionTaskRequest): Promise<SessionTaskResponse> {
+        return await this.request<SessionTaskResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
+            {
+                method: 'POST',
+                body: JSON.stringify(request)
+            }
+        )
+    }
+
+    async updateSessionTask(
+        sessionId: string,
+        taskId: string,
+        request: UpdateSessionTaskRequest
+    ): Promise<SessionTaskResponse> {
+        return await this.request<SessionTaskResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
+            {
+                method: 'PATCH',
+                body: JSON.stringify(request)
+            }
+        )
+    }
+
+    async deleteSessionTask(sessionId: string, taskId: string): Promise<void> {
+        await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
+            { method: 'DELETE' }
         )
     }
 
