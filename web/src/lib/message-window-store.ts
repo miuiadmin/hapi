@@ -1714,7 +1714,6 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                     preferLatestOnActivation: false
                 })
             })
-            noteAuthoritativeSync(sessionId)
             finishTailSync(sessionId, generation, null)
             return
         }
