@@ -1720,6 +1720,43 @@ describe('clearSessionNameLocks', () => {
     })
 })
 
+describe('updateSessionMetadata: explicit custom-name clear (deliver-now lineage)', () => {
+    it('drops name/nameLocked and unlocks when the metadata arrives without a name', () => {
+        const store = makeStore()
+        const created = store.sessions.getOrCreateSession(
+            'clear-custom-name',
+            { path: '/tmp/a', host: 'h', name: '我的绘画', nameLocked: true, titleLocked: true },
+            null,
+            'default'
+        )
+
+        // sessionCache.renameSession(null) builds exactly this shape: the
+        // name/nameLocked keys stripped, titleLocked=false forced, and
+        // preserveNameLock:false passed so the store ratchet does not re-pin.
+        const row = store.sessions.getSession(created.id)!
+        const cleared = { ...(row.metadata as Record<string, unknown>) }
+        delete cleared.name
+        delete cleared.nameLocked
+        cleared.titleLocked = false
+        const result = store.sessions.updateSessionMetadata(
+            created.id,
+            cleared,
+            row.metadataVersion,
+            'default',
+            { touchUpdatedAt: false, allowTitleUpdate: true, titleLocked: false, preserveNameLock: false }
+        )
+
+        expect(result.result).toBe('success')
+        const meta = getMetadata(store, created.id) as Record<string, unknown>
+        expect(meta).not.toHaveProperty('name')
+        expect(meta).not.toHaveProperty('nameLocked')
+        // The store encodes "unlocked" as key-absence (never titleLocked:false).
+        expect(meta).not.toHaveProperty('titleLocked')
+
+        store.close()
+    })
+})
+
 describe('updateSessionMetadata: nameLocked preservation', () => {
     it('re-pins nameLocked when a full snapshot from a sanitized view drops it', () => {
         const store = makeStore()

@@ -506,7 +506,9 @@ export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequest
 export const SESSION_NAME_MAX_LENGTH = 255
 
 export const RenameSessionRequestSchema = z.object({
-    name: z.string().min(1).max(SESSION_NAME_MAX_LENGTH).optional(),
+    // string = set a custom name; null = clear the custom name and return the
+    // session to its agent-generated title; undefined = leave the name alone.
+    name: z.string().min(1).max(SESSION_NAME_MAX_LENGTH).nullable().optional(),
     titleLocked: z.boolean().optional()
 }).refine(value => value.name !== undefined || value.titleLocked !== undefined, {
     message: 'name or titleLocked is required'
