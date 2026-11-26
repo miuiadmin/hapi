@@ -36,6 +36,7 @@ export type {
     HermesModelsResponse,
     AcpCatalogModelSummary,
     DshModelSummary,
+    DshReasoningEffortOption,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,

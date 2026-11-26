@@ -34,12 +34,20 @@ describe('agent config descriptors', () => {
 
     test('exposes DSH permission as a regular picker field (ACP bridge honors it)', () => {
         const descriptor = getAgentConfigDescriptor('dsh')
-        expect(descriptor.fields).toEqual([expect.objectContaining({
-            id: 'permission',
-            kind: 'select',
-            optionSource: 'static',
-            availability: 'both'
-        })])
+        expect(descriptor.fields).toEqual([
+            expect.objectContaining({
+                id: 'effort',
+                kind: 'select',
+                optionSource: 'model',
+                availability: 'both'
+            }),
+            expect.objectContaining({
+                id: 'permission',
+                kind: 'select',
+                optionSource: 'static',
+                availability: 'both'
+            })
+        ])
         expect(resolveHapiYoloPermissionMode('dsh')).toBe('yolo')
     })
 

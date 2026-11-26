@@ -12,9 +12,13 @@ export function parseDshCommandOptions(commandArgs: string[]) {
     // spawn-time DSH_PERMISSION_MODE sandbox preset).
 
     const options = parseRemoteAgentCommandOptions(commandArgs, DSH_PERMISSION_MODES, ['remote'])
-    if (options.effort || options.modelReasoningEffort) {
-        throw new Error('DeepSeek Harness effort is configured by the ACP server')
+    if (options.effort) {
+        throw new Error('DeepSeek Harness launch-effort is not supported; use --model-reasoning-effort')
     }
+    // --model-reasoning-effort is accepted: it seeds the reasoning-effort
+    // preference (off/low/high/max) applied to the ACP session through
+    // `session/set_config_option` (category thought_level) on the first
+    // turn, and persists via the session metadata like the codex rail.
     // --resume is accepted: its value is the native ACP session id, resumed
     // via session/resume by the launcher (stored ids ride --existing-session-id).
     // --model is accepted: an opaque ACP config-option value forwarded at spawn

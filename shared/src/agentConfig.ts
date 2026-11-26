@@ -70,7 +70,16 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
         { id: 'serviceTier', section: 'settings', kind: 'select', optionSource: 'model', availability: 'both' },
         { id: 'collaborationMode', section: 'settings', kind: 'select', optionSource: 'static', availability: 'both' }
     ),
-    dsh: fields(PERMISSION),
+    // DSH rides the codex-style reasoning-effort rail (`reasoning_effort`
+    // ACP config option, category thought_level; options are model-dependent
+    // and arrive through the DSH model catalogs — ListDshModels /
+    // ListDshModelsForMachine). Permission-only was pinned before the rail
+    // was wired end to end; the launcher already applies effort via
+    // session/set_config_option.
+    dsh: fields(
+        { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
+        PERMISSION
+    ),
     hermes: fields(PERMISSION),
     berry: fields(PERMISSION),
     // ZCode's model rail is the dsh pattern (config-options surfaced through

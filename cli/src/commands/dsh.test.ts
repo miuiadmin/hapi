@@ -12,9 +12,13 @@ describe('parseDshCommandOptions', () => {
         })
     })
 
-    it('rejects effort unsupported by DSH ACP, accepts native resume', async () => {
+    it('rejects launch-effort, accepts reasoning effort and native resume', async () => {
         expect(() => parseDshCommandOptions(['--effort', 'high']))
-            .toThrow('configured by the ACP server')
+            .toThrow('launch-effort is not supported')
+        // --model-reasoning-effort seeds the reasoning-effort preference
+        // (off/low/high/max) applied via session/set_config_option.
+        expect(parseDshCommandOptions(['--model-reasoning-effort', 'high']))
+            .toEqual({ modelReasoningEffort: 'high', startingMode: 'remote' as const })
         // --resume carries the native ACP session id (runner-emitted on reopen).
         expect(parseDshCommandOptions(['--resume', 'acp-session-1']))
             .toEqual({ resumeSessionId: 'acp-session-1', startingMode: 'remote' as const })

@@ -1378,12 +1378,19 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, dshModelsState.availableModels])
-    // dsh advertises a fixed thought_level set (off/low/high/max + '' =
-    // Provider default) through its `reasoning_effort` config option; the
-    // composer maps the empty value onto its null "Default" entry.
+    // dsh advertises its `reasoning_effort` config option (category
+    // thought_level) through the session catalog: prefer the live options —
+    // they honor thinking=disabled setups (off-only) and future providers —
+    // and fall back to the static off/low/high/max presets while discovery
+    // is pending or failed. The composer maps the empty value onto its null
+    // "Default" entry.
     const dshReasoningEffortOptions = useMemo(
-        () => agentFlavor === 'dsh' ? getDshReasoningEffortSourceOptions() : undefined,
-        [agentFlavor]
+        () => agentFlavor === 'dsh'
+            ? (dshModelsState.effortOptions?.length
+                ? dshModelsState.effortOptions.map((option) => ({ value: option.value, name: option.name }))
+                : getDshReasoningEffortSourceOptions())
+            : undefined,
+        [agentFlavor, dshModelsState.effortOptions]
     )
     // hermes advertises the same option with the fuller fixed set
     // (none/minimal/low/medium/high/xhigh/max/ultra + 'default' = Provider
