@@ -394,6 +394,45 @@ export type OpencodeImportSessionsResponse = {
     error?: string
 }
 
+export type DshLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    model?: string | null
+    reasoningEffort?: string | null
+    extra?: Record<string, string | number | null>
+    hapiSessionId?: string
+}
+
+export type DshLocalSessionsResponse = {
+    success: true
+    sessions: DshLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type DshImportResult = {
+    dshSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type DshImportSessionsResponse = {
+    success: boolean
+    results: DshImportResult[]
+    machineId?: string
+    error?: string
+}
+
 
 export type CodexArchiveSessionResponse = {
     success: true

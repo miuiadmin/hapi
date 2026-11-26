@@ -5,6 +5,8 @@ import {
     CodexLocalSessionWithMessagesSchema,
     type ClaudeLocalSessionSummary,
     type ClaudeLocalSessionWithMessages,
+    type DshLocalSessionSummary,
+    type DshLocalSessionWithMessages,
     type OpencodeLocalSessionSummary,
     type OpencodeLocalSessionWithMessages,
     type PiLocalSessionSummary,
@@ -21,7 +23,7 @@ import {
  * the same result.
  */
 
-export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude'] as const
+export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude', 'dsh'] as const
 
 export type LocalSessionFlavor = typeof LOCAL_SESSION_FLAVORS[number]
 
@@ -256,6 +258,34 @@ export function opencodeToTranscriptSummary(session: OpencodeLocalSessionSummary
 export function opencodeToTranscript(session: OpencodeLocalSessionWithMessages): LocalTranscript {
     return {
         ...opencodeToTranscriptSummary(session),
+        messages: session.messages.map((message) => ({
+            id: message.localId,
+            createdAt: message.createdAt,
+            content: message.content
+        }))
+    }
+}
+
+// -- DSH ---------------------------------------------------------------------
+
+export function dshToTranscriptSummary(session: DshLocalSessionSummary): LocalTranscriptSummary {
+    return transcriptSummaryBase({
+        flavor: 'dsh',
+        id: session.id,
+        title: session.title,
+        lastUserMessage: session.lastUserMessage ?? null,
+        cwd: session.cwd ?? null,
+        file: session.file,
+        modifiedAt: session.modifiedAt,
+        // Only a real value becomes a launch hint, like OpenCode's v2 model.
+        ...(session.model ? { launch: { model: session.model, effort: session.reasoningEffort ?? null } } : {}),
+        ...(session.extra ? { extra: session.extra } : {})
+    })
+}
+
+export function dshToTranscript(session: DshLocalSessionWithMessages): LocalTranscript {
+    return {
+        ...dshToTranscriptSummary(session),
         messages: session.messages.map((message) => ({
             id: message.localId,
             createdAt: message.createdAt,

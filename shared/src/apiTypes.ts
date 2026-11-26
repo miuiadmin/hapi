@@ -1452,6 +1452,49 @@ export type DshModelsResponse = {
 }
 export type ListDshModelsResponse = DshModelsResponse
 
+/**
+ * One importable DSH session as read from its durable on-disk log
+ * (`~/.dsh/sessions/<projectKey>/<id>/session.v4.jsonl.zstd` first frame)
+ * plus the projection cache (`storages/session_projcache/sessions/<id>.json`).
+ * ACP session/list only exposes {sessionId, cwd} — the disk side is where
+ * title/timestamps/tokens/turns live.
+ */
+export const DshLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    /** Opaque ACP model value (`JSON.stringify([provider, model])`) the
+     * session last ran with; a launch hint like OpenCode's v2 model. */
+    model: z.string().nullable().optional(),
+    /** Reasoning-effort id of the last selection ('' = provider default). */
+    reasoningEffort: z.string().nullable().optional(),
+    /** Display extras (turns / token totals / permission preset / resumable),
+     * flattened into list responses unchanged. */
+    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional()
+})
+
+export type DshLocalSessionSummary = z.infer<typeof DshLocalSessionSummarySchema>
+
+/** DSH folded transcript rows reuse the Codex imported-message union: user
+ * text plus agent payloads in the CodexMessage shapes the web renders for
+ * every flavor (message / reasoning / tool-call / tool-call-result / error). */
+export const DshImportedMessageContentSchema = CodexImportedMessageSchema
+
+export const DshImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    createdAt: z.number(),
+    content: DshImportedMessageContentSchema
+})
+
+export const DshLocalSessionWithMessagesSchema = DshLocalSessionSummarySchema.extend({
+    messages: z.array(DshImportedMessageSchema)
+})
+
+export type DshLocalSessionWithMessages = z.infer<typeof DshLocalSessionWithMessagesSchema>
+
 /** Hermes/Berry model discovery entry (opaque ACP config-option values). */
 export type AcpCatalogModelSummary = {
     modelId: string
