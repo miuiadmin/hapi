@@ -53,7 +53,6 @@ function dshTranscript(id = 'dsh-native-1', turns = 1): LocalTranscript {
         file: `/home/u/.dsh/sessions/--workspace-b--/${id}/session.v4.jsonl.zstd`,
         modifiedAt: 1,
         model: '["deepseek-official","glm-5.4"]',
-        reasoningEffort: 'max',
         extra: { turns, model: 'glm-5.4' },
         messages: [
             { localId: `dsh:${id}:2`, createdAt: 1_000, content: user('帮我修一下登录页') },
@@ -155,10 +154,11 @@ describe('DSH through the generic import route', () => {
         expect(session.metadata).toMatchObject({ flavor: 'dsh', machineId: 'm-1', dshSessionId: 'dsh-native-1' })
         // The row path is the log's header cwd, which is what dsh session/resume compares.
         expect((session.metadata as { path?: string }).path).toBe('/workspace/b')
-        // The reasoning effort lands on the axis dsh reads, not the Claude one.
-        expect(session.modelReasoningEffort).toBe('max')
-        expect(session.effort).toBeNull()
         expect(session.model).toBe('["deepseek-official","glm-5.4"]')
+        // No effort is guessed from disk: the session adopts the level the
+        // agent runs with when it starts.
+        expect(session.modelReasoningEffort).toBeNull()
+        expect(session.effort).toBeNull()
 
         const rows = store.messages.getAllMessages(session.id)
         expect(rows.map((row) => row.localId)).toEqual([
@@ -178,13 +178,13 @@ describe('DSH through the generic import route', () => {
         expect(store.messages.getAllMessages(session.id)).toHaveLength(7)
     })
 
-    it('keeps the transcript effort hint when the request names no effort, and lets an explicit one win', async () => {
+    it('applies an effort picked in the form, and sends none when nothing was picked', async () => {
         const { app, store, appliedConfigs } = harness([dshTranscript()])
         stores.push(store)
 
         // The New Session form omits the key when nothing was picked.
         const [implicit] = await importSessions(app, ['dsh-native-1'])
-        expect(store.sessions.getSessionByNamespace(implicit!.hapiSessionId!, 'default')!.modelReasoningEffort).toBe('max')
+        expect(store.sessions.getSessionByNamespace(implicit!.hapiSessionId!, 'default')!.modelReasoningEffort).toBeNull()
         expect(appliedConfigs).toEqual([])
 
         const { app: explicitApp, store: explicitStore, appliedConfigs: explicitConfigs } = harness([dshTranscript()])
@@ -194,16 +194,20 @@ describe('DSH through the generic import route', () => {
         expect(explicitConfigs.at(-1)).toMatchObject({ modelReasoningEffort: 'low' })
     })
 
+    // What the runner answers for a session it listed but cannot hand over:
+    // the session's summary carrying the reason (a real 83MB log, read on a
+    // live install).
+    const tooLarge: LocalTranscriptSummary = {
+        flavor: 'dsh',
+        id: 'dsh-huge',
+        title: '巨大的会话',
+        cwd: '/workspace/b',
+        file: '/home/u/.dsh/sessions/x/dsh-huge/session.v4.jsonl.zstd',
+        modifiedAt: 2,
+        importError: { code: 'transcript_too_large', message: 'DSH session is too large to import (83.4MB compressed log).' }
+    }
+
     it('reports a session the runner cannot hand over, without failing the rest of the batch', async () => {
-        const tooLarge: LocalTranscriptSummary = {
-            flavor: 'dsh',
-            id: 'dsh-huge',
-            title: '巨大的会话',
-            cwd: '/workspace/b',
-            file: '/home/u/.dsh/sessions/x/dsh-huge/session.v4.jsonl.zstd',
-            modifiedAt: 2,
-            importError: { code: 'transcript_too_large', message: 'DSH session is too large to import (83.4MB compressed log).' }
-        }
         const { app, store } = harness([tooLarge, dshTranscript()])
         stores.push(store)
 
@@ -212,6 +216,21 @@ describe('DSH through the generic import route', () => {
             dshSessionId: 'dsh-huge',
             error: { code: 'transcript_too_large', message: 'DSH session is too large to import (83.4MB compressed log).' }
         })
+        expect(results[0]!.hapiSessionId).toBeUndefined()
+        expect(results[1]).toMatchObject({ dshSessionId: 'dsh-native-1', action: 'created' })
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+    })
+
+    it('never files a rejection that still carries an empty messages array as an empty transcript', async () => {
+        // The first cut of the reader answered with `{ ...summary, messages: [],
+        // importError }`; keyed on the presence of `messages`, the route filed
+        // it as a created session with no rows and no error.
+        const inlineRejection = { ...tooLarge, messages: [] } as unknown as LocalTranscript
+        const { app, store } = harness([inlineRejection, dshTranscript()])
+        stores.push(store)
+
+        const results = await importSessions(app, ['dsh-huge', 'dsh-native-1'])
+        expect(results[0]).toMatchObject({ dshSessionId: 'dsh-huge', error: { code: 'transcript_too_large' } })
         expect(results[0]!.hapiSessionId).toBeUndefined()
         expect(results[1]).toMatchObject({ dshSessionId: 'dsh-native-1', action: 'created' })
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)

@@ -1,27 +1,30 @@
 import { afterAll, describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     decodeZstdFrames,
     decodeZstdFramesTolerant,
+    firstZstdFrameLength,
     listDshSessionSummaries,
-    readDshSessionTranscriptById
+    readDshSessionTranscriptsByIds
 } from './dshSessionLog'
 
 /**
  * Production-runtime spec for the DSH log reader.
  *
  * The cli suite runs on vitest/Node, which exercises the node:zlib frame walk
- * (`decodeZstdFrames` fallback). The shipped runner is a Bun binary, so the
- * Bun one-shot decode — and its torn-tail fallback, which Bun needs because it
- * rejects the whole file for one torn frame — is only covered here:
+ * (`decodeFramesByLength`). The shipped runner is a Bun binary, so the Bun
+ * one-shot decode — and its torn-tail fallback, which Bun needs because it
+ * rejects the whole file for one torn frame — is covered here, on Bun:
  *
  *     cd cli && bun test ./src/dsh/utils/dshSessionLog.bun-spec.ts
  *
- * (vitest only includes `*.test.ts`, so this file never runs under Node; the
- * `./` prefix makes bun treat the path as a file rather than a filter, since
- * the name deliberately avoids `.spec.ts`/`.test.ts` discovery patterns.)
+ * `dshSessionLog.test.ts` runs this file in a Bun subprocess so CI covers it
+ * with the rest of the suite. The name avoids `.test.ts` on purpose: vitest
+ * must not pick it up (it imports `bun:test`), and the `./` prefix makes
+ * `bun test` treat the path as a file rather than a filter.
  */
 
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
@@ -36,13 +39,15 @@ const event = (type: string, seq: number, data?: unknown) => ({ type, seq, time:
 const header = (id: string) => ({ type: 'session', version: 4, id, createdAt: T0, cwd: '/tmp/proj', isSeeded: false, delegationDepth: 0 })
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-log-bun-spec-'))
-const env = { HAPI_DSH_HOME: home }
+const env = { DSH_HOME: home }
 
-function write(id: string, frames: Buffer[]): string {
+/** Write one session log. The list is ordered by mtime, so it is pinned. */
+function write(id: string, frames: Buffer[], modifiedAt = T0): string {
     const dir = join(home, 'sessions', '--tmp-proj--', id)
     mkdirSync(dir, { recursive: true })
     const path = join(dir, 'session.v4.jsonl.zstd')
     writeFileSync(path, Buffer.concat(frames))
+    utimesSync(path, new Date(modifiedAt), new Date(modifiedAt))
     const cacheDir = join(home, 'storages', 'session_projcache', 'sessions')
     mkdirSync(cacheDir, { recursive: true })
     writeFileSync(join(cacheDir, `${id}.json`), JSON.stringify({
@@ -94,6 +99,7 @@ describe('dshSessionLog on the Bun runtime', () => {
     })
 
     it('lists the session and folds its transcript with unique prefixed ids', async () => {
+        // Newer than `sess-magic`: the list is ordered by mtime.
         write('sess-a', [
             batch([header('sess-a')]),
             batch([
@@ -101,11 +107,19 @@ describe('dshSessionLog on the Bun runtime', () => {
                 event('assistant/message', 2, { message: { id: 'm', content: [{ type: 'reasoning', text: 'think' }, { type: 'text', text: 'hi' }] } }),
                 event('turn/end', 3, { turn: 1, reason: { kind: 'completed' } })
             ])
-        ])
+        ], T0 + 60_000)
         expect(listDshSessionSummaries(env, home).map((session) => session.id)).toEqual(['sess-a', 'sess-magic'])
-        const transcript = await readDshSessionTranscriptById('sess-a', env, home)
-        expect(transcript?.messages.map((message) => message.localId)).toEqual([
+        const [item] = await readDshSessionTranscriptsByIds(['sess-a'], env, home)
+        expect(item && 'messages' in item ? item.messages.map((message) => message.localId) : null).toEqual([
             'dsh:sess-a:1', 'dsh:sess-a:2', 'dsh:sess-a:2:1'
         ])
+    })
+
+    it('measures the frames Bun writes by length, one block or several', () => {
+        // Incompressible input over the 128KB block size: several blocks.
+        const severalBlocks = Bun.zstdCompressSync(randomBytes(300_000))
+        for (const frame of [batch([{ a: 1 }]), severalBlocks]) {
+            expect(firstZstdFrameLength(frame)).toBe(frame.length)
+        }
     })
 })

@@ -1469,8 +1469,6 @@ export const DshLocalSessionSummarySchema = z.object({
     /** Opaque ACP model value (`JSON.stringify([provider, model])`) the
      * session last ran with; a launch hint like OpenCode's v2 model. */
     model: z.string().nullable().optional(),
-    /** Reasoning-effort id of the last selection. */
-    reasoningEffort: z.string().nullable().optional(),
     /** Display extras (turns, readable model id), flattened into list
      * responses unchanged. */
     extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),

@@ -2263,9 +2263,9 @@ export function NewSession(props: {
                     cwd: selectedDshImportSession.cwd ?? trimmedDirectory,
                     machineId: dshImport.machineId ?? machineId,
                     model: resolvedModel ?? null,
-                    // Only name the effort when one was picked: the key's
-                    // presence (even as null) would wipe the level the
-                    // transcript carried over from the native session.
+                    // Only name the effort when one was picked: an unset
+                    // level must stay unset (the session adopts the level
+                    // the agent runs with when it starts).
                     ...(resolvedModelReasoningEffort ? { modelReasoningEffort: resolvedModelReasoningEffort } : {}),
                     permissionMode: nativePermissionMode
                 })

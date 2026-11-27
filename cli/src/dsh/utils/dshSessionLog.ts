@@ -1,6 +1,6 @@
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { DshLocalSessionSummary, DshLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
@@ -17,8 +17,8 @@ import type { DshLocalSessionSummary, DshLocalSessionWithMessages } from '@hapi/
  * hidden, createdAt computed then dropped), so the import list is built
  * straight from disk:
  *
- * - summaries: an 8KB header read (node:zlib's zstdDecompressSync decodes
- *   only the FIRST frame — exactly the header) plus the projection cache;
+ * - summaries: an 8KB read of the log's first frame (the header row, cut by
+ *   length and decoded on its own) plus the projection cache;
  * - transcripts: a full decode folded into the CodexMessage payload shapes
  *   the web already renders for live DSH sessions.
  *
@@ -29,9 +29,10 @@ import type { DshLocalSessionSummary, DshLocalSessionWithMessages } from '@hapi/
  * reasoning/text blocks on one seq).
  */
 
-/** Env override for custom DSH_HOME layouts (mirrors HAPI_DSH_PROFILE_DIR). */
+/** DSH resolves its home from `$DSH_HOME`, then `~/.dsh` (same rule as the
+ * skill roots in modules/common/skills.ts). */
 export function resolveDshHome(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
-    const override = env.HAPI_DSH_HOME?.trim()
+    const override = env.DSH_HOME?.trim()
     if (override) return override
     return join(home, '.dsh')
 }
@@ -100,38 +101,78 @@ function truncatePreview(text: string): string {
 // zstd decoding
 // ---------------------------------------------------------------------------
 
-const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+const ZSTD_MAGIC = 0xfd2fb528
 
 function isBunRuntime(): boolean {
     return typeof Bun !== 'undefined' && typeof Bun.zstdDecompressSync === 'function'
 }
 
 /**
- * Decode one multi-frame zstd buffer into text.
+ * Byte length of the zstd frame that starts at `raw[0]` (RFC 8878), or null
+ * when the buffer is too short for the frame's headers or does not start with
+ * a frame this reader can walk. The length may exceed the buffer: the frame
+ * is then truncated.
+ *
+ * Frames are cut by length rather than left to a decoder together with
+ * whatever follows them: what a decoder makes of a torn frame behind a
+ * complete one differs between runtimes (node:zlib returns the first frame on
+ * one Node version and throws on another), and a magic byte sequence inside a
+ * compressed payload would fool a byte scan.
+ */
+export function firstZstdFrameLength(raw: Buffer): number | null {
+    if (raw.length < 5 || raw.readUInt32LE(0) !== ZSTD_MAGIC) return null
+    const descriptor = raw[4]!
+    if ((descriptor & 0x08) !== 0) return null // reserved bit: not a conformant frame
+    const singleSegment = (descriptor & 0x20) !== 0
+    const contentSizeFlag = descriptor >> 6
+    const dictionaryIdFlag = descriptor & 0x03
+    const contentSizeBytes = contentSizeFlag === 0 ? (singleSegment ? 1 : 0)
+        : contentSizeFlag === 1 ? 2
+        : contentSizeFlag === 2 ? 4
+        : 8
+    const dictionaryIdBytes = dictionaryIdFlag === 0 ? 0 : dictionaryIdFlag === 1 ? 1 : dictionaryIdFlag === 2 ? 2 : 4
+    let at = 5 + (singleSegment ? 0 : 1) + dictionaryIdBytes + contentSizeBytes
+    for (;;) {
+        // Block header: last-block flag, block type, then a 21-bit size. A
+        // run-length block stores one byte whatever its size says.
+        if (at + 3 > raw.length) return null
+        const blockHeader = raw[at]! | (raw[at + 1]! << 8) | (raw[at + 2]! << 16)
+        const lastBlock = (blockHeader & 1) === 1
+        const blockType = (blockHeader >> 1) & 0x03
+        if (blockType === 3) return null // reserved
+        at += 3 + (blockType === 1 ? 1 : blockHeader >> 3)
+        if (lastBlock) break
+    }
+    return at + ((descriptor & 0x04) !== 0 ? 4 : 0)
+}
+
+/** Decode the frames of `raw` one by one on node:zlib, each cut by length.
+ * Stops before the first frame that is not wholly present. */
+function decodeFramesByLength(raw: Buffer): { parts: Buffer[]; decodedBytes: number } {
+    const parts: Buffer[] = []
+    let offset = 0
+    while (offset < raw.length) {
+        const length = firstZstdFrameLength(raw.subarray(offset))
+        if (length === null || length > raw.length - offset) break
+        parts.push(zstdDecompressSync(raw.subarray(offset, offset + length)))
+        offset += length
+    }
+    return { parts, decodedBytes: offset }
+}
+
+/**
+ * Decode one multi-frame zstd buffer.
  *
  * Bun (the shipped runtime) decodes every frame in one call. node:zlib — what
- * vitest runs on — decodes only the first frame per call, so there the buffer
- * is walked frame by frame: `zstdDecompressSync(buf, { info: true })` reports
- * how many input bytes the frame consumed through `engine.bytesWritten`,
- * which is an exact boundary (a magic byte sequence inside a compressed
- * payload would fool a byte scan).
+ * vitest runs on — is given one frame per call instead, and a frame that is
+ * not wholly present (a torn tail) is an error.
  */
 export function decodeZstdFrames(raw: Buffer): Buffer {
     if (isBunRuntime()) {
         return Bun.zstdDecompressSync(raw)
     }
-    const parts: Buffer[] = []
-    let offset = 0
-    while (offset < raw.length) {
-        const slice = raw.subarray(offset)
-        const result = zstdDecompressSync(slice, { info: true }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } }
-        parts.push(result.buffer)
-        const consumed = result.engine.bytesWritten
-        // A zero-length step would spin forever; a frame that consumed
-        // nothing means the input is not a frame start anymore.
-        if (consumed <= 0) throw new Error('zstd frame consumed no input')
-        offset += consumed
-    }
+    const { parts, decodedBytes } = decodeFramesByLength(raw)
+    if (decodedBytes !== raw.length) throw new Error('zstd frame is truncated or not a frame start')
     return parts.length === 1 ? parts[0]! : Buffer.concat(parts)
 }
 
@@ -139,27 +180,15 @@ export function decodeZstdFrames(raw: Buffer): Buffer {
  * Decode a log to text, tolerating a torn TAIL frame. DSH appends one frame
  * per batch with a single write + fsync and repairs a torn tail before its
  * next append (`truncateTornTail`); a reader that races a crash can still see
- * one. Bun's one-shot decoder rejects the whole file for it, so on failure the
- * last frame boundaries (newest first) are tried as cut points and the torn
- * tail is dropped.
+ * one. The complete frames are kept and the torn tail dropped.
  */
 export function decodeZstdFramesTolerant(raw: Buffer): Buffer {
     try {
         return decodeZstdFrames(raw)
     } catch (error) {
-        const cutPoints: number[] = []
-        for (let at = raw.lastIndexOf(ZSTD_MAGIC); at > 0; at = raw.lastIndexOf(ZSTD_MAGIC, at - 1)) {
-            cutPoints.push(at)
-            if (cutPoints.length >= 8) break
-        }
-        for (const cut of cutPoints) {
-            try {
-                return decodeZstdFrames(raw.subarray(0, cut))
-            } catch {
-                // try the previous boundary
-            }
-        }
-        throw error
+        const { parts } = decodeFramesByLength(raw)
+        if (parts.length === 0) throw error
+        return parts.length === 1 ? parts[0]! : Buffer.concat(parts)
     }
 }
 
@@ -167,8 +196,10 @@ export function decodeZstdFramesTolerant(raw: Buffer): Buffer {
 // Summaries
 // ---------------------------------------------------------------------------
 
-/** Read the log's first frame (the header row). The header frame is tiny;
- * the read grows to `HEADER_READ_MAX_BYTES` only if its newline is missing. */
+/** Read the log's first frame (the header row). It is tiny (~230 bytes
+ * compressed on real logs), so 8KB are read and exactly that one frame is
+ * decoded: whatever follows it in the window, complete or torn, never reaches
+ * the decoder. The read only grows when the header frame itself is larger. */
 function readSessionHeader(path: string, compressed: boolean): DshSessionHeader | null {
     let handle: number | null = null
     try {
@@ -180,12 +211,24 @@ function readSessionHeader(path: string, compressed: boolean): DshSessionHeader 
             const read = readSync(handle, buffer, 0, readBytes, 0)
             if (read <= 0) return null
             const slice = buffer.subarray(0, read)
-            // Only the first frame decodes here; a torn second frame in the
-            // slice is ignored, a torn FIRST frame yields partial text that
-            // fails the JSON parse below (the session is skipped).
-            const text = (compressed ? zstdDecompressSync(slice) : slice).toString('utf8')
+            let frame: Buffer = slice
+            if (compressed) {
+                const frameLength = firstZstdFrameLength(slice)
+                if (frameLength === null) return null
+                if (frameLength > read) {
+                    if (read < size && readBytes < HEADER_READ_MAX_BYTES) {
+                        readBytes = Math.min(HEADER_READ_MAX_BYTES, size)
+                        continue
+                    }
+                    // The header frame itself is torn: nothing to list.
+                    return null
+                }
+                frame = slice.subarray(0, frameLength)
+            }
+            const text = (compressed ? zstdDecompressSync(frame) : frame).toString('utf8')
             const newline = text.indexOf('\n')
-            if (newline < 0 && read < size && readBytes < HEADER_READ_MAX_BYTES) {
+            // A plain log carries more than the header line in the window.
+            if (!compressed && newline < 0 && read < size && readBytes < HEADER_READ_MAX_BYTES) {
                 readBytes = Math.min(HEADER_READ_MAX_BYTES, size)
                 continue
             }
@@ -237,9 +280,8 @@ function launchModel(cache: DshProjcache | null): { model: string; modelId: stri
  * Excluded: subagent sessions (ACP `session/list` and `session/resume` both
  * refuse `origin === "subagent"`), sessions without an absolute cwd, other
  * log generations, and BLANK sessions — ones that never started a turn. DSH
- * itself marks a session blank until its first `turn/start`; every model-catalog
- * probe leaves such a session behind (`session/close` keeps the log), and
- * they are more than half of a long-lived `~/.dsh`.
+ * itself marks a session blank until its first `turn/start`; such a log
+ * holds no conversation to import.
  */
 export function listDshSessionSummaries(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): DshLocalSessionSummary[] {
     const dshHome = resolveDshHome(env, home)
@@ -282,11 +324,11 @@ export function listDshSessionSummaries(env: NodeJS.ProcessEnv = process.env, ho
             if (!header) continue
             if (header.origin === 'subagent') continue
             const cwd = header.cwd ?? null
-            if (!cwd || !cwd.startsWith('/')) continue
+            if (!cwd || !isAbsolute(cwd)) continue
 
             const cache = readProjcache(join(cacheRoot, `${header.id}.json`))
             const firstPrompt = asString(asRecord(asRecord(rowVal(cache, 'titleInput'))?.first)?.text)
-            const title = asString(rowVal(cache, 'title')) ?? (firstPrompt ? truncatePreview(firstPrompt) : '') ?? ''
+            const title = asString(rowVal(cache, 'title')) ?? (firstPrompt ? truncatePreview(firstPrompt) : '')
             const turnBoundary = asRecord(rowVal(cache, 'turnBoundary'))
             const turns = typeof turnBoundary?.lastTurn === 'number' ? turnBoundary.lastTurn : null
             // Blank = no turn ever started (a blank probe session carries
@@ -596,33 +638,22 @@ async function readTranscript(summary: DshLocalSessionSummary): Promise<DshTrans
 /**
  * Full transcript read for import: one session at a time, each bounded by
  * size, each reported on its own. A session that cannot be imported (too
- * large, unreadable) comes back with `importError` and no messages instead of
- * failing the batch — the hub turns that into a per-session result.
+ * large, unreadable) comes back as its SUMMARY carrying `importError` — no
+ * `messages` key at all, so the hub cannot mistake it for an empty
+ * transcript — instead of failing the batch; the hub turns it into that
+ * session's own result.
  */
 export async function readDshSessionTranscriptsByIds(
     ids: readonly string[],
     env: NodeJS.ProcessEnv = process.env,
     home: string = homedir()
-): Promise<DshLocalSessionWithMessages[]> {
+): Promise<Array<DshLocalSessionWithMessages | DshLocalSessionSummary>> {
     const wanted = new Set(ids)
     const summaries = listDshSessionSummaries(env, home).filter((session) => wanted.has(session.id))
-    const transcripts: DshLocalSessionWithMessages[] = []
+    const items: Array<DshLocalSessionWithMessages | DshLocalSessionSummary> = []
     for (const summary of summaries) {
         const result = await readTranscript(summary)
-        if (result.kind === 'transcript') {
-            transcripts.push(result.transcript)
-        } else {
-            transcripts.push({ ...summary, messages: [], importError: result.error })
-        }
+        items.push(result.kind === 'transcript' ? result.transcript : { ...summary, importError: result.error })
     }
-    return transcripts
-}
-
-export async function readDshSessionTranscriptById(
-    id: string,
-    env: NodeJS.ProcessEnv = process.env,
-    home: string = homedir()
-): Promise<DshLocalSessionWithMessages | null> {
-    const transcripts = await readDshSessionTranscriptsByIds([id], env, home)
-    return transcripts[0] ?? null
+    return items
 }

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { PermissionMode } from '@hapi/protocol/types'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol/modes'
-import { MAX_LOCAL_SESSION_IMPORTS, type LocalTranscript, type LocalTranscriptSummary } from '@hapi/protocol/localTranscript'
+import { MAX_LOCAL_SESSION_IMPORTS, type LocalTranscript } from '@hapi/protocol/localTranscript'
 import type { CodexCollaborationMode } from '@hapi/protocol/types'
 import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 import type { Store, StoredSession } from '../../../store'
@@ -200,14 +200,17 @@ export function createLocalSessionRoutes(options: {
             if (!fetched.success) {
                 return c.json({ success: false, error: fetched.error, results: [], machineId: machine.id }, 503)
             }
-            const transcripts = new Map(fetched.sessions
-                .filter((session): session is LocalTranscript => 'messages' in session)
-                .map((session) => [session.id, session]))
-            // Sessions the runner listed but cannot hand over (too large for
-            // one frame, log unreadable) carry their own reason.
+            // A session the runner listed but cannot hand over (too large for
+            // one frame, log unreadable) carries its own reason. `importError`
+            // decides, not the presence of a `messages` key: a stand-in that
+            // still carries an empty array must never be filed as an empty
+            // transcript.
             const rejections = new Map(fetched.sessions
-                .filter((session): session is LocalTranscriptSummary => !('messages' in session) && session.importError !== undefined)
+                .filter((session) => session.importError !== undefined)
                 .map((session) => [session.id, session.importError!]))
+            const transcripts = new Map(fetched.sessions
+                .filter((session): session is LocalTranscript => 'messages' in session && session.importError === undefined)
+                .map((session) => [session.id, session]))
             const resultIdKey = source.legacy?.resultIdKey ?? `${source.flavor}SessionId`
             const requestMetadata = source.requestMetadata?.(body)
             const results: Array<LocalImportOutcome & Record<string, unknown>> = []

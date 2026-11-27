@@ -21,7 +21,7 @@ Importing copies the native transcript into the hub as a HAPI session on the mac
 All of them go through one import pipeline on the hub, so they behave the same way: same machine selection, same duplicate handling, same limits. Other agents do not support history import.
 
 ::: tip DeepSeek Harness specifics
-DSH's ACP `session/list` carries neither titles nor timestamps, so the runner reads the session logs on disk directly and no DSH process is started to list them. Sessions that never ran a turn (every model-catalog probe leaves one behind) and subagent sessions are not listed. A session whose log is too large for a single transport frame is reported on its own (`transcript_too_large`) while the rest of the batch still imports. Importing needs a runner that ships the DSH reader; there is no legacy fallback path.
+DSH's ACP `session/list` carries neither titles nor timestamps, so the runner reads the session logs on disk directly and no DSH process is started to list them. Sessions that never ran a turn and subagent sessions are not listed. A session whose log is too large to import (over 16 MB compressed) is reported on its own while the rest of the batch still imports. Importing needs a runner that ships the DSH reader; there is no legacy fallback path.
 :::
 
 ## Importing from the web app
@@ -47,7 +47,7 @@ Native history lives on one machine, so the import runs on that machine's runner
 2. Otherwise, the one online machine whose workspace roots contain the requested directory
 3. Otherwise, the first online machine
 
-If no machine is online the import fails with *No online machine available*. Codex, OpenCode and Pi import also work with older runners through their previous per-agent path; Claude import needs a current runner, and an older one reports *Claude runner does not support local history import* — upgrade HAPI on that machine and restart the runner.
+If no machine is online the import fails with *No online machine available*. Codex, OpenCode and Pi import also work with older runners through their previous per-agent path; Claude and DeepSeek Harness import need a current runner that advertises `local-session-import`, and an older one reports that the runner does not support local history import — upgrade HAPI on that machine and restart the runner.
 
 ## Importing again (deduplication)
 
@@ -69,13 +69,13 @@ An import is refused when:
 
 Concurrent imports of the same native session run one after another, so the second sees nothing new.
 
-In the session list, sessions from these four agents are de-duplicated per machine: the same native ID on two different machines shows as two sessions.
+In the session list, sessions from these agents are de-duplicated per machine: the same native ID on two different machines shows as two sessions.
 
 ## Limits
 
 - The picker lists at most the **200** most recent sessions per agent on a machine.
 - One import request accepts at most **200** sessions; more is rejected.
-- For Codex, a batch stops at the first failed session. For Claude, OpenCode and Pi, failures are reported per session and the rest continue.
+- For Codex, a batch stops at the first failed session. For Claude, OpenCode, Pi and DeepSeek Harness, failures are reported per session and the rest continue.
 - Token usage recorded in imported transcripts is not counted in the [token usage dashboard](./usage-and-quotas.md#token-usage-dashboard).
 
 ## Codex: import vs. shared sessions

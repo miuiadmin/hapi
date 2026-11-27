@@ -9,6 +9,7 @@ import type {
 import {
     ListLocalSessionsRpcResponseSchema,
     LocalTranscriptSchema,
+    LocalTranscriptSummarySchema,
     claudeToTranscript,
     codexToTranscript,
     dshToTranscript,
@@ -229,7 +230,6 @@ describe('dshToTranscript', () => {
         file: '/home/u/.dsh/sessions/--workspace-b--/dsh-native-1/session.v4.jsonl.zstd',
         modifiedAt: 1,
         model: '["deepseek-official","glm-5.4"]',
-        reasoningEffort: 'max',
         extra: { turns: 2, model: 'glm-5.4' },
         // the reader's row convention: `<flavor>:<nativeId>:<seq>` (+ block index)
         messages: [
@@ -239,16 +239,17 @@ describe('dshToTranscript', () => {
         ]
     }
 
-    it('maps the reasoning effort onto the Codex-style axis and keeps the readable model searchable', () => {
+    it('turns the last-used model into a launch hint and keeps the readable model searchable', () => {
         const summary = dshToTranscriptSummary(native)
         expect(summary).toMatchObject({
             flavor: 'dsh',
             id: 'dsh-native-1',
-            launch: { model: '["deepseek-official","glm-5.4"]', modelReasoningEffort: 'max' },
+            launch: { model: '["deepseek-official","glm-5.4"]' },
             extra: { turns: 2, model: 'glm-5.4' }
         })
-        // dsh never reads the Claude-style `effort` axis.
-        expect(summary.launch).not.toHaveProperty('effort')
+        // No effort hint: the level a resumed session runs with is adopted
+        // from the agent when it starts, never guessed from disk.
+        expect(summary.launch).toEqual({ model: '["deepseek-official","glm-5.4"]' })
     })
 
     it('keeps the reader row ids verbatim — they are what the hub matches on re-import', () => {
@@ -258,10 +259,12 @@ describe('dshToTranscript', () => {
             .toEqual(['dsh:dsh-native-1:2', 'dsh:dsh-native-1:4', 'dsh:dsh-native-1:4:1'])
     })
 
-    it('carries importError so an unimportable session is reported, not treated as missing', () => {
-        const transcript = dshToTranscript({ ...native, messages: [], importError: { code: 'transcript_too_large', message: 'too big' } })
-        const parsed = ListLocalSessionsRpcResponseSchema.parse({ success: true, sessions: [transcript] })
+    it('carries importError on the summary of a session it cannot hand over, so it is reported, not treated as missing', () => {
+        // The reader answers such a session with its SUMMARY (no messages).
+        const { messages: _messages, ...summaryOnly } = native
+        const summary = dshToTranscriptSummary({ ...summaryOnly, importError: { code: 'transcript_too_large', message: 'too big' } })
+        const parsed = ListLocalSessionsRpcResponseSchema.parse({ success: true, sessions: [summary] })
         expect(parsed.success && parsed.sessions[0]!.importError).toEqual({ code: 'transcript_too_large', message: 'too big' })
-        expect(LocalTranscriptSchema.parse(transcript).importError?.code).toBe('transcript_too_large')
+        expect(LocalTranscriptSummarySchema.parse(summary).importError?.code).toBe('transcript_too_large')
     })
 })

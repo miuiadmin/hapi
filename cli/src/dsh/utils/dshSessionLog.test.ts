@@ -1,19 +1,24 @@
 import { afterAll, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { zstdCompressSync } from 'node:zlib'
-import { ListLocalSessionsRpcResponseSchema, dshToTranscript } from '@hapi/protocol/localTranscript'
+import { fileURLToPath } from 'node:url'
+import { constants, zstdCompressSync } from 'node:zlib'
+import { ListLocalSessionsRpcResponseSchema, dshToTranscript, dshToTranscriptSummary } from '@hapi/protocol/localTranscript'
+import type { DshLocalSessionSummary, DshLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import {
     MAX_TRANSCRIPT_COMPRESSED_BYTES,
     type DshFoldedMessage,
     decodeZstdFrames,
     decodeZstdFramesTolerant,
+    firstZstdFrameLength,
     foldDshLogEvents,
     foldDshLogText,
     listDshSessionSummaries,
-    readDshSessionTranscriptById,
-    readDshSessionTranscriptsByIds
+    readDshSessionTranscriptsByIds,
+    resolveDshHome
 } from './dshSessionLog'
 
 /**
@@ -58,7 +63,7 @@ const header = (id: string, cwd: string, extra: object = {}) => ({
 })
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-log-test-'))
-const env = { HAPI_DSH_HOME: home }
+const env = { DSH_HOME: home }
 
 function sessionDir(project: string, id: string): string {
     const dir = join(home, 'sessions', project, id)
@@ -120,7 +125,13 @@ writeFileSync(
     batch([header('sess-sub', '/tmp/dsh-a/proj', { parentSession: 'sess-a', origin: 'subagent', delegationDepth: 1 })])
 )
 
-// --- sess-blank: created (by a model probe) but never used ----------------------
+// --- sess-relative: no absolute cwd, never listed --------------------------------
+writeFileSync(
+    join(sessionDir('--rel-proj--', 'sess-relative'), 'session.v4.jsonl.zstd'),
+    batch([header('sess-relative', 'relative/proj')])
+)
+
+// --- sess-blank: created but never ran a turn -----------------------------------
 const sessBlankPath = join(sessionDir('--tmp-dsh-a-proj--', 'sess-blank'), 'session.v4.jsonl.zstd')
 writeFileSync(sessBlankPath, Buffer.concat([
     batch([header('sess-blank', '/tmp/dsh-a/proj')]),
@@ -176,6 +187,15 @@ writeFileSync(sessHugePath, Buffer.concat([
 mtime(sessHugePath, T0 + 600_000)
 projcache('sess-huge', { turnBoundary: row({ lastTurn: 1 }) })
 
+// --- sess-bigheader: a header row past the first 8KB window (the read grows) ---
+const sessBigHeaderPath = join(sessionDir('--tmp-dsh-f-proj--', 'sess-bigheader'), 'session.v4.jsonl.zstd')
+writeFileSync(sessBigHeaderPath, batch([
+    header('sess-bigheader', '/tmp/dsh-f/proj', { padding: randomBytes(12_000).toString('hex') }),
+    event('turn/end', 1, { turn: 1, reason: { kind: 'completed' } })
+]))
+mtime(sessBigHeaderPath, T0 + 700_000)
+projcache('sess-bigheader', { title: row('大头部'), turnBoundary: row({ lastTurn: 1 }) })
+
 afterAll(() => {
     rmSync(home, { recursive: true, force: true })
 })
@@ -192,11 +212,16 @@ function rowsOf(messages: DshFoldedMessage[]): Row[] {
 }
 
 describe('listDshSessionSummaries', () => {
-    it('lists root sessions with content, skipping subagents and blank probe sessions', () => {
+    it('lists root sessions with content, skipping subagents, relative-cwd and blank sessions', () => {
         const summaries = listDshSessionSummaries(env, home)
+        // Newest first. `sess-torn` ends in a torn frame that sits inside the
+        // 8KB header window: the window is cut by frame length, so the torn
+        // frame never reaches the decoder. `sess-bigheader` needs the window
+        // to grow for its header row.
         expect(summaries.map((session) => session.id)).toEqual([
-            'sess-huge', 'sess-magic', 'sess-torn', 'sess-plain', 'sess-a'
+            'sess-bigheader', 'sess-huge', 'sess-magic', 'sess-torn', 'sess-plain', 'sess-a'
         ])
+        expect(summaries.find((session) => session.id === 'sess-bigheader')!.title).toBe('大头部')
         const sessA = summaries.find((session) => session.id === 'sess-a')!
         expect(sessA).toMatchObject({
             title: '修复登录页',
@@ -214,9 +239,16 @@ describe('listDshSessionSummaries', () => {
     })
 })
 
+/** One session's transcript, read the way the runner source reads it. */
+async function readOne(id: string): Promise<DshLocalSessionWithMessages | null> {
+    const [item] = await readDshSessionTranscriptsByIds([id], env, home)
+    if (item && !('messages' in item)) throw new Error(`${id} came back without a transcript: ${JSON.stringify(item.importError)}`)
+    return item ?? null
+}
+
 describe('readDshSessionTranscriptsByIds', () => {
     it('folds real-shaped events into unique, prefixed rows', async () => {
-        const transcript = await readDshSessionTranscriptById('sess-a', env, home)
+        const transcript = await readOne('sess-a')
         expect(transcript).not.toBeNull()
         const rows = rowsOf(transcript!.messages)
 
@@ -255,7 +287,7 @@ describe('readDshSessionTranscriptsByIds', () => {
     })
 
     it('produces transcripts the shared import contract accepts with importable ids', async () => {
-        const [transcript] = await readDshSessionTranscriptsByIds(['sess-a'], env, home)
+        const transcript = await readOne('sess-a')
         const response = ListLocalSessionsRpcResponseSchema.safeParse({
             success: true,
             sessions: [dshToTranscript(transcript!)]
@@ -269,18 +301,18 @@ describe('readDshSessionTranscriptsByIds', () => {
     })
 
     it('tolerates a torn tail frame and a magic byte sequence inside a compressed payload', async () => {
-        const torn = await readDshSessionTranscriptById('sess-torn', env, home)
+        const torn = await readOne('sess-torn')
         expect(rowsOf(torn!.messages).map((r) => r.data!.text)).toEqual(['complete batch'])
 
-        const magic = await readDshSessionTranscriptById('sess-magic', env, home)
+        const magic = await readOne('sess-magic')
         const magicRows = rowsOf(magic!.messages)
         expect(magicRows.map((r) => r.data!.kind)).toEqual<Kind[]>(['message', 'user'])
-        expect(magicRows[0]!.data!.message).toBe('before (�/� after magic')
+        expect(magicRows[0]!.data!.message).toBe('before (\uFFFD/\uFFFD after magic')
         expect(magicRows[1]!.data!.text).toBe('after the magic frame')
     })
 
     it('reads plain (uncompressed) logs and reports max-tokens turns', async () => {
-        const plain = await readDshSessionTranscriptById('sess-plain', env, home)
+        const plain = await readOne('sess-plain')
         const rows = rowsOf(plain!.messages)
         expect(rows.map((r) => r.data!.kind)).toEqual<Kind[]>(['user', 'error'])
         expect(rows[1]!.data!.message).toBe('Turn ended (max-tokens)')
@@ -289,18 +321,21 @@ describe('readDshSessionTranscriptsByIds', () => {
     it('reports an oversized session per session instead of decoding it', async () => {
         const [huge, a] = await readDshSessionTranscriptsByIds(['sess-huge', 'sess-a', 'missing'], env, home)
         // The junk after the header would fail a decode; it was never attempted.
-        expect(huge!.messages).toEqual([])
+        // A rejection is the session's SUMMARY: no `messages` key, or the hub
+        // would file it as an empty transcript instead of reporting it.
+        expect(huge).not.toHaveProperty('messages')
+        expect(dshToTranscriptSummary(huge as DshLocalSessionSummary).importError).toEqual(huge!.importError)
         expect(huge!.importError).toMatchObject({ code: 'transcript_too_large' })
         expect(huge!.importError!.message).toMatch(/MB compressed log/)
         // The rest of the batch is unaffected; unknown ids are simply absent.
-        expect(a!.messages.length).toBeGreaterThan(0)
+        expect(a && 'messages' in a ? a.messages.length : 0).toBeGreaterThan(0)
         expect(a!.importError).toBeUndefined()
         expect([huge, a]).toHaveLength(2)
     })
 })
 
 describe('zstd decoding', () => {
-    it('decodes every frame of a concatenation (node:zlib decodes one frame per call)', () => {
+    it('decodes every frame of a concatenation', () => {
         const decoded = decodeZstdFrames(Buffer.concat([
             batch([{ a: 1 }, { a: 2 }]),
             batch([{ a: 3 }]),
@@ -319,14 +354,46 @@ describe('zstd decoding', () => {
         ])
         const decoded = decodeZstdFrames(Buffer.concat([batch([{ a: 'first' }]), rawFrame(payload)])).toString('utf8')
         expect(decoded).toContain('"a":"first"')
-        expect(decoded).toContain('x(�/�y')
+        expect(decoded).toContain('x(\uFFFD/\uFFFDy')
     })
 
     it('drops a torn tail frame instead of failing the whole log', () => {
         const frames = [batch([{ a: 1 }]), batch([{ a: 2 }]), batch([{ a: 3 }])]
         const torn = Buffer.concat(frames).subarray(0, frames[0]!.length + frames[1]!.length + Math.floor(frames[2]!.length * 0.5))
+        // The strict decode refuses it; the tolerant one keeps what is whole.
+        expect(() => decodeZstdFrames(torn)).toThrow(/truncated/)
         const decoded = decodeZstdFramesTolerant(torn).toString('utf8')
         expect(decoded.trim().split('\n').map((line) => JSON.parse(line).a)).toEqual([1, 2])
+    })
+})
+
+describe('firstZstdFrameLength', () => {
+    it('measures frames the way node:zlib writes them, one block or several', () => {
+        const oneBlock = batch([{ a: 1 }])
+        // Incompressible input over the 128KB block size: several blocks.
+        const severalBlocks = zstdCompressSync(randomBytes(300_000))
+        const withChecksum = zstdCompressSync(Buffer.from('checksummed'), { params: { [constants.ZSTD_c_checksumFlag]: 1 } })
+        const handBuilt = rawFrame(Buffer.from('raw block'))
+        for (const frame of [oneBlock, severalBlocks, withChecksum, handBuilt]) {
+            expect(firstZstdFrameLength(frame)).toBe(frame.length)
+        }
+
+        // Inside a concatenation only the frame at the offset is measured.
+        const whole = Buffer.concat([oneBlock, severalBlocks, withChecksum])
+        expect(firstZstdFrameLength(whole)).toBe(oneBlock.length)
+        expect(firstZstdFrameLength(whole.subarray(oneBlock.length))).toBe(severalBlocks.length)
+        expect(firstZstdFrameLength(whole.subarray(oneBlock.length + severalBlocks.length))).toBe(withChecksum.length)
+    })
+
+    it('reports a frame longer than the buffer, and null for what is not a frame start', () => {
+        const frame = batch([{ a: 1 }])
+        // Torn: the frame's length is still known (the caller reads more, or
+        // drops it as a tail).
+        expect(firstZstdFrameLength(frame.subarray(0, frame.length - 1))).toBe(frame.length)
+        // Too short to hold the frame and block headers.
+        expect(firstZstdFrameLength(frame.subarray(0, 6))).toBeNull()
+        expect(firstZstdFrameLength(Buffer.alloc(0))).toBeNull()
+        expect(firstZstdFrameLength(Buffer.from('not zstd at all'))).toBeNull()
     })
 })
 
@@ -352,5 +419,33 @@ describe('fold limits', () => {
             { type: 'user/message', data: { content: [{ type: 'text', text: 'b' }], source: { kind: 'user' } } }
         ], 'x')
         expect(messages.map((message) => message.localId)).toEqual(['dsh:x:x1', 'dsh:x:x2'])
+    })
+})
+
+describe('Bun runtime', () => {
+    it('passes the Bun-runtime spec that covers the production decode path', () => {
+        // vitest runs this file on Node, where the reader takes its node:zlib
+        // fallback. The shipped runner is a Bun binary, so the Bun one-shot
+        // decode is specified in dshSessionLog.bun-spec.ts and executed here.
+        const cliRoot = fileURLToPath(new URL('../../../', import.meta.url))
+        try {
+            execFileSync('bun', ['test', './src/dsh/utils/dshSessionLog.bun-spec.ts'], {
+                cwd: cliRoot,
+                encoding: 'utf8',
+                timeout: 120_000
+            })
+        } catch (error) {
+            const failure = error as { stdout?: string; stderr?: string; message?: string }
+            throw new Error(`bun test failed: ${failure.message ?? ''}
+${failure.stdout ?? ''}
+${failure.stderr ?? ''}`)
+        }
+    })
+})
+
+describe('resolveDshHome', () => {
+    it('follows the DSH_HOME override and falls back to ~/.dsh', () => {
+        expect(resolveDshHome({}, '/home/someone')).toBe('/home/someone/.dsh')
+        expect(resolveDshHome({ DSH_HOME: ' /elsewhere/dsh ' }, '/home/someone')).toBe('/elsewhere/dsh')
     })
 })
