@@ -98,7 +98,8 @@ function withCliSocket(h: Harness, answer: CliCancelAckResult = 'removed') {
         hasCliSocket: (sessionId: string) => cli.connected,
         requestCliCancelAck: async (sessionId: string, localId: string, messageId: string, timeoutMs: number) => {
             cli.probes.push([sessionId, localId, messageId, timeoutMs])
-            return cli.answer
+            // The fork's probe is sent per socket and says which one answered (deliver-now binds its retry to it).
+            return { result: cli.answer, responderId: null }
         }
     })
     return cli
@@ -1118,7 +1119,7 @@ describe('SyncEngine session tasks', () => {
                 hasCliSocket: () => cli.connected,
                 requestCliCancelAck: async (sessionId: string, prompt: string, messageId: string, timeoutMs: number) => {
                     cli.probes.push([sessionId, prompt, messageId, timeoutMs])
-                    return 'removed'
+                    return { result: 'removed', responderId: null }
                 }
             })
             const asked: string[] = []

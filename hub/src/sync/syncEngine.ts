@@ -1741,7 +1741,8 @@ export class SyncEngine {
                 settled = 'removed'
             }
         } else {
-            const answer = await this.messageService.requestCliCancelAck(promptSessionId, localId, localId, SESSION_TASK_CANCEL_FOLLOW_UP_PROBE_MS)
+            // The fork's probe is sent per socket and says which one answered (deliver-now binds its retry to it).
+            const answer = (await this.messageService.requestCliCancelAck(promptSessionId, localId, localId, SESSION_TASK_CANCEL_FOLLOW_UP_PROBE_MS)).result
             if (answer === 'removed' || answer === 'not-found') settled = 'removed'
             else if (answer === 'consumed') {
                 settled = 'consumed'
