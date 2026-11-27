@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { BOT_HOME_CLAUDE_MD, BOT_HOME_RULES_FILE, PrepareBotHomeResponseSchema, botHomeAgentsMd } from '@hapi/protocol'
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { MachinePathPolicy } from '@/api/machinePathPolicy'
-import { BOT_HOME_MARKER_FILES, expandBotHomePath, isSameOrAncestor, prepareBotHome, registerBotHomeHandlers } from './botHomeHandlers'
+import { BOT_HOME_MARKER_FILES, defaultBotHomeRoots, expandBotHomePath, isSameOrAncestor, isWithinRoot, prepareBotHome, registerBotHomeHandlers } from './botHomeHandlers'
 
 describe('expandBotHomePath', () => {
     it('expands a leading ~ against the given home and resolves relative paths', () => {
@@ -30,6 +30,35 @@ describe('isSameOrAncestor', () => {
         expect(isSameOrAncestor('/home/ops/.hapi', '/home/ops')).toBe(false)
         expect(isSameOrAncestor('/srv', '/home/ops')).toBe(false)
         expect(isSameOrAncestor('/home/opsx', '/home/ops')).toBe(false)
+    })
+})
+
+describe('isWithinRoot', () => {
+    it('is true for the root itself and the folders below it only', () => {
+        expect(isWithinRoot('/home/ops', '/home/ops')).toBe(true)
+        expect(isWithinRoot('/home/ops/bots/x', '/home/ops')).toBe(true)
+        expect(isWithinRoot('/home', '/home/ops')).toBe(false)
+        expect(isWithinRoot('/home/opsx', '/home/ops')).toBe(false)
+        expect(isWithinRoot('/elsewhere/home/ops', '/home/ops')).toBe(false)
+    })
+})
+
+describe('defaultBotHomeRoots', () => {
+    it('is ~/.hapi/bots of the given home, plus bots under the runner\'s own HAPI_HOME', () => {
+        const before = process.env.HAPI_HOME
+        try {
+            delete process.env.HAPI_HOME
+            // The given home first; with the default HAPI_HOME the runner's own folder is the real home's.
+            const own = join(homedir(), '.hapi', 'bots')
+            expect(defaultBotHomeRoots('/home/ops')).toEqual(own === '/home/ops/.hapi/bots' ? [own] : ['/home/ops/.hapi/bots', own])
+            expect(defaultBotHomeRoots(homedir())).toEqual([own])
+            process.env.HAPI_HOME = '/srv/hapi-home'
+            expect(defaultBotHomeRoots('/home/ops')).toEqual(['/home/ops/.hapi/bots', '/srv/hapi-home/bots'])
+            expect(defaultBotHomeRoots(homedir())).toEqual([own, '/srv/hapi-home/bots'])
+        } finally {
+            if (before === undefined) delete process.env.HAPI_HOME
+            else process.env.HAPI_HOME = before
+        }
     })
 })
 
@@ -140,6 +169,74 @@ describe('prepare-bot-home handler', () => {
         const result = await run(outside, 'Ops', new MachinePathPolicy({ workspaceRoots: [root] }))
         expect(result).toMatchObject({ ...refused('outside_workspace_roots'), error: 'Path is outside this machine\'s workspace roots' })
         expect(await readdir(outside)).toEqual([])
+    })
+
+    describe('on a machine whose workspace roots do not include the home', () => {
+        let realHome: string
+        let realRoot: string
+        let realOutside: string
+        let policy: MachinePathPolicy
+
+        beforeEach(async () => {
+            // The policy compares symlink-resolved paths (on macOS /var is /private/var): real spellings throughout.
+            ;[realHome, realRoot, realOutside] = await Promise.all([home, root, outside].map((dir) => realpath(dir)))
+            policy = new MachinePathPolicy({ workspaceRoots: [realRoot] })
+        })
+
+        it('the default home ~/.hapi/bots/<name> is allowed, and is created and seeded', async () => {
+            const result = await prepareBotHome({ path: '~/.hapi/bots/ops', name: 'Ops' }, { pathPolicy: policy, home: realHome })
+            expect(result).toEqual({ path: join(realHome, '.hapi', 'bots', 'ops'), seeded: true })
+            expect(await readFile(join(realHome, '.hapi', 'bots', 'ops', BOT_HOME_RULES_FILE), 'utf8')).toBe(botHomeAgentsMd('Ops'))
+        })
+
+        it('a folder of the owner\'s choosing outside the roots and outside the default homes is still refused', async () => {
+            expect(await prepareBotHome({ path: join(realOutside, 'ops'), name: 'Ops' }, { pathPolicy: policy, home: realHome })).toMatchObject(refused('outside_workspace_roots'))
+            expect(await readdir(realOutside)).toEqual([])
+            // Nor the neighbours of the default homes.
+            for (const path of ['~/.hapi/bots-evil/ops', '~/.hapi/ops', '~/.hapi/bots/../ops', '~/.hapi', '~']) {
+                expect(await prepareBotHome({ path, name: 'Ops' }, { pathPolicy: policy, home: realHome })).toMatchObject(refused('outside_workspace_roots'))
+            }
+            // Nothing was created anywhere.
+            expect(await readdir(join(realHome, '.hapi')).catch(() => [])).toEqual([])
+        })
+
+        it('a link from inside the default homes to a folder elsewhere does not make that folder a home', async () => {
+            await mkdir(join(realHome, '.hapi', 'bots'), { recursive: true })
+            await symlink(realOutside, join(realHome, '.hapi', 'bots', 'elsewhere'))
+            const result = await prepareBotHome({ path: '~/.hapi/bots/elsewhere/ops', name: 'Ops' }, { pathPolicy: policy, home: realHome })
+            expect(result).toMatchObject(refused('outside_workspace_roots'))
+            expect(await readdir(realOutside)).toEqual([])
+        })
+
+        it('a link from a folder outside everything into the default homes does not name a home', async () => {
+            await mkdir(join(realHome, '.hapi', 'bots'), { recursive: true })
+            await symlink(join(realHome, '.hapi', 'bots'), join(realOutside, 'to-bots'))
+            const result = await prepareBotHome({ path: join(realOutside, 'to-bots', 'ops'), name: 'Ops' }, { pathPolicy: policy, home: realHome })
+            expect(result).toMatchObject(refused('outside_workspace_roots'))
+            expect(await readdir(join(realHome, '.hapi', 'bots'))).toEqual([])
+        })
+
+        it('a link from inside the workspace to the default homes is followed: the home is a default one', async () => {
+            await mkdir(join(realHome, '.hapi', 'bots'), { recursive: true })
+            await symlink(join(realHome, '.hapi', 'bots'), join(realRoot, 'bots'))
+            const result = await prepareBotHome({ path: join(realRoot, 'bots', 'ops'), name: 'Ops' }, { pathPolicy: policy, home: realHome })
+            expect(result).toEqual({ path: join(realRoot, 'bots', 'ops'), seeded: true })
+        })
+
+        it('a runner started with another HAPI_HOME keeps the default homes under that folder too', async () => {
+            const ownHome = join(await realpath(sandbox), 'own-home')
+            const before = process.env.HAPI_HOME
+            process.env.HAPI_HOME = ownHome
+            try {
+                expect(await realpath(ownHome).catch(() => ownHome)).toBe(ownHome)
+                const result = await prepareBotHome({ path: join(ownHome, 'bots', 'ops'), name: 'Ops' }, { pathPolicy: policy, home: realHome })
+                expect(result).toEqual({ path: join(ownHome, 'bots', 'ops'), seeded: true })
+                expect(await readFile(join(ownHome, 'bots', 'ops', BOT_HOME_RULES_FILE), 'utf8')).toBe(botHomeAgentsMd('Ops'))
+            } finally {
+                if (before === undefined) delete process.env.HAPI_HOME
+                else process.env.HAPI_HOME = before
+            }
+        })
     })
 
     it('accepts a home inside the workspace roots even when written via ~', async () => {

@@ -19,7 +19,7 @@ On the hub, bots add four tables to the database (the bots, their ledger, the re
 
 HAPI creates the folder, writes the working rules into `AGENTS.md`, opens the home chat under the bot's name and sends the first message. On that first run the bot greets you, does one small thing for its job, and writes its own `SOUL.md`.
 
-The home folder has to be a new folder, an empty one, or the home of a bot with the same name (so a bot created again under its old name keeps its notes). A folder that already holds something else is refused: the rules file would be read by every session started under it. The default is `~/.hapi/bots/<name>`.
+The home folder has to be a new folder, an empty one, or the home of a bot with the same name (so a bot created again under its old name keeps its notes). A folder that already holds something else is refused: the rules file would be read by every session started under it. The default is `~/.hapi/bots/<name>`. Where the runner of that machine was started with `--workspace-root`, a folder of your own has to lie inside those roots; the default folder is accepted regardless.
 
 If the home chat cannot be opened, the bot is listed with **Error** and the reason. Its name is not held by the failed attempt, so you can create it again; the failed row can be archived from its menu. The same happens when a bot's home chat is deleted: the bot is listed with **Error** and its conversation, if any is left, is an ordinary session again.
 
