@@ -23,6 +23,7 @@ function makeEngine(): SyncEngine {
         getSessionsByNamespace: () => [],
         getFutureScheduledMessageCounts: () => new Map(),
         getNextScheduledAtBySessionIds: () => new Map(),
+        getSessionTaskSummaries: () => new Map(),
         allocateAttachedJobVersion: () => 1,
         getPrimaryAttachedJobsBySessionIds: () => new Map(),
         getOnlineMachinesByNamespace: () => []
