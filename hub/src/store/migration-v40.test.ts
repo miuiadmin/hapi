@@ -54,6 +54,7 @@ describe('schema migration v39 to v40', () => {
             items: ['a'],
             intervalMs: 60_000,
             maxRuns: null,
+            startAt: 1,
             nextRunAt: 1
         })
         migrated.sessions.deleteSession(sessionId, 'default')
@@ -70,6 +71,7 @@ describe('schema migration v39 to v40', () => {
             items: ['a'],
             intervalMs: 60_000,
             maxRuns: null,
+            startAt: 1,
             nextRunAt: 1
         })
         const internalDb = (store as unknown as { db: Database }).db

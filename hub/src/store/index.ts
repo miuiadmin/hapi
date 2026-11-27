@@ -66,7 +66,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-export const SCHEMA_VERSION: number = 40
+export const SCHEMA_VERSION: number = 41
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -271,6 +271,23 @@ export class Store {
         })()
     }
 
+    /**
+     * Where a message sent to `sessionId` lands: the session itself, or the
+     * replacement an unfinished OpenCode /clear redirects new messages to.
+     * Null when the session does not exist.
+     */
+    resolveMessageTarget(sessionId: string): string | null {
+        const row = this.db.prepare('SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as { metadata: string | null } | undefined
+        if (!row) return null
+        if (!row.metadata) return sessionId
+        const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
+        return metadata.supersededBySessionId
+            ?? (metadata.opencodeClearOperation?.state !== 'aborted'
+                ? metadata.opencodeClearOperation?.replacementSessionId
+                : undefined)
+            ?? sessionId
+    }
+
     /** Resolve a durable OpenCode clear reservation and insert in one SQLite transaction. */
     addMessageForCurrentSession(
         sessionId: string,
@@ -279,17 +296,9 @@ export class Store {
         scheduledAt?: number | null
     ): { sessionId: string; message: StoredMessage; inserted: boolean } {
         return this.db.transaction(() => {
-            const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?').get(sessionId) as { namespace: string; metadata: string | null } | undefined
+            const row = this.db.prepare('SELECT namespace FROM sessions WHERE id = ?').get(sessionId) as { namespace: string } | undefined
             if (!row) throw new Error('Message source session not found')
-            let targetSessionId = sessionId
-            if (row?.metadata) {
-                const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
-                targetSessionId = metadata.supersededBySessionId
-                    ?? (metadata.opencodeClearOperation?.state !== 'aborted'
-                        ? metadata.opencodeClearOperation?.replacementSessionId
-                        : undefined)
-                    ?? sessionId
-            }
+            const targetSessionId = this.resolveMessageTarget(sessionId) as string
             if (targetSessionId !== sessionId) {
                 const target = this.db.prepare('SELECT 1 FROM sessions WHERE id = ? AND namespace = ?')
                     .get(targetSessionId, row.namespace)
@@ -436,7 +445,7 @@ export class Store {
             // upstream passkey_credentials at v37→v38 (renumbered from upstream
             // v35→v36 onto the fork ladder); telemetry six-table family
             // (telemetry_events + perf_*) at v38→v39.
-            // session_tasks (repeat/queue schedules) at v39→v40.
+            // session_tasks (repeat/queue schedules) at v39→v40; start_at at v40→v41.
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
@@ -459,6 +468,8 @@ export class Store {
             38: () => this.migrateFromV38ToV39(),
             // session_tasks (repeat/queue schedules)
             39: () => this.migrateFromV39ToV40(),
+            // start_at on session_tasks (phase 2 of session tasks)
+            40: () => this.migrateFromV40ToV41(),
         })
 
         if (currentVersion === 0) {
@@ -507,6 +518,7 @@ export class Store {
             this.migrateFromV37ToV38()
             this.migrateFromV38ToV39()
             this.migrateFromV39ToV40()
+            this.migrateFromV40ToV41()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -1537,6 +1549,24 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
                 ON session_redirects(namespace, new_id);
         `)
+    }
+
+    /**
+     * v40→v41: `start_at` on session_tasks, so a task that has not run yet
+     * keeps its first-run time across a pause. A database that got the table
+     * from the v39→v40 step of this build already carries the column. Rows
+     * written before the column exists are dated from their creation, which
+     * is when phase 1 ran a task first. Idempotent.
+     * Rollback: `ALTER TABLE session_tasks DROP COLUMN start_at; PRAGMA user_version = 40;`
+     */
+    private migrateFromV40ToV41(): void {
+        const columns = this.db.prepare('PRAGMA table_info(session_tasks)').all() as Array<{ name: string }>
+        if (!columns.some((col) => col.name === 'start_at')) {
+            this.db.exec(`
+                ALTER TABLE session_tasks ADD COLUMN start_at INTEGER NOT NULL DEFAULT 0;
+                UPDATE session_tasks SET start_at = created_at;
+            `)
+        }
     }
 
     private ensureUsageScanParserVersion(): void {
