@@ -7,7 +7,7 @@ import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { isAttachedJobDeleteConflict } from '@/lib/deleteSessionError'
-import { formatReopenError } from '@/lib/reopenError'
+import { formatArchiveError, formatReopenError } from '@/lib/reopenError'
 import { isKnownFlavor } from '@hapi/protocol'
 import { archivedSessionDetailLook, archivedSessionLook } from '@/lib/sessionArchiveLook'
 import { reportSessionActionFailure } from '@/lib/sessionActionFailures'
@@ -41,6 +41,30 @@ export function usePendingSessionIds(scope: readonly unknown[]): ReadonlySet<str
         () => new Set(pending.filter((id): id is string => typeof id === 'string')),
         [pending]
     )
+}
+
+/**
+ * Write the archived look into the list and the detail cache. The list shows
+ * a session as archived for as long as its archive request runs (SessionList's
+ * overlay); the moment the request settles that overlay lifts, and until the
+ * refetch lands the cache may still say active — this keeps the row from
+ * flashing back in between.
+ */
+export function markSessionArchivedInCache(queryClient: QueryClient, targetSessionId: string): void {
+    queryClient.setQueryData<SessionResponse | undefined>(queryKeys.session(targetSessionId), (previous) => {
+        if (!previous?.session) return previous
+        return { ...previous, session: archivedSessionDetailLook(previous.session) }
+    })
+    queryClient.setQueryData<SessionsResponse | undefined>(queryKeys.sessions, (previous) => {
+        if (!previous) return previous
+        let changed = false
+        const sessions = previous.sessions.map((summary) => {
+            if (summary.id !== targetSessionId) return summary
+            changed = true
+            return archivedSessionLook(summary)
+        })
+        return changed ? { ...previous, sessions } : previous
+    })
 }
 
 /** True while a resume or reopen of `sessionId` is in flight, for a caller that only needs the answer now (a click). */
@@ -168,27 +192,6 @@ export function useSessionActions(
         await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
     }
 
-    // The list showed this session as archived for as long as the request ran
-    // (SessionList's overlay). The moment it settles that overlay lifts, and
-    // until the refetch lands the cache may still say active: write the result
-    // the hub just confirmed so the row does not flash back.
-    const markSessionArchivedInCache = (targetSessionId: string) => {
-        queryClient.setQueryData<SessionResponse | undefined>(queryKeys.session(targetSessionId), (previous) => {
-            if (!previous?.session) return previous
-            return { ...previous, session: archivedSessionDetailLook(previous.session) }
-        })
-        queryClient.setQueryData<SessionsResponse | undefined>(queryKeys.sessions, (previous) => {
-            if (!previous) return previous
-            let changed = false
-            const sessions = previous.sessions.map((summary) => {
-                if (summary.id !== targetSessionId) return summary
-                changed = true
-                return archivedSessionLook(summary)
-            })
-            return changed ? { ...previous, sessions } : previous
-        })
-    }
-
     const invalidateCursorModels = async () => {
         if (!sessionId || agentFlavor !== 'cursor') return
         await queryClient.invalidateQueries({ queryKey: queryKeys.sessionCursorModels(sessionId) })
@@ -222,7 +225,7 @@ export function useSessionActions(
             await api.archiveSession(sessionId)
         },
         onSuccess: () => {
-            if (sessionId) markSessionArchivedInCache(sessionId)
+            if (sessionId) markSessionArchivedInCache(queryClient, sessionId)
             void invalidateSession()
         },
         // The row looked archived while this ran. A failure is the one thing
@@ -235,7 +238,7 @@ export function useSessionActions(
                 reportSessionActionFailure({
                     kind: 'archive',
                     sessionId,
-                    message: error instanceof Error && error.message ? error.message : null,
+                    message: formatArchiveError(error),
                 })
             }
             void invalidateSession()

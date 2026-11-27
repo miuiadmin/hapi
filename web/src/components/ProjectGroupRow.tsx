@@ -9,7 +9,7 @@ import { queryKeys } from '@/lib/query-keys'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useLongPress } from '@/hooks/useLongPress'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
-import { sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
+import { markSessionArchivedInCache, sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { reportSessionActionFailure } from '@/lib/sessionActionFailures'
 import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
@@ -74,7 +74,9 @@ export function ProjectGroupRow(props: {
             const results = await Promise.allSettled(liveSessions.map((s) => {
                 const observer = new MutationObserver(queryClient, {
                     mutationKey: sessionArchiveMutationKey(s.id),
-                    mutationFn: () => api.archiveSession(s.id)
+                    mutationFn: () => api.archiveSession(s.id),
+                    // Same as the row's own archive: keep the archived look in the cache until the refetch below.
+                    onSuccess: () => markSessionArchivedInCache(queryClient, s.id)
                 })
                 // Detach once settled so the mutation can be garbage-collected.
                 return observer.mutate().finally(() => observer.reset())

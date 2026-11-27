@@ -29,6 +29,27 @@ export function formatReopenError(error: unknown): string {
     return fallback
 }
 
+/**
+ * The hub's own sentence for a failed archive (`{ error, code }` on a 5xx),
+ * rather than the HTTP status line the client wraps it in. `null` when there
+ * is nothing readable, so the dialog can say "operation failed" instead.
+ */
+export function formatArchiveError(error: unknown): string | null {
+    if (!(error instanceof ApiError)) {
+        return error instanceof Error && error.message ? error.message : null
+    }
+    const body = error.body ?? extractJsonFromMessage(error.message)
+    if (body) {
+        try {
+            const parsed = JSON.parse(body) as { error?: string }
+            if (parsed.error) return parsed.error
+        } catch {
+            // body was not JSON; use the message
+        }
+    }
+    return error.message || null
+}
+
 function extractJsonFromMessage(message: string): string | undefined {
     const start = message.indexOf('{')
     return start === -1 ? undefined : message.slice(start)

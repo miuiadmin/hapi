@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { ApiError } from '@/api/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
@@ -218,6 +219,19 @@ describe('session row archive is shown at once', () => {
         fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!)
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
         expect(lookOf('a').archiveButton).toBeEnabled()
+    })
+
+    it('says in the dialog what the hub said, not the HTTP status line', async () => {
+        const archive = pendingArchive()
+        setup([makeSession({ id: 'a' })], { archiveSession: vi.fn(() => archive.promise) })
+        fireEvent.click(lookOf('a').archiveButton!)
+        await waitFor(() => expect(lookOf('a').grey).toBe(true))
+
+        const body = '{"error":"Session process is still running","code":"unconfirmed"}'
+        await act(async () => archive.reject(new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'unconfirmed', body)))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByText('Session process is still running')).toBeInTheDocument()
+        expect(dialog.textContent).not.toContain('HTTP 503')
     })
 
     it('fails into the dialog even when the row that started the archive is gone', async () => {
