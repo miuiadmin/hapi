@@ -378,12 +378,14 @@ export function SessionRowSummary(props: {
                                 ) : null}
                             </span>
                         ) : null}
+                        {/* Both icons sit after the name, toward the row's right, so their bubbles grow leftwards
+                            (like the PR chip's): a bubble starting at the icon runs past the sidebar's edge. */}
                         {hasScheduleTooltip && nestedTooltips && scheduleId ? (
                             <HoverTooltip
                                 id={scheduleId}
                                 target={<ScheduleIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
                                 side="bottom"
-                                align="start"
+                                align="end"
                                 className="shrink-0"
                                 revealOnParentFocusClass={SESSION_ROW_TOOLTIP_FOCUS_CLASS}
                             >
@@ -404,7 +406,7 @@ export function SessionRowSummary(props: {
                                 id={taskId}
                                 target={<TaskRepeatIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
                                 side="bottom"
-                                align="start"
+                                align="end"
                                 className="shrink-0"
                                 revealOnParentFocusClass={SESSION_ROW_TOOLTIP_FOCUS_CLASS}
                             >
