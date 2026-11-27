@@ -98,7 +98,7 @@ import {
 } from '@/lib/composer-attachment-drafts'
 import { useTranslation } from '@/lib/use-translation'
 import type { SendMessageAcceptance } from '@/hooks/mutations/useSendMessage'
-import { useSessionTaskMutations } from '@/hooks/queries/useSessionTasks'
+import { useSessionTaskMutations, useSessionTasks } from '@/hooks/queries/useSessionTasks'
 import type { CreateSessionTaskRequest } from '@hapi/protocol'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
@@ -2264,11 +2264,16 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
     // Keep render ref in sync so onNew can snapshot at send time
     pendingScheduleRef.current = pendingSchedule
     // Repeat / queue tasks come from the clock panel. The panel's form shows a
-    // rejected create itself; an accepted one appears in the task bar.
+    // rejected create itself; an accepted one appears in the task bar. A hub
+    // without the task routes answers the task list with 404, and then the
+    // panel keeps to scheduled send instead of offering modes that cannot work.
     const { createTask: createSessionTask } = useSessionTaskMutations(props.api, props.session.id)
-    const createSessionTaskFromComposer = async (request: CreateSessionTaskRequest): Promise<void> => {
-        await createSessionTask.mutateAsync(request)
-    }
+    const { unsupported: sessionTasksUnsupported } = useSessionTasks(props.api, props.session.id)
+    const createSessionTaskFromComposer = sessionTasksUnsupported
+        ? undefined
+        : async (request: CreateSessionTaskRequest): Promise<void> => {
+            await createSessionTask.mutateAsync(request)
+        }
     // The single, shared intent ref travels HappyComposer -> useHappyRuntime
     // -> handleSend. The runtime consumes and resets it in the same submit
     // turn, so explicit or retry-safe queue intents never stick to later
