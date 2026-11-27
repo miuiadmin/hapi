@@ -2504,6 +2504,7 @@ describe('sessions routes', () => {
                 return new Map(ids.map((id) => [id, 0]))
             },
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -2563,6 +2564,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: () => new Map([['slim-session', 0]]),
             getNextScheduledAtBySessionIds: () => new Map([['slim-session', null]]),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => 111,
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -2623,6 +2625,8 @@ describe('sessions routes', () => {
         expect('backgroundTaskCount' in slimRow).toBe(false)
         expect('futureScheduledMessageCount' in slimRow).toBe(false)
         expect('nextScheduledAt' in slimRow).toBe(false)
+        expect('activeTaskCount' in slimRow).toBe(false)
+        expect('nextTaskRunAt' in slimRow).toBe(false)
         expect('attachedJob' in slimRow).toBe(false)
         // A non-zero allocated job watermark survives even without a job —
         // REST must not reset the client's SSE patch gate to 0.
@@ -2638,6 +2642,8 @@ describe('sessions routes', () => {
         expect(fullRow.backgroundTaskCount).toBe(0)
         expect(fullRow.futureScheduledMessageCount).toBe(0)
         expect(fullRow.nextScheduledAt).toBeNull()
+        expect(fullRow.activeTaskCount).toBe(0)
+        expect(fullRow.nextTaskRunAt).toBeNull()
         expect(fullRow.attachedJob).toBeNull()
         expect(fullRow.attachedJobUpdatedAt).toBe(111)
         expect((fullRow.metadata as Record<string, unknown>).hapiMcpUrl).toBe('http://127.0.0.1:52999/mcp')
@@ -2649,6 +2655,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: () => new Map([['sched-session', 2]]),
             getNextScheduledAtBySessionIds: () => new Map([['sched-session', 1700000000000]]),
+            getSessionTaskSummaries: () => new Map([['sched-session', { activeTaskCount: 2, nextTaskRunAt: 1700000000001 }]]),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => 0,
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -2666,11 +2673,62 @@ describe('sessions routes', () => {
         const slimRow = ((await slim.json()) as { sessions: Array<Record<string, unknown>> }).sessions[0]!
         expect(slimRow.futureScheduledMessageCount).toBe(2)
         expect(slimRow.nextScheduledAt).toBe(1700000000000)
+        // The task counts ride along the same way.
+        expect(slimRow.activeTaskCount).toBe(2)
+        expect(slimRow.nextTaskRunAt).toBe(1700000000001)
         // No read state on the session → key omitted entirely (readers treat
         // absent as EMPTY_READ_STATE).
         expect('readState' in slimRow).toBe(false)
         // Zero allocated job watermark collapses to the omitted default.
         expect('attachedJobUpdatedAt' in slimRow).toBe(false)
+    })
+
+    it('carries each session\'s task summary in the list and in search results', async () => {
+        const withTasks = createSession({ id: 'with-tasks', createdAt: 10 })
+        const withoutTasks = createSession({ id: 'without-tasks', createdAt: 20 })
+        const summaries = new Map([[withTasks.id, { activeTaskCount: 2, nextTaskRunAt: 1_700_000_000_000 }]])
+        const asked: string[][] = []
+        const engine = {
+            getSessionsByNamespace: () => [withTasks, withoutTasks],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: () => new Map(),
+            getSessionTaskSummaries: (ids: string[]) => {
+                asked.push(ids)
+                return summaries
+            },
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
+            searchSessionContent: () => [{
+                sessionId: withTasks.id,
+                messageId: 'message-1',
+                role: 'user' as const,
+                seq: 3,
+                createdAt: 123,
+                snippet: 'context needle',
+                truncated: false
+            }],
+            hasPotentiallyIncompleteSessionContent: () => false,
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const list = await (await app.request('/api/sessions')).json() as { sessions: Array<Record<string, unknown>> }
+        expect([...list.sessions].sort((a, b) => String(a.id).localeCompare(String(b.id)))
+            .map((session) => [session.id, session.activeTaskCount, session.nextTaskRunAt])).toEqual([
+            ['with-tasks', 2, 1_700_000_000_000],
+            ['without-tasks', 0, null]
+        ])
+        expect(asked.at(-1)?.sort()).toEqual(['with-tasks', 'without-tasks'])
+
+        const search = await app.request('/api/sessions/content-search?query=needle')
+        const body = await search.json() as { results: Array<{ session: Record<string, unknown> }> }
+        expect(body.results[0].session).toMatchObject({ id: withTasks.id, activeTaskCount: 2, nextTaskRunAt: 1_700_000_000_000 })
+        expect(asked.at(-1)).toEqual([withTasks.id])
     })
 
     it('searches message content only through the explicit content endpoint', async () => {
@@ -2679,6 +2737,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: (namespace: string, query: string, sessionIds?: readonly string[]) => {
@@ -2743,6 +2802,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: () => false,
@@ -2777,6 +2837,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [],
             getFutureScheduledMessageCounts: () => new Map(),
             getNextScheduledAtBySessionIds: () => new Map(),
+            getSessionTaskSummaries: () => new Map(),
             searchSessionContent: () => []
         } as unknown as Partial<SyncEngine>
         const app = new Hono<WebAppEnv>()
@@ -2808,7 +2869,8 @@ describe('sessions routes', () => {
                 throw new Error('must reject before searching')
             },
             getFutureScheduledMessageCounts: () => new Map(),
-            getNextScheduledAtBySessionIds: () => new Map()
+            getNextScheduledAtBySessionIds: () => new Map(),
+            getSessionTaskSummaries: () => new Map()
         } as unknown as Partial<SyncEngine>
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {
@@ -2919,6 +2981,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -3076,6 +3139,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -3112,6 +3176,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             allocateAttachedJobVersion: (id: string) => {
                 expect(id).toBe(session.id)
                 callOrder.push('allocate')

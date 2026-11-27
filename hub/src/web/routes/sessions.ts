@@ -252,6 +252,7 @@ export function createSessionsRoutes(
         }
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
+        const taskSummaries = engine.getSessionTaskSummaries(sessionRecords.map((session) => session.id))
         // Watermark BEFORE reading jobs. If a mutation lands between read and
         // allocate, SSE gets version V with the new value while this response
         // would return the older value labeled V+1 — useSSE then rejects the
@@ -267,22 +268,30 @@ export function createSessionsRoutes(
                 // Same allocator as SSE emits — equal-ms terminal patches stay applyable.
                 attachedJobUpdatedAt: attachedJobVersions.get(session.id) ?? 0
             }
+            const taskSummary = taskSummaries.get(session.id)
             if (slim) {
                 // Scheduled extras keep slim semantics: 0 / null are omitted
-                // below rather than materialized, like every other default.
+                // below rather than materialized, like every other default. The
+                // task counts follow the same rule.
                 const scheduledCount = scheduledCounts.get(session.id) ?? 0
                 const scheduledAt = nextScheduledAt.get(session.id) ?? null
+                const activeTaskCount = taskSummary?.activeTaskCount ?? 0
+                const nextTaskRunAt = taskSummary?.nextTaskRunAt ?? null
                 return {
                     ...toSlimSessionSummary(session, extras),
                     ...(scheduledCount > 0 ? { futureScheduledMessageCount: scheduledCount } : {}),
-                    ...(scheduledAt !== null ? { nextScheduledAt: scheduledAt } : {})
+                    ...(scheduledAt !== null ? { nextScheduledAt: scheduledAt } : {}),
+                    ...(activeTaskCount > 0 ? { activeTaskCount } : {}),
+                    ...(nextTaskRunAt !== null ? { nextTaskRunAt } : {})
                 }
             }
             const summary = toSessionSummary(session, extras)
             return {
                 ...summary,
                 futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
-                nextScheduledAt: nextScheduledAt.get(session.id) ?? null
+                nextScheduledAt: nextScheduledAt.get(session.id) ?? null,
+                activeTaskCount: taskSummary?.activeTaskCount ?? 0,
+                nextTaskRunAt: taskSummary?.nextTaskRunAt ?? null
             }
         })
 
@@ -332,6 +341,7 @@ export function createSessionsRoutes(
         const matchedSessionIds = matches.map((match) => match.sessionId)
         const scheduledCounts = engine.getFutureScheduledMessageCounts(matchedSessionIds)
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(matchedSessionIds)
+        const taskSummaries = engine.getSessionTaskSummaries(matchedSessionIds)
         // Same job extras as GET /sessions — content-search summaries replace the
         // live list rows, so omitting attachedJob drops meters and the active-filter
         // jobs exception for matching idle sessions (#1424).
@@ -347,11 +357,14 @@ export function createSessionsRoutes(
                     attachedJob: attachedJobs.get(session.id) ?? null,
                     attachedJobUpdatedAt: attachedJobVersions.get(session.id) ?? 0
                 })
+                const taskSummary = taskSummaries.get(session.id)
                 return [{
                     session: {
                         ...summary,
                         futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
-                        nextScheduledAt: nextScheduledAt.get(session.id) ?? null
+                        nextScheduledAt: nextScheduledAt.get(session.id) ?? null,
+                        activeTaskCount: taskSummary?.activeTaskCount ?? 0,
+                        nextTaskRunAt: taskSummary?.nextTaskRunAt ?? null
                     },
                     match: {
                         messageId: match.messageId,

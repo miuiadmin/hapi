@@ -412,6 +412,8 @@ export function toSlimSessionSummary(
     if (slim.pendingRequestKinds?.length === 0) delete slim.pendingRequestKinds
     if (slim.todoProgress === null) delete slim.todoProgress
     if (slim.nextScheduledAt === null) delete slim.nextScheduledAt
+    if (slim.activeTaskCount === 0) delete slim.activeTaskCount
+    if (slim.nextTaskRunAt === null) delete slim.nextTaskRunAt
     if (slim.attachedJob === null) delete slim.attachedJob
     if (slim.attachedJobUpdatedAt === 0) delete slim.attachedJobUpdatedAt
     if (isDefaultReadState(slim.readState)) delete slim.readState
