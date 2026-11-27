@@ -273,7 +273,7 @@ describe('archive and restore copy', () => {
     const english: Record<string, string> = en
     const dictionaries: Array<[string, Record<string, string>]> = [['zh-CN', zhCN], ['ru', ru], ['ja', ja]]
 
-    it.each(['session.restoring'])('says what is happening in every locale, not the English copy (%s)', (key) => {
+    it.each(['session.restoring', 'misc.resuming'])('says what is happening in every locale, not the English copy (%s)', (key) => {
         expect(english[key], 'en should define the key').toBeTruthy()
         for (const [locale, dict] of dictionaries) {
             expect(dict[key], `${locale} should define ${key}`).toBeTruthy()

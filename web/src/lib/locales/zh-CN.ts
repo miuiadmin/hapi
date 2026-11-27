@@ -1706,6 +1706,7 @@ export default {
   'misc.typeAMessage': '输入消息...',
   'misc.typeAMessageWithMentions': '输入想让智能体做的事，或用 @ 提及另一个会话以提供上下文或移交',
   'misc.offline': 'offline',
+  'misc.resuming': '正在恢复',
   'misc.permissionRequired': '需要审批',
   'misc.inputRequired': '等待回答',
   'misc.pendingRequests': '{count} 项待处理',

@@ -2,7 +2,7 @@ import { BranchConversationDialog } from '@/components/BranchConversationDialog'
 import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/react'
 import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
@@ -111,10 +111,11 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
 import { GoalModeBanner, useGoalModeTransitionBanner } from '@/components/AssistantChat/GoalModeBanner'
+import { SessionRestoringBanner } from '@/components/AssistantChat/SessionRestoringBanner'
 import { usePlatform } from '@/hooks/usePlatform'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useConciseChatMode } from '@/hooks/useConciseChatMode'
-import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionReopenMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
@@ -830,6 +831,11 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
         openFork(localId)
     }, [openFork, rewindForkFallback])
     const sessionInactive = !props.session.active
+    // A reopen or a resume of this session is in flight (keyed like the
+    // archive, so it shows here whoever started it). The interface treats the
+    // click as done: the stopped notice goes at once and a floating banner says
+    // what is happening until the hub answers.
+    const restoring = useIsMutating({ mutationKey: sessionReopenMutationKey(props.session.id), exact: true }) > 0
     const inactiveCanResume = inactiveSessionCanResume(
         props.session,
         props.messages.length,
@@ -2521,7 +2527,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                 <TeamPanel teamState={props.session.teamState} />
             )}
 
-            {sessionInactive ? (
+            {sessionInactive && !restoring ? (
                 <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-center text-sm text-[var(--app-hint)]">
                     {inactiveCanResume
                         ? t('session.inactive.autoResume')
@@ -2590,6 +2596,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
+                        {restoring ? <SessionRestoringBanner /> : null}
                         <SessionOpenTraceChip sessionId={props.session.id} />
                         {canViewAgentTerminal && terminalMounted && (
                             // SessionChatInner is keyed by session.id, so switching sessions remounts this subtree.
@@ -2882,6 +2889,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                                 : claudeEffortOptions
                         }
                         active={props.session.active}
+                        resuming={restoring}
                         allowSendWhenInactive
                         resolveSessionIdForVoice={props.resolveSessionIdForVoice}
                         onVoiceSessionResolved={props.onVoiceSessionResolved}

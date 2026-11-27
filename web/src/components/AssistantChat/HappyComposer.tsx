@@ -306,6 +306,8 @@ export function HappyComposer(props: {
     modelReasoningEffort?: string | null
     effort?: string | null
     active?: boolean
+    /** The session is being restored: the status bar says so instead of "offline". */
+    resuming?: boolean
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
@@ -442,6 +444,7 @@ export function HappyComposer(props: {
         modelReasoningEffort: rawModelReasoningEffort,
         effort: rawEffort,
         active = true,
+        resuming = false,
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
@@ -2364,6 +2367,7 @@ export function HappyComposer(props: {
 
                     <StatusBar
                         active={active}
+                        resuming={resuming}
                         machineId={machineId}
                         thinking={thinking}
                         agentState={agentState}

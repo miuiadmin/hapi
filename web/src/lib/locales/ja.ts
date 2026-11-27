@@ -1596,6 +1596,7 @@ export default {
   'misc.typeAMessage': 'メッセージを入力…',
   'misc.typeAMessageWithMentions': 'エージェントにしてほしいことを入力するか、文脈の共有や引き継ぎのために他のセッションを @ メンションしてください',
   'misc.offline': 'オフライン',
+  'misc.resuming': '復元中',
   'misc.permissionRequired': '承認が必要です',
   'misc.inputRequired': '回答待ち',
   'misc.pendingRequests': '保留中のリクエスト {count} 件',

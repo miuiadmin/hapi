@@ -59,6 +59,7 @@ const CONTEXT_DANGER_THRESHOLD_PERCENT = 90
 
 function getConnectionStatus(
     active: boolean,
+    resuming: boolean,
     thinking: boolean,
     pendingRequests: readonly PendingRequestEntry[],
     voiceStatus: ConversationStatus | undefined,
@@ -71,6 +72,17 @@ function getConnectionStatus(
             text: t('voice.connecting'),
             color: 'text-[#007AFF]',
             dotColor: 'bg-[#007AFF]',
+            isPulsing: true,
+            hasPendingRequests: false
+        }
+    }
+
+    // A restore in flight is the session coming back, not a dead one.
+    if (resuming) {
+        return {
+            text: t('misc.resuming'),
+            color: 'text-[#34C759]',
+            dotColor: 'bg-[#34C759]',
             isPulsing: true,
             hasPendingRequests: false
         }
@@ -205,6 +217,8 @@ export function shouldShowCodexFastBadge(
 
 export function StatusBar(props: {
     active: boolean
+    /** A reopen or resume of the session is in flight: the status says "restoring" rather than "offline". */
+    resuming?: boolean
     /** Session machine; enables the plan-quota readout next to the context meter. */
     machineId?: string | null
     thinking: boolean
@@ -239,8 +253,8 @@ export function StatusBar(props: {
         [props.agentState?.requests]
     )
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
-        [props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t]
+        () => getConnectionStatus(props.active, props.resuming ?? false, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
+        [props.active, props.resuming, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
     const contextHeuristicModel = props.contextModel ?? props.model

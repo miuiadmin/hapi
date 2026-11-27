@@ -1487,6 +1487,7 @@ export default {
   'misc.typeAMessage': 'Введите сообщение...',
   'misc.typeAMessageWithMentions': 'Введите, что должен сделать агент, или @упомяните другую сессию для контекста или передачи',
   'misc.offline': 'офлайн',
+  'misc.resuming': 'восстановление',
   'misc.permissionRequired': 'Требуется подтверждение',
   'misc.inputRequired': 'Ожидает ответа',
   'misc.pendingRequests': 'Ожидают обработки: {count}',

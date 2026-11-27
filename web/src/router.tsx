@@ -70,6 +70,7 @@ import { useConsumedMessageTarget } from '@/lib/useConsumedMessageTarget'
 import { normalizeMessageSearchTarget } from '@/lib/messageSearchTarget'
 import { buildFileMentionSearchQuery } from '@/lib/file-search-query'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
+import { runTrackedSessionResume } from '@/hooks/mutations/useSessionActions'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
 
 // ---------------------------------------------------------------------------
@@ -644,7 +645,9 @@ function SessionPage() {
         setReopeningSessionId((prev) => prev ?? errorSessionId)
         void (async () => {
             try {
-                const result = await api.reopenSession(errorSessionId)
+                // Under the reopen key: the row spinner and the conversation
+                // banner show it like any other reopen.
+                const result = await runTrackedSessionResume(queryClient, errorSessionId, () => api.reopenSession(errorSessionId))
                 // Clear the inline error -- the operator now has a live
                 // session to retry against.
                 setSendErrors((prev) => {
@@ -743,7 +746,13 @@ function SessionPage() {
             )
         }
         try {
-            const target = api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
+            // Under the reopen key, so the row's spinner and the conversation
+            // view's banner show the resume like a Reopen.
+            const target = runTrackedSessionResume(
+                queryClient,
+                currentSessionId,
+                () => api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined }),
+            )
             resolvedSessionRef.current = { source: currentSessionId, target }
             return { sessionId: await target, resumed: true }
         } catch (error) {
@@ -763,7 +772,7 @@ function SessionPage() {
                 'session_inactive',
             )
         }
-    }, [api, session, messages.length, cursorChatStoreStatus?.onDisk, t, addToast])
+    }, [api, session, messages.length, cursorChatStoreStatus?.onDisk, t, addToast, queryClient])
 
     const resolveSessionIdForUpload = useCallback(async (id: string) => {
         return (await resolveSessionId(id)).sessionId

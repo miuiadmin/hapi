@@ -1708,6 +1708,7 @@ export default {
   'misc.typeAMessage': 'Type a message...',
   'misc.typeAMessageWithMentions': 'Type what you want the agent to do, or @mention another session for context or handoff',
   'misc.offline': 'offline',
+  'misc.resuming': 'restoring',
   'misc.permissionRequired': 'Approval required',
   'misc.inputRequired': 'Awaiting your answer',
   'misc.pendingRequests': '{count} pending requests',
