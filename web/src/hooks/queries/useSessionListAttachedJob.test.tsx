@@ -25,6 +25,8 @@ function summary(id: string, attachedJob: AttachedJob | null): SessionSummary {
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        activeTaskCount: 0,
+        nextTaskRunAt: null,
         model: null,
         effort: null,
         attachedJob,

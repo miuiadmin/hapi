@@ -23,7 +23,7 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         active: false, thinking: false, activeAt: 0, updatedAt: 1, metadata: { path: '/work/app', name: SESSION_NAME },
         metadataVersion: 0, agentStateVersion: 0, todosUpdatedAt: 0, todoProgress: null,
         pendingRequestsCount: 0, pendingRequestKinds: [], pendingRequests: [], backgroundTaskCount: 0,
-        futureScheduledMessageCount: 0, nextScheduledAt: null, model: null, effort: null,
+        futureScheduledMessageCount: 0, nextScheduledAt: null, activeTaskCount: 0, nextTaskRunAt: null, model: null, effort: null,
         attachedJob: null, attachedJobUpdatedAt: 0,
         ...overrides
     }
