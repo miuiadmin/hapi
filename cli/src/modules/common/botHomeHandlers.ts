@@ -10,7 +10,6 @@ import {
     type PrepareBotHomeResponse,
 } from '@hapi/protocol'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
-import { resolveHapiHomeDir } from '@/configuration'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { getErrorMessage, rpcError, type RpcErrorResponse } from './rpcResponses'
 
@@ -18,8 +17,9 @@ import { getErrorMessage, rpcError, type RpcErrorResponse } from './rpcResponses
  * Machine-level `prepare-bot-home` (hub → runner): create a bot's home folder
  * on this machine and seed its rules files. Same path authority as browsing and
  * spawning (`MachinePathPolicy`): with `--workspace-root` limits the home must
- * fall inside them — or be one of the machine's default homes for bots
- * (`defaultBotHomeRoots`), which are not session workspaces.
+ * fall inside them. The machine's default homes for bots (`~/.hapi/bots`)
+ * are part of what the policy allows, so the default the hub offers works on
+ * such a machine too, here and for the home chat that runs in the folder.
  *
  * The runner never seeds files into a folder that is not a bot's home:
  * 1. the path policy above;
@@ -75,22 +75,6 @@ export function isSameOrAncestor(candidate: string, anchor: string): boolean {
     return rel === '' || (!rel.startsWith('..' + sep) && rel !== '..' && !rel.startsWith(sep))
 }
 
-/** True when `candidate` is `root` itself or a folder below it (as the paths are written). */
-export function isWithinRoot(candidate: string, root: string): boolean {
-    return isSameOrAncestor(root, candidate)
-}
-
-/**
- * Where a bot lives when its owner names no folder: `~/.hapi/bots`, and `bots`
- * under the runner's own folder when it was started with another `HAPI_HOME`.
- * These are the machine's own folders, not session workspaces, so they are a
- * bot's home even where `--workspace-root` limits the workspace: the default
- * the hub offers has to work on such a machine too.
- */
-export function defaultBotHomeRoots(home: string = homedir()): string[] {
-    return [...new Set([resolve(home, '.hapi', 'bots'), resolve(resolveHapiHomeDir(), 'bots')])]
-}
-
 function refusal(code: PrepareBotHomeRefusal, error: string): PrepareBotHomeOutcome {
     return { ...rpcError(error), code }
 }
@@ -121,14 +105,7 @@ export async function prepareBotHome(
     // hands the session its requested directory rather than the real path.
     const absolute = expandBotHomePath(request.path, deps.home)
     const resolved = await deps.pathPolicy.resolveForCheck(absolute)
-    const insideWorkspace = deps.pathPolicy.isWithinSpawnRoots(resolved)
-    // Or a default home: on both spellings of the path (each spelled like its
-    // roots), each inside the workspace or inside the default homes. A link
-    // from there to a folder elsewhere is not a home this runner prepares.
-    const defaultRoots = defaultBotHomeRoots(deps.home)
-    const resolvedRoots = await Promise.all(defaultRoots.map((root) => deps.pathPolicy.resolveForCheck(root)))
-    const allowed = (path: string, roots: string[]) => deps.pathPolicy.isWithinSpawnRoots(path) || roots.some((root) => isWithinRoot(path, root))
-    if (!insideWorkspace && !(allowed(absolute, defaultRoots) && allowed(resolved, resolvedRoots))) {
+    if (!deps.pathPolicy.isWithinSpawnRoots(resolved)) {
         return refusal('outside_workspace_roots', BOT_HOME_OUTSIDE_WORKSPACE_ROOTS_ERROR)
     }
 

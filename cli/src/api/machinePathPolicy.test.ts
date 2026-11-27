@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, realpath, symlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_RESOLVE_TIMEOUT_MS, MachinePathPolicy } from './machinePathPolicy'
@@ -82,6 +82,52 @@ describe('MachinePathPolicy', () => {
         expect(await policy.allowsBrowse(inside)).toBe(true)
         // Lexical containment still denies clearly-outside paths.
         expect(await policy.allowsSpawn(join(base, 'elsewhere'))).toBe(false)
+    })
+
+    describe('the default homes of bots', () => {
+        it('are inside the boundaries where roots limit the workspace, for spawning and browsing alike; the roots as reported do not change', async () => {
+            const base = await mkdtemp(join(tmpdir(), 'hapi-path-policy-'))
+            const root = join(base, 'root')
+            const home = join(base, 'home')
+            await Promise.all([mkdir(root), mkdir(home)])
+            const botHomes = join(await realpath(home), '.hapi', 'bots')
+            const policy = new MachinePathPolicy({ workspaceRoots: [root], botHomeRoots: [botHomes] })
+
+            expect(await policy.allowsSpawn(join(botHomes, 'ops'))).toBe(true)
+            expect(await policy.allowsBrowse(join(botHomes, 'ops', 'SOUL.md'))).toBe(true)
+            expect(await policy.allowsSpawn(join(root, 'project'))).toBe(true)
+            expect(await policy.allowsSpawn(join(home, 'elsewhere'))).toBe(false)
+            expect(await policy.allowsSpawn(join(botHomes + '-evil', 'ops'))).toBe(false)
+            expect(await policy.allowsSpawn(join(home, '.hapi'))).toBe(false)
+            expect(policy.workspaceRoots).toEqual([await realpath(root)])
+        })
+
+        it('are the real ones when a test does not name others', async () => {
+            const base = await mkdtemp(join(tmpdir(), 'hapi-path-policy-'))
+            const root = join(base, 'root')
+            await mkdir(root)
+            const policy = new MachinePathPolicy({ workspaceRoots: [root] })
+            expect(await policy.allowsSpawn(join(homedir(), '.hapi', 'bots', 'ops'))).toBe(true)
+            expect(await policy.allowsSpawn(join(homedir(), '.hapi', 'settings.json'))).toBe(false)
+            expect(await policy.allowsSpawn(join(homedir()))).toBe(false)
+        })
+
+        it('do not make a link from inside them to a folder outside everything allowed', async () => {
+            const base = await mkdtemp(join(tmpdir(), 'hapi-path-policy-'))
+            const root = join(base, 'root')
+            const home = join(base, 'home')
+            const elsewhere = join(base, 'elsewhere')
+            await Promise.all([mkdir(root), mkdir(home), mkdir(elsewhere), mkdir(join(home, '.hapi'), { recursive: true })])
+            const botHomes = join(home, '.hapi', 'bots')
+            await mkdir(botHomes, { recursive: true })
+            await symlink(elsewhere, join(botHomes, 'link'))
+            // No resolution deadline here: under load the fallback to the unresolved path (see the stall test above)
+            // would read the link's own name, which lies inside the bot homes.
+            const policy = new MachinePathPolicy({ workspaceRoots: [root], botHomeRoots: [botHomes], resolveTimeoutMs: 0 })
+
+            expect(await policy.allowsSpawn(join(botHomes, 'link', 'ops'))).toBe(false)
+            expect(await policy.allowsBrowse(join(botHomes, 'link'))).toBe(false)
+        })
     })
 
     it('exposes a sane default deadline', () => {

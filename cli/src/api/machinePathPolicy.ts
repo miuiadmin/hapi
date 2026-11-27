@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs'
+import { defaultBotHomeRoots } from './botHomeRoots'
 import { realpath } from 'node:fs/promises'
 import {
     basename,
@@ -56,6 +57,10 @@ export const DEFAULT_RESOLVE_TIMEOUT_MS = 3000
  * Browsing and spawning share the same boundaries. Without explicit workspace
  * roots, both can access any path available to the runner's OS account; a
  * client's initial directory is a navigation preference, not an access limit.
+ *
+ * With roots, the machine's default homes for bots (`defaultBotHomeRoots`)
+ * are inside the boundaries as well: a bot's home chat runs in its home
+ * folder. They are not reported back as workspace roots.
  */
 export class MachinePathPolicy {
     readonly workspaceRoots: readonly string[]
@@ -64,15 +69,24 @@ export class MachinePathPolicy {
 
     constructor(options: {
         workspaceRoots?: readonly string[]
+        /** The machine's default homes for bots; the real ones unless a test names others. */
+        botHomeRoots?: readonly string[]
         /** Deadline for symlink resolution; <= 0 disables the watchdog. */
         resolveTimeoutMs?: number
     } = {}) {
         const roots = options.workspaceRoots ?? []
         this.workspaceRoots = normalizeRoots(roots)
+        // The default homes of bots are the machine's own folders, not workspaces the owner listed.
+        const botHomes = roots.length > 0 ? (options.botHomeRoots ?? defaultBotHomeRoots()) : []
         // Containment is checked against both canonical and lexical roots so a
         // path left unresolved by the resolution watchdog (see resolveForCheck)
-        // still matches the root exactly as configured.
-        this.checkRoots = [...this.workspaceRoots, ...lexicalRoots(roots)]
+        // still matches each root exactly as configured.
+        this.checkRoots = [
+            ...this.workspaceRoots,
+            ...lexicalRoots(roots),
+            ...normalizeRoots(botHomes),
+            ...lexicalRoots(botHomes)
+        ]
         this.resolveTimeoutMs = options.resolveTimeoutMs ?? DEFAULT_RESOLVE_TIMEOUT_MS
     }
 
