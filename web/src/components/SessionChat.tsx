@@ -56,8 +56,11 @@ import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPa
 import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
 import { getPendingRequestNavigationTarget } from '@/lib/pendingRequests'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
+import { BotLedgerSheet } from '@/components/Bots/BotLedgerSheet'
+import { BotLedgerBar } from '@/components/Bots/BotLedgerBar'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
+import { useBots } from '@/hooks/queries/useBots'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { formatSessionMentionTooltip } from '@/lib/sessionReference'
 import { classifySessionAttention, getSessionAttentionLabelKey } from '@/lib/sessionAttention'
@@ -862,6 +865,22 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
     })
     const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
     const [terminalVisible, setTerminalVisible] = useState(false)
+    // The ledger is only offered on a bot's home chat: the bot whose
+    // `homeChatSessionId` is this session. One list query, shared with the sidebar.
+    const { bots: homeBots } = useBots(props.api)
+    const homeBot = useMemo(
+        () => homeBots.find((candidate) => candidate.homeChatSessionId === props.session.id && candidate.state !== 'archived') ?? null,
+        [homeBots, props.session.id]
+    )
+    const [ledgerOpen, setLedgerOpen] = useState(false)
+    const openLedgerSession = useCallback((sessionId: string, requestId?: string) => {
+        void navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId },
+            ...(requestId ? { search: { pendingRequestId: requestId } } : {}),
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+        })
+    }, [navigate])
     // The terminal chunk + xterm instance only mount on first open; afterwards
     // the view stays mounted (hidden) so toggling keeps scrollback and the
     // PTY subscription, matching the pre-splitting behavior.
@@ -2430,7 +2449,11 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
     })
 
     return (
-        <div className="flex h-full min-h-0 flex-col">
+        // With the bot ledger open on desktop (sm: up) the chat column makes room for it: its width
+        // (440px, see BotLedgerSheet) plus a gap, so the header's buttons and the composer's send key
+        // reflow into the remaining width instead of sitting under the sheet. Below sm: the ledger
+        // is a full-screen modal and nothing is padded.
+        <div className={`flex h-full min-h-0 flex-col${homeBot && ledgerOpen ? ' sm:pr-[452px]' : ''}`}>
             <SessionHeader
                 session={props.session}
                 serviceTier={effectiveCodexServiceTier}
@@ -2439,6 +2462,9 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                 filesActive={false}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
+                onToggleLedger={homeBot ? () => setLedgerOpen((open) => !open) : undefined}
+                ledgerActive={ledgerOpen}
+                ledgerBadge={homeBot?.counts.needsYou ?? 0}
                 onToggleConciseView={() => setConciseChatMode(!conciseChatMode)}
                 conciseViewActive={conciseChatMode}
                 onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
@@ -2464,6 +2490,19 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
             />
 
             <CursorMigrationBanner metadata={props.session.metadata} />
+
+            {homeBot ? (
+                <>
+                    <BotLedgerBar bot={homeBot} active={ledgerOpen} onToggle={() => setLedgerOpen((open) => !open)} />
+                    <BotLedgerSheet
+                        api={props.api}
+                        botId={homeBot.id}
+                        isOpen={ledgerOpen}
+                        onOpenChange={setLedgerOpen}
+                        onOpenSession={openLedgerSession}
+                    />
+                </>
+            ) : null}
 
             {sessionStatus ? <SessionStatusPanel data={sessionStatus} /> : null}
 

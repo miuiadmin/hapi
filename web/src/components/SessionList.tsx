@@ -147,6 +147,7 @@ import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineFilterBar, MachineSummaryRow } from '@/components/MachineFilterBar'
+import { BotsSection } from '@/components/Bots/BotsSection'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useForkFlow } from '@/hooks/useForkFlow'
 import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
@@ -3813,6 +3814,10 @@ export function SessionList(props: {
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
             <QuickUnpinFocusContext.Provider value={quickUnpinFocusRef}>
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
+                {/* The bots' home chats are ordinary rows below; this is the shortcut to them, with what waits on the owner. */}
+                {isFiltering || contentSearchActive || activeMachineFilter !== null ? null : (
+                    <BotsSection api={api} onSelect={props.onSelect} />
+                )}
                 {props.sessions.length === 0 && !props.isLoading ? (
                     <SessionsEmptyState
                         onNewSession={props.onNewSession}

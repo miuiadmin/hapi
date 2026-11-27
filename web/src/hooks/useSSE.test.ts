@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { BOT_INVALIDATION_DELAY_MS } from '@/hooks/queries/useBots'
 import { isSubscriptionTornDown, resetSubscriptionLivenessForTests } from '@/lib/sseSubscriptionLiveness'
 import {
     applySessionDetailPatch,
@@ -363,6 +364,79 @@ describe('useSSE scratchlist status invalidation', () => {
 
         expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlist('session-1') })
         expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlistSessionIds })
+        unmount()
+    })
+})
+
+describe('useSSE bot events', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    /** Bot events are held for a moment so a burst (and the second SSE connection) refetches once. */
+    const deliverAndFlush = (events: unknown[]) => {
+        act(() => {
+            for (const event of events) FakeEventSource.instances[0]?.simulateMessage(event)
+            vi.advanceTimersByTime(BOT_INVALIDATION_DELAY_MS)
+        })
+    }
+
+    it('bots-changed refreshes the list, and that bot when one is named', () => {
+        const { unmount, queryClient } = renderUseSSE()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        deliverAndFlush([{ type: 'bots-changed', botId: 'bot-1' }])
+        const keys = invalidateQueries.mock.calls.map(([arg]) => arg?.queryKey)
+        expect(keys).toEqual([queryKeys.bots, queryKeys.bot('bot-1')])
+        // A bot-level change says nothing about its ledger.
+        expect(keys).not.toContainEqual(queryKeys.botItems('bot-1'))
+
+        invalidateQueries.mockClear()
+        deliverAndFlush([{ type: 'bots-changed' }])
+        expect(invalidateQueries.mock.calls.map(([arg]) => arg?.queryKey)).toEqual([queryKeys.bots])
+        unmount()
+    })
+
+    it('bot-items-changed refreshes the bot\'s lists and the named item log, not the bot list', () => {
+        const { unmount, queryClient } = renderUseSSE()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        deliverAndFlush([{ type: 'bot-items-changed', sessionId: 'home-1', botId: 'bot-1', itemId: 'item-9' }])
+        expect(invalidateQueries.mock.calls.map(([arg]) => arg?.queryKey)).toEqual([
+            queryKeys.botItems('bot-1'),
+            queryKeys.botNeedsYou('bot-1'),
+            queryKeys.botWorkers('bot-1'),
+            queryKeys.botItemEvents('bot-1', 'item-9')
+        ])
+        unmount()
+    })
+
+    it('coalesces the same event arriving on both connections into one refetch per key', () => {
+        const { unmount, queryClient } = renderUseSSE()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        act(() => {
+            // The global connection and the session's each deliver the burst.
+            for (let i = 0; i < 3; i++) {
+                FakeEventSource.instances[0]?.simulateMessage({ type: 'bot-items-changed', sessionId: 'home-1', botId: 'bot-1', itemId: 'item-9' })
+                FakeEventSource.instances[0]?.simulateMessage({ type: 'bot-items-changed', sessionId: 'home-1', botId: 'bot-1' })
+            }
+        })
+        expect(invalidateQueries).not.toHaveBeenCalled()
+        act(() => { vi.advanceTimersByTime(BOT_INVALIDATION_DELAY_MS) })
+        expect(invalidateQueries.mock.calls.map(([arg]) => arg?.queryKey)).toEqual([
+            queryKeys.botItems('bot-1'),
+            queryKeys.botNeedsYou('bot-1'),
+            queryKeys.botWorkers('bot-1'),
+            queryKeys.botItemEvents('bot-1', 'item-9')
+        ])
         unmount()
     })
 })

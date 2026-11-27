@@ -9,6 +9,16 @@ import {
     exitCodeForSpawnPeerError,
     spawnPeer
 } from '@/modules/spawnPeer/spawnPeer'
+import {
+    PEER_RECEIPT_FLAG_HELP,
+    botNameFromEnv,
+    requireWriteFromSessionId,
+    resolveBotId,
+    type PeerReplyVia
+} from '@/modules/bot/replyVia'
+import { updateItem } from '@/modules/bot/items'
+import { BotClientError, botErrorMessage, createBotAuthSource, type BotAuthSource } from '@/modules/bot/botClient'
+import { assertReceiptFeasible, settleReceipt } from './pingPeer'
 import type { CommandDefinition } from './types'
 
 type ParsedSpawnPeerArgs = {
@@ -24,6 +34,12 @@ type ParsedSpawnPeerArgs = {
     permissionMode?: PermissionMode
     machine?: string
     waitActiveSecs?: number
+    /** `--receipt hub|caller`; absent keeps the default (hub in a bot session, else none). */
+    receipt?: PeerReplyVia
+    /** `--item <n>`: attach the new session to this ledger item as its worker (needs a bot). */
+    item?: string | number
+    /** `--bot <id>`: the bot acting, when HAPI_BOT_ID is not set. */
+    bot?: string
 }
 
 function showHelp(): void {
@@ -43,6 +59,10 @@ ${chalk.bold('Notes:')}
   Same hub token/namespace as this CLI. Prefer MCP spawn_peer in-session.
   When HAPI_SESSION_ID is set, the remit is auto-stamped with a durable
   Parent [title](/sessions/<uuid>) chip (rename-proof identity).
+  Inside a bot's home chat (HAPI_BOT_ID) the worker contract is appended to the
+  remit (report results; stop before irreversible actions) and --receipt
+  defaults to hub.
+  ${PEER_RECEIPT_FLAG_HELP}
 
 ${chalk.bold('Options:')}
   --dir PATH              Working directory on the target machine (required; relative paths resolve here, not in the runner)
@@ -56,6 +76,9 @@ ${chalk.bold('Options:')}
                           which must be a git repository)
   --permission-mode MODE  Optional; omit = hub/stock default (yolo). Pass to tighten or when named; not cloned from parent
   --wait SECONDS          Active/verify timeout (default 60, or HAPI_WAIT_ACTIVE_SECS)
+  --receipt hub|caller    Where the worker's reply is awaited (see below); default hub with --bot / HAPI_BOT_ID
+  --item N                Bot only: attach the new session to ledger item N as its worker
+  --bot ID                The bot acting, when HAPI_BOT_ID is not set (worker contract, --item, hub receipt default)
 
   Cross-machine: --dir must exist on the TARGET host. Local existence is not required when
   --machine resolves to a different runner than this CLI's settings.machineId.
@@ -64,6 +87,7 @@ ${chalk.bold('Env:')}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
   HAPI_WAIT_ACTIVE_SECS (default 60; overridable with --wait)
   HAPI_SESSION_ID / HAPI_SESSION_NAME / HAPI_AGENT_SESSION_ID (Parent stamp when set)
+  HAPI_BOT_ID / HAPI_BOT_NAME (bot home chat: worker contract, --item, hub receipt default)
 `)
 }
 
@@ -222,6 +246,33 @@ export function parseSpawnPeerArgs(args: string[]): ParsedSpawnPeerArgs {
             result.waitActiveSecs = Number(arg.slice('--wait='.length))
             continue
         }
+        if (arg === '--receipt' || arg.startsWith('--receipt=')) {
+            const value = (arg === '--receipt' ? args[++i] : arg.slice('--receipt='.length)) ?? ''
+            if (value !== 'hub' && value !== 'caller') {
+                throw new SpawnPeerError('bad_args', '--receipt requires hub or caller')
+            }
+            if (result.receipt !== undefined) {
+                throw new SpawnPeerError('bad_args', '--receipt may only be specified once')
+            }
+            result.receipt = value
+            continue
+        }
+        if (arg === '--item' || arg.startsWith('--item=')) {
+            const value = (arg === '--item' ? args[++i] : arg.slice('--item='.length)) ?? ''
+            if (!value.trim()) {
+                throw new SpawnPeerError('bad_args', '--item requires an item number or id')
+            }
+            result.item = /^\d+$/.test(value.trim()) ? Number(value.trim()) : value.trim()
+            continue
+        }
+        if (arg === '--bot' || arg.startsWith('--bot=')) {
+            const value = (arg === '--bot' ? args[++i] : arg.slice('--bot='.length)) ?? ''
+            if (!value.trim()) {
+                throw new SpawnPeerError('bad_args', '--bot requires an id')
+            }
+            result.bot = value.trim()
+            continue
+        }
         if (arg.startsWith('-')) {
             throw new SpawnPeerError('bad_args', `unexpected flag: ${arg}`)
         }
@@ -230,6 +281,10 @@ export function parseSpawnPeerArgs(args: string[]): ParsedSpawnPeerArgs {
             continue
         }
         throw new SpawnPeerError('bad_args', `unexpected arg: ${arg}`)
+    }
+
+    if (result.item !== undefined && !result.bot && !(process.env.HAPI_BOT_ID ?? '').trim()) {
+        throw new SpawnPeerError('bad_args', '--item needs a bot: run inside a bot home chat (HAPI_BOT_ID) or pass --bot <id>')
     }
 
     if (result.waitActiveSecs !== undefined && (!Number.isFinite(result.waitActiveSecs) || result.waitActiveSecs <= 0)) {
@@ -323,6 +378,12 @@ export async function handleSpawnPeerCommand(args: string[]): Promise<void> {
         )
     }
 
+    try {
+        assertReceiptFeasible(parsed.receipt)
+    } catch (error) {
+        throw new SpawnPeerError('bad_args', error instanceof Error ? error.message : String(error))
+    }
+    const botId = resolveBotId(parsed.bot)
     const result = await spawnPeer({
         directory: parsed.directory,
         message,
@@ -334,10 +395,40 @@ export async function handleSpawnPeerCommand(args: string[]): Promise<void> {
         permissionMode: parsed.permissionMode,
         machine: parsed.machine,
         waitActiveSecs: parsed.waitActiveSecs ?? envWaitActiveSecs(),
+        // Explicit --bot names the bot even without the env marker; otherwise
+        // spawnPeer resolves the contract from HAPI_BOT_ID itself.
+        ...(parsed.bot ? { workerContract: { botId: botId!, botName: botNameFromEnv() } } : {}),
         onProgress: (line) => console.log(`hapi spawn-peer: ${line}`)
     })
 
-    console.log(chalk.green(`hapi spawn-peer: OK ${result.sessionId}  name="${result.name}"`))
+    // One JWT for the attach and the receipt registration.
+    const auth = createBotAuthSource({})
+    let itemNote = ''
+    if (parsed.item !== undefined && botId) {
+        itemNote = await attachWorkerToItem(botId, parsed.item, result.sessionId, auth)
+    }
+    // `--bot X` is the bot acting, so the receipt default follows it like the env marker does.
+    const replyNote = await settleReceipt({ explicit: parsed.receipt, task: result, command: 'hapi spawn-peer', botId: botId ?? undefined, auth })
+    console.log(chalk.green(`hapi spawn-peer: OK ${result.sessionId}  name="${result.name}"${itemNote}${replyNote}`))
+}
+
+/** `--item`: the new session becomes the item's worker. A failed attach never undoes the spawn. */
+async function attachWorkerToItem(botId: string, item: string | number, workerSessionId: string, auth?: BotAuthSource): Promise<string> {
+    try {
+        const attached = await updateItem({
+            auth,
+            botId,
+            itemId: item,
+            // Mandatory inside a bot session: the hub takes a write without it as the owner's.
+            fromSessionId: requireWriteFromSessionId(),
+            body: { workerSessionId }
+        })
+        return `  attached to item #${attached.number} [${attached.status}] ${attached.title}`
+    } catch (error) {
+        const message = botErrorMessage(error)
+        console.error(chalk.yellow(`hapi spawn-peer: could not attach to item ${item} (${message}); attach it with: hapi item set ${item} --worker ${workerSessionId}`))
+        return ''
+    }
 }
 
 export const spawnPeerCommand: CommandDefinition = {
@@ -350,6 +441,10 @@ export const spawnPeerCommand: CommandDefinition = {
             if (error instanceof SpawnPeerError) {
                 console.error(chalk.red('hapi spawn-peer:'), error.message)
                 process.exit(exitCodeForSpawnPeerError(error))
+            }
+            if (error instanceof BotClientError) {
+                console.error(chalk.red('hapi spawn-peer:'), error.message)
+                process.exit(1)
             }
             console.error(
                 chalk.red('hapi spawn-peer:'),

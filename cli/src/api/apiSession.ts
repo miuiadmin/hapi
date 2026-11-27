@@ -213,6 +213,15 @@ export class ApiSessionClient extends EventEmitter {
      * review: keep the resolved preference scoped per session/root).
      */
     peerToolsDisabled?: boolean
+    /**
+     * Present only when the hub marks this session as a bot's home chat
+     * (bootstrap snapshot). Gates the bot tools (`bot_item` / `bot_task`),
+     * `HAPI_BOT_ID` in the wrapped agent's environment, and the hub-side
+     * reply-receipt default for peers this session opens. Undefined for
+     * workers and ordinary sessions, or until a lazy pending session
+     * materializes.
+     */
+    botId?: string
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -295,6 +304,8 @@ export class ApiSessionClient extends EventEmitter {
         this.agentStateVersion = session.agentStateVersion
         const bootstrapSnapshot = (session as SessionBootstrapInfo).peerToolsDisabled
         this.peerToolsDisabled = bootstrapSnapshot === undefined ? undefined : resolveSessionPeerToolsDisabled(bootstrapSnapshot)
+        const bootstrapBotId = (session as SessionBootstrapInfo).botId
+        this.botId = bootstrapBotId ? bootstrapBotId : undefined
         this.materializer = options.materialize
         this.onMaterialized = options.onMaterialized
         this.state = this.materializer ? 'pending' : 'active'
@@ -702,6 +713,10 @@ if (isReconnect) {
                 this.peerToolsDisabled = materializedSnapshot === undefined
                     ? this.peerToolsDisabled
                     : resolveSessionPeerToolsDisabled(materializedSnapshot)
+                const materializedBotId = (materialized as SessionBootstrapInfo).botId
+                if (materializedBotId) {
+                    this.botId = materializedBotId
+                }
                 this.state = 'active'
                 this.metadataAppliedHandler?.()
 

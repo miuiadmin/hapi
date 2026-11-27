@@ -66,6 +66,10 @@ Pass `waitForReply: true` to `ping_peer` or `spawn_peer` and the calling agent c
 
 Reply forwarding is MCP-only (no shell flag) and runs inside the calling session's HAPI process: if that process exits first, the reply stays only in the peer session. Pi peers do not report the end of a turn, so the tool returns immediately and asks the caller to check with `inspect_peer` instead.
 
+To hand the waiting to the hub instead, pass `replyVia: 'hub'` (shell: `--receipt hub`). The hub then posts the peer's reply back into the calling session when its turn ends, whether or not the calling session's process is still running, and for peers of every agent. A bot's home chat uses this by default; everywhere else the default is unchanged. See [Bots](./bots.md).
+
+`list_peers` marks a session `[waiting]` when it has a request nobody has answered and `[background]` while it runs background tasks.
+
 ## Spawning peers
 
 `spawn_peer` creates a session and delivers a required first message. A session that ends up with no user message counts as a failed spawn and returns an error.

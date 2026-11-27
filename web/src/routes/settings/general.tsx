@@ -9,6 +9,7 @@ import {
 } from '@hapi/protocol'
 import type { UpdateHubSettingsRequest } from '@hapi/protocol/apiTypes'
 import type { ResolvedPeerSpawnDefaults } from '@hapi/protocol/peerSpawnDefaults'
+import { apiErrorMessage } from '@/api/client'
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppContext } from '@/lib/app-context'
 import { CompanionPairing } from '@/components/settings/CompanionPairing'
@@ -169,15 +170,34 @@ export default function SettingsGeneralPage() {
                     description={t('settings.general.peerTools.description')}
                 >
                     {hubSettingsQuery.data ? (
-                        <SettingsSwitch
-                            label={t('settings.general.disablePeerTools')}
-                            description={t('settings.general.disablePeerTools.desc')}
-                            checked={hubSettingsQuery.data.disablePeerTools}
-                            onChange={(checked) => {
-                                if (hubSettingsMutation.isPending) return
-                                hubSettingsMutation.mutate({ disablePeerTools: checked })
-                            }}
-                        />
+                        <>
+                            <SettingsSwitch
+                                label={t('settings.general.disablePeerTools')}
+                                description={t('settings.general.disablePeerTools.desc')}
+                                checked={hubSettingsQuery.data.disablePeerTools}
+                                onChange={(checked) => {
+                                    if (hubSettingsMutation.isPending) return
+                                    hubSettingsMutation.mutate({ disablePeerTools: checked })
+                                }}
+                            />
+                            {/* Only meaningful while the tools are off for everyone else; one field per request. */}
+                            {hubSettingsQuery.data.disablePeerTools ? (
+                                <SettingsSwitch
+                                    label={t('settings.general.peerToolsBotsOnly')}
+                                    // The mutation is shared by every switch here; a failure is ours when the request carried our field.
+                                    description={hubSettingsMutation.isError && hubSettingsMutation.variables?.peerToolsBotsOnly !== undefined
+                                        ? apiErrorMessage(hubSettingsMutation.error, t('settings.general.peerToolsBotsOnly.saveFailed'))
+                                        : t('settings.general.peerToolsBotsOnly.desc')}
+                                    // A hub that predates the field omits it; that reads as off.
+                                    checked={hubSettingsQuery.data.peerToolsBotsOnly === true}
+                                    disabled={hubSettingsMutation.isPending}
+                                    onChange={(checked) => {
+                                        if (hubSettingsMutation.isPending) return
+                                        hubSettingsMutation.mutate({ peerToolsBotsOnly: checked })
+                                    }}
+                                />
+                            ) : null}
+                        </>
                     ) : null}
                 </SettingsSection>
             ) : null}

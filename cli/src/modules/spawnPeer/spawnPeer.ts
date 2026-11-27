@@ -44,6 +44,11 @@ import {
     pingPeer
 } from '@/modules/pingPeer/pingPeer'
 import {
+    appendWorkerContract,
+    workerContractIdentityFromEnv,
+    type WorkerContractIdentity
+} from '@/modules/bot/replyVia'
+import {
     AmbiguousSpawnMachineError,
     isUuidMachineSelector,
     resolveSpawnMachineIdFromList,
@@ -120,6 +125,12 @@ export type SpawnPeerOptions = {
      * Outside-session CLI leaves this false and warns instead.
      */
     requireParent?: boolean
+    /**
+     * The bot this worker is opened by. When given, the worker contract is
+     * appended to the remit (after the Parent stamp). `undefined` resolves
+     * from `HAPI_BOT_ID` / `HAPI_BOT_NAME` (a bot's shell); `null` adds none.
+     */
+    workerContract?: WorkerContractIdentity | null
     http?: AxiosInstance
     sleep?: (ms: number) => Promise<void>
     now?: () => number
@@ -524,6 +535,16 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
             throw new SpawnPeerError('bad_args', error.message)
         }
         throw error
+    }
+    // A bot's worker gets its contract after the remit body (own `##` heading,
+    // so the `## Parent` section above stays intact and the verified remit
+    // needle — the first 800 characters — is unchanged).
+    const workerContract = options.workerContract === undefined
+        ? workerContractIdentityFromEnv()
+        : options.workerContract
+    if (workerContract) {
+        message = appendWorkerContract(message, workerContract)
+        onProgress?.(`appended the worker contract for bot ${workerContract.botId}`)
     }
     const requestedName = (options.name ?? '').trim()
     if (requestedName.length > SESSION_NAME_MAX_LENGTH) {

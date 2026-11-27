@@ -34,6 +34,35 @@ export function exportHapiSessionEnv(sessionId: string): void {
 }
 
 /**
+ * Env var name exported into the wrapped agent when its session is a bot's
+ * home chat. Shell helpers (`hapi item`, `hapi task`, `hapi spawn-peer
+ * --receipt hub`) read it to know they act for the bot without `--bot`.
+ * The hub decides bot-ness per session (`botId` on the bootstrap row); a
+ * worker opened from the bot's own shell must not inherit the marker, so an
+ * ordinary session clears whatever it inherited.
+ */
+export const HAPI_BOT_ID_ENV = 'HAPI_BOT_ID';
+
+/** Optional display name of the bot, for text addressed to workers. */
+export const HAPI_BOT_NAME_ENV = 'HAPI_BOT_NAME';
+
+export function exportHapiBotEnv(bot: { id: string; name?: string | null } | null | undefined): void {
+    const id = (bot?.id ?? '').trim();
+    if (!id) {
+        delete process.env[HAPI_BOT_ID_ENV];
+        delete process.env[HAPI_BOT_NAME_ENV];
+        return;
+    }
+    process.env[HAPI_BOT_ID_ENV] = id;
+    const name = (bot?.name ?? '').trim();
+    if (name) {
+        process.env[HAPI_BOT_NAME_ENV] = name;
+    } else {
+        delete process.env[HAPI_BOT_NAME_ENV];
+    }
+}
+
+/**
  * Mirror an explicit hub URL into `process.env` so child shells that spawn a
  * fresh `hapi` hit the same non-default hub the session CLI resolved from env
  * or settings. Never export the implicit localhost default (breaks hub

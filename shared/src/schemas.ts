@@ -1004,6 +1004,17 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionChangedSchema.extend({
         type: z.literal('session-tasks-changed')
     }),
+    /** A bot was created, changed, paused or archived; clients refetch `GET /bots`. */
+    SessionEventBaseSchema.extend({
+        type: z.literal('bots-changed'),
+        botId: z.string().optional()
+    }),
+    /** A bot's ledger changed; `sessionId` is the bot's home chat. Clients refetch `GET /bots/:botId/items`. */
+    SessionChangedSchema.extend({
+        type: z.literal('bot-items-changed'),
+        botId: z.string(),
+        itemId: z.string().optional()
+    }),
     SessionChangedSchema.extend({
         type: z.literal('session-ended'),
         reason: SessionEndReasonSchema.optional()

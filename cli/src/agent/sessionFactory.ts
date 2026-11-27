@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { z } from 'zod'
 
-import { ApiClient } from '@/api/api'
+import { ApiClient, type SessionBootstrapInfo } from '@/api/api'
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { AgentState, MachineMetadata, Metadata, Session } from '@/api/types'
 import { getInstalledCliMtimeMs, notifyRunnerSessionStarted } from '@/runner/controlClient'
@@ -15,10 +15,10 @@ import { getInvokedCwd } from '@/utils/invokedCwd'
 import { getProcessStartMarker } from '@/utils/process'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
-import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
+import { exportHapiBotEnv, exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 import packageJson from '../../package.json'
 
-export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from '@/agent/hapiSessionEnv'
+export { HAPI_SESSION_ID_ENV, HAPI_BOT_ID_ENV, exportHapiSessionEnv, exportHapiBotEnv, exportHapiHubAuthEnv } from '@/agent/hapiSessionEnv'
 
 export type SessionStartedBy = 'runner' | 'terminal'
 
@@ -303,7 +303,10 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
 
     const session = api.sessionSyncClient(sessionInfo)
 
-    if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
+    if (options.exportSessionEnv !== false) {
+        exportHapiSessionEnv(sessionInfo.id)
+        exportHapiBotEnv(sessionInfo.botId ? { id: sessionInfo.botId, name: sessionInfo.metadata?.name } : null)
+    }
 
     if (options.reportStarted !== false) await reportSessionStarted(sessionInfo.id, metadata)
 
@@ -388,7 +391,12 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
             // Export only after the hub row exists. Exporting the provisional id at
             // bootstrap lets agents inherit HAPI_SESSION_ID before GET /api/sessions/:id
             // can resolve (and before hapiMcpUrl is persisted) — #1119 / PR #1121 Major.
-            if (options.exportSessionEnv !== false) exportHapiSessionEnv(materialized.id)
+            if (options.exportSessionEnv !== false) {
+                exportHapiSessionEnv(materialized.id)
+                exportHapiBotEnv((materialized as SessionBootstrapInfo).botId
+                    ? { id: (materialized as SessionBootstrapInfo).botId!, name: materialized.metadata?.name }
+                    : null)
+            }
             void reportSessionStarted(materialized.id, snapshot.metadata ?? metadata)
         }
     })
@@ -476,7 +484,10 @@ export async function bootstrapExistingSession(options: {
         throw new Error('Unable to persist existing-session metadata')
     }
 
-    if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
+    if (options.exportSessionEnv !== false) {
+        exportHapiSessionEnv(sessionInfo.id)
+        exportHapiBotEnv(sessionInfo.botId ? { id: sessionInfo.botId, name: sessionInfo.metadata?.name } : null)
+    }
 
     if (options.reportStarted !== false) await reportSessionStarted(sessionInfo.id, metadata)
 

@@ -9,6 +9,7 @@ import {
 } from '../../config/settings'
 import { applyPeerSpawnDefaultsPatch } from '../../config/peerSpawnDefaults'
 import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
+import { isPeerToolsBotsOnlySettingEnabled } from '../../config/disablePeerTools'
 import {
     readTelemetryLevelState,
     writeTelemetryLevel
@@ -26,6 +27,7 @@ async function toHubSettings(settings: Settings, dataDir: string): Promise<HubSe
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
         autoTitlePerTurn: settings.autoTitlePerTurn === true,
         disablePeerTools: settings.disablePeerTools === true,
+        peerToolsBotsOnly: isPeerToolsBotsOnlySettingEnabled(settings),
         autoBridgeTransientModelErrors: settings.autoBridgeTransientModelErrors === true,
         peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults),
         telemetryLevel: levelState.level,
@@ -66,6 +68,7 @@ export function createHubSettingsRoutes(
             fields.sessionSummaryInChat,
             fields.autoTitlePerTurn,
             fields.disablePeerTools,
+            fields.peerToolsBotsOnly,
             fields.autoBridgeTransientModelErrors,
             fields.telemetryLevel,
             fields.peerSpawnDefaults
@@ -130,6 +133,9 @@ export function createHubSettingsRoutes(
             }
             if (fields.disablePeerTools !== undefined) {
                 settings.disablePeerTools = fields.disablePeerTools
+            }
+            if (fields.peerToolsBotsOnly !== undefined) {
+                settings.peerToolsBotsOnly = fields.peerToolsBotsOnly
             }
             if (fields.peerSpawnDefaults !== undefined) {
                 settings.peerSpawnDefaults = applyPeerSpawnDefaultsPatch(

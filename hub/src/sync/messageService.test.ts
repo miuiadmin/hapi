@@ -2115,6 +2115,26 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         ).toBeUndefined()
     })
 
+    it('what the hub posts for a bot (receipt, comment, worker request, first run) is exempt: each is delivered once and must survive the session ending', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'bot-hub-sweep-exempt')
+        const publisher = makePublisher()
+        const now = Date.now()
+        const hubRows = ['hapi-receipt:r1', 'hapi-item-comment:7', 'hapi-worker-request:w:r', 'hapi-bot-kickoff:b1']
+        for (const localId of [...hubRows, 'local-ordinary']) {
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: localId } }, localId)
+        }
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        expect(service.sweepImmediateQueuedOnSessionEnd(session.id, now)?.localIds).toEqual(['local-ordinary'])
+
+        // All four stay pending and are replayed when the bot's session comes back.
+        const { io, cliEmitted } = makeTrackingIo()
+        const service2 = new MessageService(store, io, publisher as any)
+        expect(service2.replayImmediateQueuedMessages(session.id)).toBe(hubRows.length)
+        expect(cliEmitted).toHaveLength(hubRows.length)
+    })
+
     it('job-wake row (hapi-job-wake: localId) is exempt: session-end cannot confirm an unconsumed wake, replay preserves pending (#1489)', () => {
         const store = makeStore()
         const session = makeSession(store, 'job-wake-sweep-exempt')

@@ -25,6 +25,7 @@ Start with the task's files; read only relevant sections of these references, no
 | Native API contract, chat conformance | [client contract](docs/api/client-contract/index.md), [iOS](ios/README.md), [Android](android/README.md) |
 | Encrypted native push relay | [relay/README.md](relay/README.md) |
 | Session-attached jobs (outliving work) | [session jobs guide](docs/guide/session-jobs.md), `cli/src/commands/job.ts` |
+| Bots (agents that operate other sessions; ledger, receipts) | [bots guide](docs/guide/bots.md), `hub/src/bots/botService.ts`, `hub/src/sync/sessionReceiptService.ts`, `cli/src/modules/bot/` |
 | User docs / marketing site | `docs/` (VitePress) / `website/` |
 
 ## Repository conventions

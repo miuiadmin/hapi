@@ -1,4 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
+import { PrepareBotHomeResponseSchema, type PrepareBotHomeRequest, type PrepareBotHomeResponse } from '@hapi/protocol'
 import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
@@ -655,6 +656,16 @@ export class RpcGateway {
 
     async statWorkspaceFiles(machineId: string, request: WorkspaceStatFilesRequest): Promise<RpcStatFilesResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.WorkspaceStatFiles, request) as RpcStatFilesResponse
+    }
+
+    /** Machine-level: create a bot's home folder on the runner and seed its rules file. */
+    async prepareBotHome(machineId: string, request: PrepareBotHomeRequest): Promise<PrepareBotHomeResponse> {
+        const raw = await this.machineRpc(machineId, RPC_METHODS.PrepareBotHome, request) as unknown
+        // The runner answers a refusal as `{ success: false, error }` (e.g. outside its workspace roots).
+        if (raw && typeof raw === 'object' && 'success' in raw && raw.success === false) {
+            throw new Error('error' in raw && typeof raw.error === 'string' ? raw.error : 'The runner could not prepare the folder')
+        }
+        return PrepareBotHomeResponseSchema.parse(raw)
     }
 
     async getWorkspaceGitStatus(machineId: string, request: WorkspaceGitStatusRequest): Promise<RpcCommandResponse> {

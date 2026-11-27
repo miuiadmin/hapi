@@ -14,6 +14,8 @@ import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionJobsStore } from './sessionJobsStore'
 import { SESSION_TASK_RUNS_TABLE_SQL, SESSION_TASKS_TABLE_SQL, SessionTaskStore } from './sessionTasks'
+import { BOTS_TABLE_SQL, BotStore } from './bots'
+import { SESSION_RECEIPTS_TABLE_SQL, SessionReceiptStore } from './sessionReceipts'
 import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
@@ -51,6 +53,10 @@ export { ScratchlistStore } from './scratchlistStore'
 export { SessionJobsStore } from './sessionJobsStore'
 export { SessionTaskStore } from './sessionTasks'
 export type { StoredSessionTask } from './sessionTasks'
+export { BotStore } from './bots'
+export type { StoredBot, StoredBotItem, StoredBotItemEvent } from './bots'
+export { SessionReceiptStore } from './sessionReceipts'
+export type { StoredSessionReceipt } from './sessionReceipts'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 export { PasskeyStore } from './passkeyStore'
@@ -66,7 +72,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-export const SCHEMA_VERSION: number = 41
+export const SCHEMA_VERSION: number = 42
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -83,6 +89,10 @@ const REQUIRED_TABLES = [
     'session_jobs',
     'session_tasks',
     'session_task_runs',
+    'bots',
+    'bot_items',
+    'bot_item_events',
+    'session_receipts',
     'usage_events',
     'usage_scan_state',
     'events',
@@ -113,6 +123,8 @@ export class Store {
     readonly scratchlist: ScratchlistStore
     readonly sessionJobs: SessionJobsStore
     readonly sessionTasks: SessionTaskStore
+    readonly bots: BotStore
+    readonly sessionReceipts: SessionReceiptStore
     readonly sessionRedirects: SessionRedirectStore
     readonly usage: UsageStore
     readonly turns: TurnStore
@@ -184,6 +196,8 @@ export class Store {
         this.scratchlist = new ScratchlistStore(this.db)
         this.sessionJobs = new SessionJobsStore(this.db)
         this.sessionTasks = new SessionTaskStore(this.db)
+        this.bots = new BotStore(this.db)
+        this.sessionReceipts = new SessionReceiptStore(this.db)
         this.sessionRedirects = new SessionRedirectStore(this.db)
         this.usage = new UsageStore(this.db)
         this.turns = new TurnStore(this.db)
@@ -472,6 +486,8 @@ export class Store {
             39: () => this.migrateFromV39ToV40(),
             // start_at on session_tasks (phase 2 of session tasks)
             40: () => this.migrateFromV40ToV41(),
+            // bots, their item ledger, and session receipts
+            41: () => this.migrateFromV41ToV42(),
         })
 
         if (currentVersion === 0) {
@@ -490,14 +506,12 @@ export class Store {
                 // Backfill any *missing* tables (sessions, machines, ...) that
                 // a partially-built legacy DB may not have yet.
                 this.createSchema()
-                this.ensureUsageScanParserVersion()
-                this.setUserVersion(SCHEMA_VERSION)
+                this.finishSchemaUpgrade()
                 return
             }
 
             this.createSchema()
-            this.ensureUsageScanParserVersion()
-            this.setUserVersion(SCHEMA_VERSION)
+            this.finishSchemaUpgrade()
             return
         }
 
@@ -507,32 +521,18 @@ export class Store {
         // rebuild, v30→v31 short-index backfill, and v32→v33 rebuild in turn.
         // Keep the individual steps below for databases that resume from an
         // intermediate schema version after an interrupted upgrade.
+        //
+        // The fast path covers steps 26–28 and then joins the same ladder at
+        // 29.  It must run every step up to SCHEMA_VERSION: a hand-written
+        // list here once stopped short, and a database coming from v26 was
+        // stamped with the new version without the tables the last step adds.
         if (currentVersion === 26) {
             this.migrateFromV26ToV29()
-            this.migrateFromV29ToV30()
-            this.migrateFromV30ToV31()
-            this.migrateFromV31ToV32()
-            this.migrateFromV32ToV33()
-            this.migrateFromV33ToV34()
-            this.migrateFromV34ToV35()
-            this.migrateFromV35ToV36()
-            this.migrateFromV36ToV37()
-            this.migrateFromV37ToV38()
-            this.migrateFromV38ToV39()
-            this.migrateFromV39ToV40()
-            this.migrateFromV40ToV41()
-            this.ensureUsageScanParserVersion()
-            this.setUserVersion(SCHEMA_VERSION)
+            this.runStepMigrations(stepMigrations, 29, 26)
             return
         }
         if (currentVersion < SCHEMA_VERSION && stepMigrations[currentVersion]) {
-            for (let v = currentVersion; v < SCHEMA_VERSION; v++) {
-                const step = stepMigrations[v]
-                if (!step) throw this.buildSchemaMismatchError(currentVersion)
-                step()
-            }
-            this.ensureUsageScanParserVersion()
-            this.setUserVersion(SCHEMA_VERSION)
+            this.runStepMigrations(stepMigrations, currentVersion, currentVersion)
             return
         }
 
@@ -542,6 +542,28 @@ export class Store {
 
         this.assertRequiredTablesPresent()
         this.ensureUsageScanParserVersion()
+    }
+
+    /** Runs every step from `from` up to SCHEMA_VERSION, then stamps the version. */
+    private runStepMigrations(steps: Record<number, () => void>, from: number, found: number): void {
+        for (let v = from; v < SCHEMA_VERSION; v++) {
+            const step = steps[v]
+            if (!step) throw this.buildSchemaMismatchError(found)
+            step()
+        }
+        this.finishSchemaUpgrade()
+    }
+
+    /**
+     * Stamps SCHEMA_VERSION.  Called only after every table this build opens
+     * exists, so a version is never stamped for a schema that was not reached
+     * (an upgrade that stops short would otherwise start without a table and
+     * fail later, at the first query that names it).
+     */
+    private finishSchemaUpgrade(): void {
+        this.assertRequiredTablesPresent()
+        this.ensureUsageScanParserVersion()
+        this.setUserVersion(SCHEMA_VERSION)
     }
 
     private createSchema(): void {
@@ -715,6 +737,10 @@ export class Store {
 
             ${SESSION_TASKS_TABLE_SQL}
             ${SESSION_TASK_RUNS_TABLE_SQL}
+
+            ${BOTS_TABLE_SQL}
+
+            ${SESSION_RECEIPTS_TABLE_SQL}
 
             CREATE TABLE IF NOT EXISTS session_redirects (
                 old_id TEXT PRIMARY KEY,
@@ -1539,6 +1565,18 @@ export class Store {
      */
     private migrateFromV39ToV40(): void {
         this.db.exec(SESSION_TASKS_TABLE_SQL)
+    }
+
+    /**
+     * v41→v42: bots (the home chat of each is one session), their item ledger
+     * with its event log, and session receipts (the hub's promise to post a
+     * worker's reply back into the session that messaged it). Idempotent.
+     * Rollback: `DROP TABLE session_receipts; DROP TABLE bot_item_events;
+     * DROP TABLE bot_items; DROP TABLE bots; PRAGMA user_version = 41;`
+     */
+    private migrateFromV41ToV42(): void {
+        this.db.exec(BOTS_TABLE_SQL)
+        this.db.exec(SESSION_RECEIPTS_TABLE_SQL)
     }
 
     private migrateFromV36ToV37(): void {

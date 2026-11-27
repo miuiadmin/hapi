@@ -35,6 +35,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
 import { registerWorkspaceFileHandlers } from '../modules/common/workspaceFileHandlers'
+import { registerBotHomeHandlers } from '../modules/common/botHomeHandlers'
 import { setAgyCatalogChangeListener } from '../modules/common/agyModels'
 import {
     listOpencodeModelsForCwd,
@@ -212,6 +213,11 @@ export class ApiMachineClient {
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
         registerWorkspaceFileHandlers(this.rpcHandlerManager, {
+            resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
+            isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
+        })
+        // Machine-level: create a bot's home folder under the same path policy.
+        registerBotHomeHandlers(this.rpcHandlerManager, {
             resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
             isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
         })

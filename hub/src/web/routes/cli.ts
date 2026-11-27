@@ -15,7 +15,7 @@ import { getConfiguration } from '../../configuration'
 import { readAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { readAutoTitlePerTurnEnabled } from '../../config/autoTitlePerTurn'
-import { readDisablePeerToolsEnabled } from '../../config/disablePeerTools'
+import { readDisablePeerToolsEnabled, readPeerToolsBotsOnlyEnabled } from '../../config/disablePeerTools'
 import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../sync/externalRefsPolicy'
 import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
 import { constantTimeEquals } from '../../utils/crypto'
@@ -34,6 +34,28 @@ const getMessagesQuerySchema = z.object({
 type CliEnv = {
     Variables: {
         namespace: string
+    }
+}
+
+/**
+ * What the runner must know about one session at bootstrap: whether the
+ * peer tools are off for it, and whether it is a bot's home chat. With the
+ * bots-only opt-out the tools stay off for every session but a bot's.
+ */
+async function sessionTooling(
+    session: Pick<Session, 'id'> | undefined,
+    engine: Pick<SyncEngine, 'botService'>,
+    dataDir: string
+): Promise<{ disablePeerTools: boolean; botId?: string }> {
+    const [hubDisabled, botsOnly] = await Promise.all([
+        readDisablePeerToolsEnabled(dataDir),
+        readPeerToolsBotsOnlyEnabled(dataDir)
+    ])
+    // Only while the bot can still run: the leftover conversation of a bot whose creation failed starts as an ordinary session.
+    const botId = session ? engine.botService.botIdForHomeChat(session.id) : undefined
+    return {
+        disablePeerTools: hubDisabled && !(botsOnly && botId !== undefined),
+        ...(botId !== undefined ? { botId } : {})
     }
 }
 
@@ -176,7 +198,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             const dataDir = getConfiguration().dataDir
             const sessionSummaryContract = await readSessionSummaryContractEnabled(dataDir)
             const autoTitlePerTurn = await readAutoTitlePerTurnEnabled(dataDir)
-            const disablePeerTools = await readDisablePeerToolsEnabled(dataDir)
+            const tooling = await sessionTooling(session, engine, dataDir)
             // Owner-only hub setting — never enable auto-bridge for tenant namespaces.
             const autoBridgeTransientModelErrors = namespace === 'default'
                 ? await readAutoBridgeTransientModelErrorsEnabled(dataDir)
@@ -185,8 +207,8 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
                 session,
                 sessionSummaryContract,
                 autoTitlePerTurn,
-                disablePeerTools,
-                autoBridgeTransientModelErrors
+                autoBridgeTransientModelErrors,
+                ...tooling
             })
         } catch (error) {
             if (error instanceof SessionIdentityConflictError) {
@@ -389,7 +411,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
         const dataDir = getConfiguration().dataDir
         const sessionSummaryContract = await readSessionSummaryContractEnabled(dataDir)
         const autoTitlePerTurn = await readAutoTitlePerTurnEnabled(dataDir)
-        const disablePeerTools = await readDisablePeerToolsEnabled(dataDir)
+        const tooling = await sessionTooling(resolved.session, engine, dataDir)
         const autoBridgeTransientModelErrors = namespace === 'default'
             ? await readAutoBridgeTransientModelErrorsEnabled(dataDir)
             : false
@@ -397,8 +419,8 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
             session: resolved.session,
             sessionSummaryContract,
             autoTitlePerTurn,
-            disablePeerTools,
-            autoBridgeTransientModelErrors
+            autoBridgeTransientModelErrors,
+            ...tooling
         })
     })
 

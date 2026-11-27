@@ -86,7 +86,9 @@ export const RPC_METHODS = {
     UsageQuery: 'usage-query',
     ClearConversation: 'clear-conversation',
     ImplementCodexPlan: 'implement-codex-plan',
-    BridgeModelError: 'bridge-model-error'
+    BridgeModelError: 'bridge-model-error',
+    /** Machine-level: create a bot's home folder and seed its rules file. */
+    PrepareBotHome: 'prepare-bot-home'
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const

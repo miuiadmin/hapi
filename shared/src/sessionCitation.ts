@@ -77,6 +77,7 @@ export const LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION =
 /** MCP `list_peers` tool description. */
 export const LIST_PEERS_TOOL_DESCRIPTION =
     'Find a specific peer HAPI session on the same hub/namespace: id, active, busy/idle, flavor, machine, cwd, name. ' +
+    'A row marked [waiting] has a request no one has answered and cannot continue until it is; [background] has background tasks running. ' +
     'Active sessions only unless includeInactive. Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. ' +
     'Prefer this over shelling `hapi ping-peer --list`. This is a directory, not a recipient list: ' +
     PEER_CONTACT_RULE

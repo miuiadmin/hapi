@@ -7,6 +7,8 @@ import { classifyClaudeSlashCatalog, extractSDKMetadata } from '@/claude/sdk/met
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from '@/claude/utils/startHappyServer';
+import { withBotCliAllowedTools } from '@/modules/bot/allowedTools';
+import { isBotSession } from '@/modules/bot/replyVia';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/modules/common/hooks/generateHookSettings';
 import { forwardClaudeAutoCompactionStart } from './utils/autoCompactionHook';
@@ -1217,7 +1219,15 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             startingMode,
             messageQueue,
             api,
-            allowedTools: toClaudeAllowedHapiMcpTools(happyServer.toolNames),
+            // One place for both launch paths: local turns this into
+            // `--allowedTools`, remote into the SDK `allowedTools`. A bot's
+            // home chat also pre-approves the peer MCP tools and hapi's own
+            // shell commands (only tools the session actually registered).
+            allowedTools: withBotCliAllowedTools(
+                toClaudeAllowedHapiMcpTools(happyServer.toolNames),
+                isBotSession(session.botId),
+                { registeredToolNames: happyServer.toolNames }
+            ),
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (sessionInstance) => {
                 currentSessionRef.current = sessionInstance;

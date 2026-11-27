@@ -24,6 +24,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { queueBotLedgerInvalidation, queueBotSummariesInvalidation } from '@/hooks/queries/useBots'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { markSubscriptionTornDown, reviveSubscription } from '@/lib/sseSubscriptionLiveness'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
@@ -914,6 +915,18 @@ export function useSSE(options: {
             // shows the task count and next run, so it is refreshed below.
             if (event.type === 'session-tasks-changed') {
                 void queryClient.invalidateQueries({ queryKey: queryKeys.sessionTasks(event.sessionId) })
+            }
+
+            // Bots: `bots-changed` names a bot (or none, for a new one) and
+            // is what refreshes the list and its counts; `bot-items-changed`
+            // names the bot and maybe the item and refreshes only its
+            // ledger. Both are coalesced: both SSE connections deliver the
+            // same event, and one change arrives as a burst.
+            if (event.type === 'bots-changed') {
+                queueBotSummariesInvalidation(queryClient, event.botId ?? null)
+            }
+            if (event.type === 'bot-items-changed') {
+                queueBotLedgerInvalidation(queryClient, event.botId, event.itemId ?? null)
             }
 
             if (shouldInvalidateSessionListForEvent(scope, event.type)) {

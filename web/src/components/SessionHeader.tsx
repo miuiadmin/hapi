@@ -144,6 +144,15 @@ function TerminalIcon(props: { className?: string }) {
     )
 }
 
+function LedgerIcon(props: { className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
+            <rect x="5" y="3" width="14" height="18" rx="2" />
+            <path d="M9 8h6M9 12h6M9 16h4" />
+        </svg>
+    )
+}
+
 function MoreVerticalIcon(props: { className?: string }) {
     return (
         <svg
@@ -179,6 +188,11 @@ export function SessionHeader(props: {
     filesActive?: boolean
     onToggleOutline?: () => void
     outlineActive?: boolean
+    /** Only set on a bot's home chat: opens that bot's ledger. */
+    onToggleLedger?: () => void
+    ledgerActive?: boolean
+    /** Things waiting on the owner in the bot's ledger; shown on the toggle. */
+    ledgerBadge?: number
     onToggleConciseView?: () => void
     conciseViewActive?: boolean
     onToggleTerminal?: () => void
@@ -577,6 +591,33 @@ export function SessionHeader(props: {
                         >
                             <OutlineIcon />
                         </button>
+                    ) : null}
+
+                    {/* From phones down the ledger is reached through the row under the header (BotLedgerBar); the header has no room for a sixth icon. */}
+                    {props.onToggleLedger ? (
+                        <span className="hidden sm:contents" data-testid="session-header-ledger-slot">
+                            <button
+                                type="button"
+                                onClick={props.onToggleLedger}
+                                className={`relative shrink-0 ${headerToggleClass(props.ledgerActive ?? false)}`}
+                                title={props.ledgerActive ? t('bots.ledger.close') : t('bots.ledger.open')}
+                                aria-label={props.ledgerActive ? t('bots.ledger.close') : t('bots.ledger.open')}
+                                aria-pressed={props.ledgerActive ?? false}
+                                data-testid="session-header-ledger"
+                                data-ledger-entry=""
+                            >
+                                <LedgerIcon />
+                                {(props.ledgerBadge ?? 0) > 0 ? (
+                                    <span
+                                        className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold leading-none text-white tabular-nums"
+                                        data-testid="session-header-ledger-badge"
+                                    >
+                                        <span className="sr-only">{t('bots.needsYou.badge', { count: props.ledgerBadge ?? 0 })}</span>
+                                        <span aria-hidden="true">{(props.ledgerBadge ?? 0) > 99 ? '99+' : props.ledgerBadge}</span>
+                                    </span>
+                                ) : null}
+                            </button>
+                        </span>
                     ) : null}
 
                     {props.onToggleTerminal ? (

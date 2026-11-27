@@ -38,6 +38,17 @@ import {
   SESSION_JOB_TOOL_NAME,
   sessionJobInputSchema,
 } from '@/modules/sessionJob/sessionJobMcp';
+import { PEER_REPLY_VIA_PARAM_DESCRIPTION } from '@/modules/bot/replyVia';
+import {
+  BOT_ITEM_TOOL_DESCRIPTION,
+  BOT_ITEM_TOOL_NAME,
+  botItemInputSchema,
+} from '@/modules/bot/botItemMcp';
+import {
+  BOT_TASK_TOOL_DESCRIPTION,
+  BOT_TASK_TOOL_NAME,
+  botTaskInputSchema,
+} from '@/modules/bot/botTaskMcp';
 
 const DEFAULT_TOOL_NAMES = [
   'change_title',
@@ -332,12 +343,42 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
+    // A bot's ledger and schedules reach the HTTP server through this bridge
+    // too (DSH / Codex); the server registers them only for a bot home chat.
+    for (const botTool of [
+      { name: BOT_ITEM_TOOL_NAME, title: 'Bot Ledger', description: BOT_ITEM_TOOL_DESCRIPTION, schema: botItemInputSchema },
+      { name: BOT_TASK_TOOL_NAME, title: 'Bot Tasks', description: BOT_TASK_TOOL_DESCRIPTION, schema: botTaskInputSchema },
+    ] as const) {
+      if (!toolNames.has(botTool.name)) continue;
+      server.registerTool<any, any>(
+        botTool.name,
+        {
+          description: botTool.description,
+          title: botTool.title,
+          inputSchema: botTool.schema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            return await client.callTool({ name: botTool.name, arguments: args }) as any;
+          } catch (error) {
+            return {
+              content: [{ type: 'text' as const, text: `Failed to run ${botTool.name}: ${error instanceof Error ? error.message : String(error)}` }],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
       sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
       message: z.string().min(1).describe('Message text to deliver to the target session'),
       deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
       wake: z.boolean().optional().describe(PEER_WAKE_PARAM_DESCRIPTION),
       waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
+      // Mirrors the HTTP server's schema so the field survives the hop.
+      replyVia: z.enum(['caller', 'hub']).optional().describe(PEER_REPLY_VIA_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('ping_peer')) {
@@ -389,6 +430,10 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           + 'Pass only to tighten or when the operator names a mode — do not clone the parent session.'
         ),
       waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
+      replyVia: z.enum(['caller', 'hub']).optional().describe(PEER_REPLY_VIA_PARAM_DESCRIPTION),
+      item: z.union([z.number().int().positive(), z.string().trim().min(1)]).optional().describe(
+        'Bot only: ledger item (number or id) this worker delivers. The new session is attached as its worker.'
+      ),
     });
 
     if (toolNames.has('spawn_peer')) {

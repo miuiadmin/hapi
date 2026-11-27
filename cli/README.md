@@ -44,8 +44,11 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi dsh` - Start DeepSeek Harness through ACP. See `src/dsh/runDsh.ts`.
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
-- `hapi ping-peer <session-id-prefix> <message>` - Message another session. Inactive targets are refused (exit 5) unless `--wake` resumes them first. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list [--all]` (active sessions with machine and cwd; `--all` includes inactive).
-- `hapi spawn-peer --dir PATH --name TITLE --message-file -` - Spawn a session and deliver a required first message. Optional `--machine ID|hostname` targets another runner (resolved via GET /api/machines); `--dir` must exist on the target, and `--session-type worktree` requires it to be a git repository. Machine spawn HTTP 200 is not a working peer; this command fails if the remit does not land. Prefer MCP `spawn_peer`.
+- `hapi ping-peer <session-id-prefix> <message>` - Message another session. Inactive targets are refused (exit 5) unless `--wake` resumes them first. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list [--all]` (active sessions with machine and cwd; `--all` includes inactive; rows mark `[waiting]` = a pending permission or question, `[background]` = declared background tasks). `--receipt hub|caller` chooses where the reply is awaited (see below).
+- `hapi spawn-peer --dir PATH --name TITLE --message-file -` - Spawn a session and deliver a required first message. Optional `--machine ID|hostname` targets another runner (resolved via GET /api/machines); `--dir` must exist on the target, and `--session-type worktree` requires it to be a git repository. Machine spawn HTTP 200 is not a working peer; this command fails if the remit does not land. Prefer MCP `spawn_peer`. `--receipt hub|caller` as for ping-peer; `--item N [--bot ID]` attaches the new session to a bot ledger item as its worker.
+- `hapi peer-answer <session-id-prefix> <requestId> --approve | --deny` or, for a question, `[--option <text|n>]… [--text "…"] [--question <n>]` / `[--answer <n>=<text|n>]…` / `--deny` - Answer another session's pending request on its behalf. A permission prompt takes exactly `--approve` or `--deny`. A structured question (`AskUserQuestion`, `ask_user_question`, `CursorAskQuestion`, `request_user_input`) is canceled with `--deny` or answered completely: one question with `--option` (exact option text or 1-based number; never passed through as free text) / `--text`, several with one `--answer <n>=…` per question; a missing question is refused and nothing is sent. Find the id with `hapi inspect-peer` (pending requests) or look for rows marked `[waiting]` in `hapi ping-peer --list` / `list_peers` output.
+- `hapi item add|set|ask|comment|list|show|done|cancel` - A bot's ledger of deliverables and decisions (hub `bot_items`): `add <title> [--detail] [--worker <sessionId>]`, `set <n> [--status …] [--worker <sessionId>|none] [--snooze-until <time>|none]`, `ask <n> --question "…" [--option "…" …] [--recommended N]` (puts the item to the owner; their comment comes back as a new message), `list [--all]`, `show <n>`, `done <n>`, `cancel <n>`. `<n>` is the number (as printed, `#12`, or plain `12`) or the item id; `none` detaches the worker / clears the snooze; `--` ends the flags for a title that starts with `-`. The bot is `HAPI_BOT_ID`, else `--bot <id>`. Same implementation as MCP `bot_item`. Exit codes as for `hapi task`.
+- `hapi task add --every 2h --text "…" [--start-at …] [--max-runs N] | add --at "…" --text "…" | add --queue --every 30m --text "…" --text "…" | list | pause|resume|delete <taskId>` - Schedules for a session, run by the hub (it resumes the session when due): a repeating prompt, a one-shot at a given time (`--at`, listed as "once", removed once its prompt was taken), or a queue of prompts. The session is `HAPI_SESSION_ID`, else `--session <id>` (inside a bot's session `--session` must be this session — a bot schedules only itself, `--session <other>` is refused with exit 5 and nothing is sent; outside a bot session any session is allowed). The output names the next run. Same implementation as MCP `bot_task`. A bare date (`2026-11-28`) means local midnight. Exit codes (also `hapi item`, `hapi peer-answer`): 2 bad arguments or peer tools disabled, 3 auth, 4 no such task / session, 5 refused by the hub, 1 other.
 - `hapi usage [--since 24h|7d|<ISO>|<ms>] [--until …] [--json]` - When agents were working across every machine on the hub, from `GET /api/activity`. `--json` prints one `hapi.activity.v1` report for other tools (time trackers); errors go to stderr with exit codes 2 (arguments), 3 (no token or refused), 4 (hub too old), 1 (other).
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 - `hapi set-mode <session-id-or-prefix> <mode>` - Change the permission mode of an existing session, like the web permission picker. Active sessions switch immediately; inactive ones use it on next resume. An invalid mode prints the modes allowed for that agent.
@@ -315,6 +318,7 @@ re-applies the stored permission mode and model.
 ### Set for the wrapped agent
 
 - `HAPI_SESSION_ID` - The current HAPI session ID, available inside agent shells. Use it in scripts that target the current conversation without listing sessions.
+- `HAPI_BOT_ID` / `HAPI_BOT_NAME` - Set only when the hub marks this session as a bot's home chat (`botId` on the bootstrap row). Shell helpers (`hapi item`, `hapi task`, `hapi spawn-peer --item`, `--receipt` defaults) act for that bot; an ordinary session (including a worker opened from the bot's shell) clears any inherited value.
 - An explicitly configured `HAPI_API_URL` is also made available to agent shells. HAPI does not copy settings-backed `CLI_API_TOKEN` secrets into the agent environment; credentials already present in the parent environment may still be inherited. Web Terminal PTYs (session Terminal button) strip hub secrets and agent-context markers (`HAPI_AGENT_CONTEXT`, `CURSOR_AGENT`, …) and set `HAPI_USER_TERMINAL=1` so operator tools treat that shell as human-facing.
 
 For peer discovery and messaging, use the session's MCP `list_peers`,
@@ -328,6 +332,22 @@ With `waitForReply` on `ping_peer` or `spawn_peer`, the peer's reply is posted
 back into the calling session when the peer's turn ends (Pi peers are not
 supported). The caller's CLI process does the polling, so if that process exits
 first, the reply is not posted back; it stays in the peer session.
+`replyVia: "hub"` (CLI `--receipt hub`) instead registers a receipt
+(`POST /api/sessions/:childId/receipts`): the hub posts the reply into the
+calling session when the peer's turn ends, wakes it if needed, works for every
+agent flavor and survives a runner restart. It is the default in a bot's home
+chat (`HAPI_BOT_ID`); everywhere else nothing is posted unless asked. If the
+hub cannot register the receipt, MCP falls back to the in-process watch and
+says so; a shell command only reports it (it cannot keep a watcher alive).
+`replyVia: "caller"` (`--receipt caller`) is the in-process watch and overrides
+`waitForReply`; from a shell it blocks until the reply is posted (up to 6h).
+Bots: a session the hub marks as a bot's home chat also gets MCP `bot_item` /
+`bot_task` (ledger and schedules; shell twins `hapi item` / `hapi task`), and
+workers it opens with `spawn_peer` carry a short worker contract (report
+results; ask before irreversible actions). Only Claude Code is
+supported as a bot's brain today: the hub refuses other flavors when a bot is
+created, and the other flavors' shared engines drop `HAPI_BOT_ID` from their
+environment, so their shell helpers never act for a bot.
 On a remote runner host, configure the matching hub URL and token so shell
 commands reach the same hub (`hapi auth login` saves the token).
 

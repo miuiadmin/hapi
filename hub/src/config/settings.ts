@@ -63,6 +63,11 @@ export interface Settings {
      */
     disablePeerTools?: boolean
     /**
+     * With `disablePeerTools`, still hand the peer-session tools to the home
+     * chat of a bot. Other sessions stay without them. Default off.
+     */
+    peerToolsBotsOnly?: boolean
+    /**
      * When true, Cursor CLI sessions auto-enqueue a one-shot bridge after a
      * transient model error. Default off. Survives hub/CLI restarts.
      */

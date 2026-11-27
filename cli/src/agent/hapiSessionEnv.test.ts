@@ -1,10 +1,45 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { configuration } from '@/configuration'
 import {
+    HAPI_BOT_ID_ENV,
+    HAPI_BOT_NAME_ENV,
     HAPI_SESSION_ID_ENV,
+    exportHapiBotEnv,
     exportHapiHubAuthEnv,
     exportHapiSessionEnv
 } from './hapiSessionEnv'
+
+describe('exportHapiBotEnv', () => {
+    afterEach(() => {
+        delete process.env[HAPI_BOT_ID_ENV]
+        delete process.env[HAPI_BOT_NAME_ENV]
+    })
+
+    it('publishes the bot id and name for a bot home chat', () => {
+        exportHapiBotEnv({ id: 'bot-1', name: 'Release Captain' })
+        expect(process.env[HAPI_BOT_ID_ENV]).toBe('bot-1')
+        expect(process.env[HAPI_BOT_NAME_ENV]).toBe('Release Captain')
+    })
+
+    it('omits the name when the bot has none', () => {
+        process.env[HAPI_BOT_NAME_ENV] = 'stale'
+        exportHapiBotEnv({ id: 'bot-1', name: '  ' })
+        expect(process.env[HAPI_BOT_ID_ENV]).toBe('bot-1')
+        expect(process.env[HAPI_BOT_NAME_ENV]).toBeUndefined()
+    })
+
+    it('clears an inherited marker so a worker opened from a bot shell is not a bot', () => {
+        process.env[HAPI_BOT_ID_ENV] = 'bot-1'
+        process.env[HAPI_BOT_NAME_ENV] = 'Release Captain'
+        exportHapiBotEnv(null)
+        expect(process.env[HAPI_BOT_ID_ENV]).toBeUndefined()
+        expect(process.env[HAPI_BOT_NAME_ENV]).toBeUndefined()
+
+        process.env[HAPI_BOT_ID_ENV] = 'bot-1'
+        exportHapiBotEnv({ id: '   ' })
+        expect(process.env[HAPI_BOT_ID_ENV]).toBeUndefined()
+    })
+})
 
 describe('exportHapiSessionEnv', () => {
     afterEach(() => {

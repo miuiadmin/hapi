@@ -7,10 +7,22 @@ import {
     PingPeerError,
     exitCodeForPingPeerError,
     formatPeerSessionsList,
+    forwardPeerReply,
     listPeerSessions,
     peerListFetchLimit,
-    pingPeer
+    pingPeer,
+    supportsPeerReply
 } from '@/modules/pingPeer/pingPeer'
+import {
+    PEER_RECEIPT_FLAG_HELP,
+    botIdFromEnv,
+    parseReplyVia,
+    resolveReplyVia,
+    settlePeerReply,
+    type PeerReplyVia
+} from '@/modules/bot/replyVia'
+import { createBotAuthSource, type BotAuthSource } from '@/modules/bot/botClient'
+import { registerReceipt } from '@/modules/bot/receipts'
 import type { CommandDefinition } from './types'
 
 type ParsedPingPeerArgs = {
@@ -23,6 +35,8 @@ type ParsedPingPeerArgs = {
     messageFile?: string
     waitActiveSecs?: number
     deliveryMode?: PeerDeliveryMode
+    /** `--receipt hub|caller`; absent keeps the default (hub in a bot session, else none). */
+    receipt?: PeerReplyVia
 }
 
 function showHelp(): void {
@@ -35,6 +49,7 @@ ${chalk.bold('Usage:')}
   hapi ping-peer <session-id-prefix> <message-text> --wake   # resume if inactive
   hapi ping-peer <session-id-prefix> --message-file <path>
   hapi ping-peer <session-id-prefix> --message-file -   # read message from stdin
+  hapi ping-peer <session-id-prefix> <message-text> --receipt hub|caller
   hapi ping-peer --list [--all]   # active sessions; --all includes inactive
 
 ${chalk.bold('Notes:')}
@@ -43,6 +58,9 @@ ${chalk.bold('Notes:')}
   Message only peers tied to your task; never broadcast to the --list output.
   Inactive targets are refused (exit 5) unless --wake, which resumes them via
   POST /api/sessions/:id/resume first. Wake only when the peer must act, not for FYI.
+  --list rows mark [waiting] (a pending permission or question) and [background]
+  (background tasks) after busy/idle/inactive; inspect_peer lists the pending requests.
+  ${PEER_RECEIPT_FLAG_HELP}
   Delivery defaults to auto: steer an active turn when its target supports steering
   and is ready; otherwise queue. If steering cannot be confirmed after acceptance,
   auto keeps the same accepted message without resending; acceptance is not consumption.
@@ -63,6 +81,7 @@ ${chalk.bold('Notes:')}
 ${chalk.bold('Env:')}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
   HAPI_WAIT_ACTIVE_SECS (default 60; overridable with --wait)
+  HAPI_SESSION_ID (where a receipt posts the reply), HAPI_BOT_ID (bot home chat)
 `)
 }
 
@@ -90,6 +109,23 @@ export function parsePingPeerArgs(args: string[]): ParsedPingPeerArgs {
         }
         if (arg === '--wake') {
             result.wake = true
+            continue
+        }
+        if (arg === '--receipt' || arg.startsWith('--receipt=')) {
+            const value = arg === '--receipt' ? args[++i] : arg.slice('--receipt='.length)
+            let parsed: PeerReplyVia | undefined
+            try {
+                parsed = parseReplyVia(value)
+            } catch (error) {
+                throw new PingPeerError('bad_args', (error as Error).message)
+            }
+            if (!parsed) {
+                throw new PingPeerError('bad_args', '--receipt requires hub or caller')
+            }
+            if (result.receipt !== undefined) {
+                throw new PingPeerError('bad_args', '--receipt may only be specified once')
+            }
+            result.receipt = parsed
             continue
         }
         if (arg === '--delivery-mode' || arg.startsWith('--delivery-mode=')) {
@@ -224,6 +260,7 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
             'missing message; provide as arg, --message-file PATH, or --message-file -'
         )
     }
+    assertReceiptFeasible(parsed.receipt)
 
     const result = await pingPeer({
         sessionIdPrefix: parsed.sessionIdPrefix,
@@ -237,7 +274,59 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
     const receipt = result.delivery === 'accepted'
         ? `accepted for ${result.sessionId} localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it${result.steerNote ? ` (${result.steerNote})` : ''}`
         : `${result.delivery} to ${result.sessionId} localId=${result.localId}`
-    console.log(chalk.green(`hapi ping-peer: OK - ${receipt}`))
+    const replyNote = await settleReceipt({
+        explicit: parsed.receipt,
+        task: result,
+        command: 'hapi ping-peer'
+    })
+    console.log(chalk.green(`hapi ping-peer: OK - ${receipt}${replyNote}`))
+}
+
+/**
+ * Refuse an explicit `--receipt` before anything is sent when no calling
+ * session is known: the reply would have nowhere to go.
+ */
+export function assertReceiptFeasible(explicit: PeerReplyVia | undefined): void {
+    if (explicit && !(process.env[HAPI_SESSION_ID_ENV]?.trim())) {
+        throw new PingPeerError(
+            'bad_args',
+            `--receipt ${explicit} needs the calling session (HAPI_SESSION_ID) to post the reply into; run inside a session`
+        )
+    }
+}
+
+/**
+ * Settle where the peer's reply goes (shell path). `--receipt hub` posts it
+ * through the hub; `--receipt caller` makes this process wait for the peer's
+ * turn (blocking, up to 6h). A bot session (HAPI_BOT_ID) defaults to hub. If
+ * the hub cannot register the receipt the command explains instead of
+ * blocking — a shell caller cannot keep a watcher alive.
+ */
+export async function settleReceipt(options: {
+    explicit: PeerReplyVia | undefined
+    task: { sessionId: string; localId?: string; flavor?: string | null }
+    command: string
+    /** The bot acting, when the command knows it better than the env (`spawn-peer --bot`). */
+    botId?: string
+    /** Shared auth so the receipt registration reuses the command's JWT. */
+    auth?: BotAuthSource
+}): Promise<string> {
+    const callerSessionId = process.env[HAPI_SESSION_ID_ENV]?.trim()
+    const via = resolveReplyVia({ replyVia: options.explicit, botId: options.botId ?? botIdFromEnv() })
+    if (!via) return ''
+    const settled = await settlePeerReply({
+        via,
+        task: options.task,
+        callerSessionId,
+        onHubFailure: 'report',
+        flavorSupported: supportsPeerReply(options.task.flavor),
+        forward: async ({ peerSessionId, taskLocalId, callerSessionId: target }) => {
+            console.log(`${options.command}: waiting for the peer's turn to end (up to 6h); its reply will be posted into ${target}`)
+            await forwardPeerReply({ peerSessionId, taskLocalId, callerSessionId: target })
+        },
+        registerReceipt: (childSessionId, receipt) => registerReceipt(childSessionId, { ...receipt, auth: options.auth })
+    })
+    return settled.note
 }
 
 export const pingPeerCommand: CommandDefinition = {

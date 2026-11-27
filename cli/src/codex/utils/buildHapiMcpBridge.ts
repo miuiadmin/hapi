@@ -8,7 +8,10 @@
 import { startHappyServer, type HappyAskUserOutcome } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
-import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
+import { exportHapiBotEnv, exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
+import { BOT_ITEM_TOOL_NAME } from '@/modules/bot/botItemMcp';
+import { BOT_TASK_TOOL_NAME } from '@/modules/bot/botTaskMcp';
+import { BOT_HAPI_PEER_TOOL_NAMES } from '@/modules/bot/allowedTools';
 import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import type { CodexMcpServerConfig } from './codexMcpServers';
 
@@ -87,7 +90,10 @@ export async function buildHapiMcpBridge(
         }
     }
     // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
-    if (options.exportSessionEnv !== false) exportHapiSessionEnv(client.sessionId);
+    if (options.exportSessionEnv !== false) {
+        exportHapiSessionEnv(client.sessionId);
+        exportHapiBotEnv(client.botId ? { id: client.botId, name: client.getMetadata()?.name } : null);
+    }
 
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
@@ -145,9 +151,31 @@ export async function buildHapiMcpBridge(
     tools.session_job = {
         approval_mode: 'approve'
     };
-    // ping_peer / inspect_peer / spawn_peer are registered on the HTTP MCP
-    // server / stdio bridge, but are not auto-approved: they target another
-    // session (resume + inject, read peer histories, or create + inject).
+    // A bot's ledger and schedules (registered only for a bot home chat) —
+    // hub REST on the bot's own records, same trust as session_job.
+    for (const name of [BOT_ITEM_TOOL_NAME, BOT_TASK_TOOL_NAME] as const) {
+        if (happyServer.toolNames.includes(name)) {
+            tools[name] = {
+                approval_mode: 'approve'
+            };
+        }
+    }
+    // A bot's home chat operates other sessions, so for it the peer tools are
+    // as trusted as list_peers. Same list and same registered-only rule as
+    // the Claude launch options (`withBotCliAllowedTools`).
+    if (client.botId) {
+        for (const name of BOT_HAPI_PEER_TOOL_NAMES) {
+            if ((happyServer.toolNames as readonly string[]).includes(name)) {
+                tools[name] = {
+                    approval_mode: 'approve'
+                };
+            }
+        }
+    }
+    // For everyone else ping_peer / inspect_peer / spawn_peer are registered
+    // on the HTTP MCP server / stdio bridge, but are not auto-approved: they
+    // target another session (resume + inject, read peer histories, or create
+    // + inject).
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'

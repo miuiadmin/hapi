@@ -7,7 +7,8 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import {
+    isBotHubMessageLocalId, type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -65,6 +66,11 @@ import type {
 } from './sessionTaskTypes'
 import { SessionWakeGate, type SessionWakeResult, type WakeableSession } from './sessionWakeGate'
 import { getSessionName } from '../notifications/sessionInfo'
+import { SessionReceiptService } from './sessionReceiptService'
+import { BotService } from '../bots/botService'
+import { taskFingerprint } from '../store/bots'
+import { getPermissionModesForFlavor } from '@hapi/protocol/modes'
+import type { PrepareBotHomeRequest, PrepareBotHomeResponse } from '@hapi/protocol'
 import {
     buildJobTerminalWakePrompt,
     buildJobWakeLocalId,
@@ -75,6 +81,9 @@ import {
 import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
+
+/** What receipts and bots watch in a session; snapshotted before an in-place patch. */
+type WatchedState = { thinking: boolean; active: boolean; requestIds: string[] | null }
 import { MessageService, type MessagePageRowHashes, type RetryIndeterminateMessageResult, type DeliverQueuedMessageNowResult } from './messageService'
 import type { InlineImagePreview } from './attachmentPreviews'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
@@ -305,6 +314,61 @@ function normalizeUserMessageText(value: string): string | undefined {
     return text.length > 0 ? text : undefined
 }
 
+type BotDeliveryRetry = {
+    /** Messages of the hub's that are not in the session's transcript yet. */
+    unstored: Array<{ text: string; localId: string }>
+    /** Starts tried for the messages that are stored. */
+    wakeAttempts: number
+    /** Tries to store that failed for a reason other than a held transcript; to keep the log quiet. */
+    storeFailures: number
+    timer: ReturnType<typeof setTimeout> | null
+}
+
+/**
+ * Delay before each retry of a bot message the hub could not hand over: the
+ * first ones are short because a history action holds the transcript only
+ * for seconds; the last one repeats. After `BOT_DELIVERY_RETRY_MAX_ATTEMPTS`
+ * the hub stops trying and waits for the machine to report in instead (the
+ * message stays queued either way). The wake gate spaces out its own
+ * attempts on top of this.
+ */
+const BOT_DELIVERY_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 15_000, 30_000]
+const BOT_DELIVERY_RETRY_MAX_ATTEMPTS = 20
+/** Tests shorten the waits; anything else leaves them as they are. */
+let botDeliveryRetryDelaysOverride: readonly number[] | null = null
+/** Test seam: one delay for every retry of a bot message. Pass null to restore them. */
+export function setBotWakeRetryDelayForTests(delayMs: number | null): void {
+    botDeliveryRetryDelaysOverride = delayMs === null ? null : [delayMs]
+}
+
+/** `sendMessage` while a rewind, fork or resume holds the session's transcript. */
+function isTranscriptHeldError(error: unknown): boolean {
+    return error instanceof Error && error.message === 'Conversation history action already in progress'
+}
+
+/**
+ * Work a session is doing that its `thinking` flag may not show, in the two
+ * kinds receipts care about. `blocked`: it is waiting on a request or on a
+ * tool call still running, and cannot go on by itself. `background`: it left
+ * work running in the background, which can outlast its turn.
+ */
+function sessionWork(session: Session): { blocked: boolean; background: boolean } {
+    return {
+        blocked: Object.keys(session.agentState?.requests ?? {}).length > 0 || session.derivedToolWork === true,
+        background: (session.backgroundTasks?.length ?? 0) > 0
+    }
+}
+
+/** Whether two id lists name the same set, whatever their order. */
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+    if (a.length !== b.length) return false
+    const seen = new Set(a)
+    for (const id of b) {
+        if (!seen.has(id)) return false
+    }
+    return true
+}
+
 function extractUserMessageText(content: unknown): string | undefined {
     if (typeof content === 'string') {
         return normalizeUserMessageText(content)
@@ -449,6 +513,16 @@ export class SyncEngine {
     private static readonly modelListCacheable = (result: unknown): boolean =>
         !!result && typeof result === 'object' && (result as { success?: unknown }).success === true
 
+    /**
+     * A session was merged into another. The receipt rows moved with the
+     * merge; what the receipt service watches in memory has to move too, or
+     * a turn end reported under the surviving id would not be recognised.
+     */
+    private onSessionMergedAway(oldSessionId: string, newSessionId: string): void {
+        this.releaseSessionEnumerations(oldSessionId)
+        this.receiptService?.followMergedSession(oldSessionId, newSessionId)
+    }
+
     /** Drop cached enumeration RPCs for a session leaving the active set
      *  (deleted or archived). The keys are never queried again; without this
      *  the per-session entries would accumulate for the hub's lifetime. */
@@ -483,7 +557,7 @@ export class SyncEngine {
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
             // dedup alike — so enumeration cleanup rides on one hook.
-            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
+            onSessionMergedAway: (oldSessionId, newSessionId) => this.onSessionMergedAway(oldSessionId, newSessionId)
         })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
@@ -528,6 +602,11 @@ export class SyncEngine {
         // Hub start: undelivered opt-in wakes survive process restart as eligible
         // SQLite rows — requeue after caches are warm.
         this.requeuePendingJobTerminalWakes()
+        // Receipts a previous hub process was still holding: load them, and
+        // settle those whose worker finished in the meantime.
+        this.sessionReceipts.sweep()
+        // And bots whose creation that process did not live to finish.
+        this.botService.sweep()
     }
 
     setHubOwnerUserId(ownerUserId: string | number): void {
@@ -550,6 +629,11 @@ export class SyncEngine {
         }
         this.jobTerminalWakeRetryTimers.clear()
         this.jobTerminalWakeRetryAttempts.clear()
+        for (const pending of this.botWakeRetries.values()) {
+            if (pending.timer) clearTimeout(pending.timer)
+        }
+        this.botWakeRetries.clear()
+        this.receiptService?.dispose()
     }
 
     subscribe(listener: SyncEventListener): () => void {
@@ -898,6 +982,9 @@ export class SyncEngine {
             // so the comparison contract is identical.
             const before = this.sessionCache.getSession(event.sessionId)
             const beforeMetadata = before?.metadata ?? null
+            // `applySessionPatch` mutates the cached session in place; snapshot what
+            // receipts and bots watch before it runs.
+            const beforeWatched = this.snapshotWatchedState(before)
             const patchApplied = event.data
                 ? this.sessionCache.applySessionPatch(event.sessionId, event.data, event.namespace)
                 : false
@@ -906,6 +993,7 @@ export class SyncEngine {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
                 this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+                this.observeWatchedState(event.sessionId, beforeWatched, after)
                 this.reconcilePendingClaudeRewind(after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
@@ -924,6 +1012,7 @@ export class SyncEngine {
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+            this.observeWatchedState(event.sessionId, beforeWatched, after)
             this.reconcilePendingClaudeRewind(after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
@@ -945,6 +1034,8 @@ export class SyncEngine {
             const nowActive = refreshed?.active === true
             if (!wasActive && nowActive) {
                 this.requeuePendingJobTerminalWakes()
+                this.receiptService?.retryPending()
+                this.retryBotWakes()
             }
             return
         }
@@ -988,6 +1079,9 @@ export class SyncEngine {
             if (extractMessageEventType(event) === 'ready') {
                 this.titleTurnCompletedIds.add(event.sessionId)
                 void this.automaticTitleSuggestionService.onTurnCompleted(event.sessionId)
+                // The `ready` row and the reply before it are already in the transcript when
+                // this event is handled (the socket handler writes before it emits).
+                this.receiptService?.onTurnEndMarker(event.sessionId as string)
             } else if (this.titleTurnCompletedIds.has(event.sessionId) && !this.getSession(event.sessionId)?.thinking) {
                 void this.automaticTitleSuggestionService.onTurnCompleted(event.sessionId)
             }
@@ -1039,6 +1133,13 @@ export class SyncEngine {
             ? this.sessionCache.getQueuedThinkingGraceDeadline(payload.sid)
             : null
         this.sessionCache.handleSessionAlive(payload)
+        // Every heartbeat is the session reporting itself; receipts may only conclude from these.
+        const reported = this.sessionCache.getSession(payload.sid)
+        this.receiptService?.observe(payload.sid, {
+            thinking: reported?.thinking === true,
+            active: reported?.active === true,
+            ...(reported ? sessionWork(reported) : { blocked: false, background: false })
+        })
         if (wasThinking && !this.sessionCache.getSession(payload.sid)?.thinking) {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
@@ -1279,6 +1380,8 @@ export class SyncEngine {
         // echoes; that half rides the next stack sync-merge with #2252.)
         this.titleTurnCompletedIds.add(payload.sid)
         void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
+        // Ending the session is the last turn boundary: settle what waits on this one.
+        this.receiptService?.onSessionEnded(payload.sid)
         this.eventPublisher.emit({
             type: 'session-ended',
             sessionId: payload.sid,
@@ -1599,6 +1702,427 @@ export class SyncEngine {
 
     private emitSessionTasksChanged(sessionId: string): void {
         this.eventPublisher.emit({ type: 'session-tasks-changed', sessionId })
+    }
+
+    // ---- Bots and receipts ---------------------------------------------------
+
+    private receiptService: SessionReceiptService | null = null
+    private botServiceInstance: BotService | null = null
+
+    /** Lazily built like the task runner; `sweep()` at hub start loads what a previous process left. */
+    get sessionReceipts(): SessionReceiptService {
+        this.receiptService ??= new SessionReceiptService({
+            store: this.store,
+            getSession: (sessionId) => {
+                const session = this.sessionCache.getSession(sessionId)
+                return session
+                    ? {
+                        id: session.id,
+                        name: session.metadata?.name ?? null,
+                        active: session.active === true,
+                        thinking: session.thinking === true,
+                        ...sessionWork(session)
+                    }
+                    : null
+            },
+            wake: async (sessionId) => (await this.deliveryWakeGate.wake(sessionId)).type === 'active',
+            sendMessage: (sessionId, payload) => this.sendMessage(sessionId, { ...payload, sentFrom: 'hapi-system' }),
+            // Through the getter, not the cached field: after a restart the bot service does not exist until
+            // something asks for it, and a receipt checked before that would pass a paused bot as unpaused.
+            isHeld: (parentSessionId) => this.botService.homeChatBot(parentSessionId)?.state === 'paused',
+            log: (message, detail) => console.warn(message, detail)
+        })
+        return this.receiptService
+    }
+
+    get botService(): BotService {
+        this.botServiceInstance ??= new BotService({
+            store: this.store,
+            getSession: (sessionId) => {
+                const session = this.sessionCache.getSession(sessionId)
+                return session
+                    ? {
+                        id: session.id,
+                        name: session.metadata?.name ?? null,
+                        active: session.active === true,
+                        thinking: session.thinking === true,
+                        agentState: session.agentState
+                    }
+                    : null
+            },
+            getMachine: (machineId) => {
+                const machine = this.machineCache.getMachine(machineId)
+                return machine ? { id: machine.id, namespace: machine.namespace } : null
+            },
+            isMachineOnline: (machineId) => this.machineCache.getMachine(machineId)?.active === true,
+            receiptChildrenOf: (parentSessionId) => this.sessionReceipts.watchedChildrenOf(parentSessionId),
+            sessionInNamespace: (sessionId, namespace) => this.resolveSessionAccess(sessionId, namespace, { followRedirects: true }).ok,
+            prepareHome: (machineId, request) => this.rpcGateway.prepareBotHome(machineId, request),
+            spawnHomeChat: (input) => this.spawnBotHomeChat(input),
+            deliver: (sessionId, text, localId) => this.deliverBotMessage(sessionId, text, localId),
+            queueMessage: async (sessionId, text, localId) => {
+                if (!this.hasLocalMessage(sessionId, localId)) {
+                    await this.sendMessage(sessionId, { text, localId, sentFrom: 'hapi-system' })
+                }
+            },
+            hasMessage: (sessionId, localId) => this.hasLocalMessage(sessionId, localId),
+            permissionModesFor: (agent) => getPermissionModesForFlavor(agent as AgentFlavor),
+            listTasks: (sessionId) => this.store.sessionTasks.list(sessionId)
+                .map((task) => ({
+                    id: task.id,
+                    state: task.state,
+                    nextRunAt: task.nextRunAt,
+                    pendingLocalId: task.pendingLocalId,
+                    fingerprint: taskFingerprint(task)
+                })),
+            setTasksPaused: async (sessionId, taskIds, paused) => {
+                // The same path as the owner pausing a task from the bar, taking a waiting prompt back included.
+                // One the hub could not change is reported and left as it is; the others are paused all the same.
+                await Promise.all(taskIds.map(async (taskId) => {
+                    try {
+                        const result = await this.updateSessionTask(sessionId, taskId, { paused })
+                        if (result.type !== 'updated') {
+                            console.warn('[bots] a schedule of the home chat was not changed', { sessionId, taskId, paused, result: result.type })
+                        }
+                    } catch (error) {
+                        console.warn('[bots] a schedule of the home chat could not be changed', {
+                            sessionId, taskId, paused, error: error instanceof Error ? error.message : error
+                        })
+                    }
+                }))
+            },
+            resumeTasksAt: (sessionId, tasks) => {
+                const now = Date.now()
+                const store = this.store.sessionTasks
+                // As for a task resumed by hand, the session's cap on active tasks holds; what does not fit stays paused, and is said so.
+                const leftPaused: string[] = []
+                let active = store.countActive(sessionId)
+                for (const entry of tasks) {
+                    const task = store.get(sessionId, entry.id)
+                    if (!task || task.state !== 'paused') continue
+                    if (active >= SESSION_TASK_MAX_ACTIVE_PER_SESSION) {
+                        console.warn('[bots] a schedule stays paused: the session holds its cap of active tasks', { sessionId, taskId: task.id })
+                        leftPaused.push(task.id)
+                        continue
+                    }
+                    // `updateSessionTask` would run a resumed task at once; this puts it back where it was due. One
+                    // that fell due while the bot was paused keeps that time, so it runs now, once, and the task
+                    // runner keeps it on its original grid.
+                    let nextRunAt = entry.nextRunAt
+                    // The pause took the task's waiting prompt back (or the agent took it while the bot was
+                    // paused): the task is as it was before that send, and with nothing pending and nothing
+                    // scheduled it needs what a resume by hand gives it — the prompt goes out again, now, or
+                    // at the spacing a queue task keeps.
+                    if (task.pendingLocalId === null && nextRunAt === null) nextRunAt = resumeRunAt(task, task.intervalMs, now)
+                    const resumed = store.update(task.id, { state: { paused: false, nextRunAt } }, now)
+                    if (!resumed) continue
+                    // As after a resume by hand: a round that has run its limit, with nothing pending, is over.
+                    if (endsAtOnce(resumed)) {
+                        store.delete(resumed.id)
+                        continue
+                    }
+                    active += 1
+                    // As for a task resumed by hand: a prompt it already sent may be delivered again.
+                    if (task.pendingLocalId !== null) this.sessionTaskRunner.forgetPrompt(task.pendingLocalId)
+                }
+                this.emitSessionTasksChanged(sessionId)
+                this.runSessionTaskTick()
+                return leftPaused
+            },
+            // Through the getter, like `isHeld` above: never dependent on which service was built first.
+            releaseReceipts: (parentSessionId) => this.sessionReceipts.releaseHeld(parentSessionId),
+            emit: (event) => this.eventPublisher.emit(event),
+            log: (message, detail) => console.warn(message, detail)
+        })
+        return this.botServiceInstance
+    }
+
+    /** Whether a message with this localId is in the session's transcript, queued or already taken. */
+    sessionHasMessage(sessionId: string, localId: string): boolean {
+        return this.store.messages.lookupQueuedMessage(sessionId, localId).status !== 'absent'
+    }
+
+    private hasLocalMessage(sessionId: string, localId: string): boolean {
+        return this.sessionHasMessage(sessionId, localId)
+    }
+
+    /**
+     * Sessions the hub still owes a delivery to. Keyed by session. An entry
+     * exists while a message of the hub's is not in the session's transcript
+     * yet, or while such a message is in it and the session has not been
+     * started for it.
+     */
+    private botWakeRetriesField: Map<string, BotDeliveryRetry> | null = null
+    private get botWakeRetries(): Map<string, BotDeliveryRetry> {
+        return (this.botWakeRetriesField ??= new Map())
+    }
+
+    /**
+     * Bring a message to a bot's home chat: the owner's answer to its
+     * question, a worker's request, its first message. The message is stored
+     * first, so it is there whatever happens next, and the session is woken
+     * after. Whatever cannot be done now is retried, and tried again when
+     * the machine reports in: what the owner said is not dropped because of
+     * the state of that moment — the machine away, the gate backing off
+     * after a failed start, or a history action holding the transcript.
+     *
+     * Rejects only when the session does not exist. The localId makes a
+     * second call about the same message send nothing twice.
+     */
+    private async deliverBotMessage(sessionId: string, text: string, localId: string): Promise<void> {
+        if (!this.sessionCache.getSession(sessionId)) throw new Error('Session not found')
+        if (!this.hasLocalMessage(sessionId, localId)) {
+            try {
+                await this.sendMessage(sessionId, { text, localId, sentFrom: 'hapi-system' })
+            } catch (error) {
+                // A rewind, fork or resume holds the transcript for a moment, or the store failed just now.
+                // Either way the message is kept and tried again: it exists nowhere else.
+                if (!isTranscriptHeldError(error)) console.warn('[bots] message could not be stored, will retry', sessionId, error instanceof Error ? error.message : error)
+                this.oweBotDelivery(sessionId, { text, localId })
+                return
+            }
+        }
+        if (!(await this.wakeForBotMessage(sessionId))) this.oweBotDelivery(sessionId)
+    }
+
+    /**
+     * Start the session if it is not running and one of the hub's messages
+     * is waiting in it. True when there is nothing left to start it for, or
+     * it was started; false when it could not be started now. A session with
+     * nothing waiting is never started, whatever asked before.
+     */
+    private async wakeForBotMessage(sessionId: string): Promise<boolean> {
+        if (this.sessionCache.getSession(sessionId)?.active === true || !this.hasPendingBotMessage(sessionId)) {
+            this.endBotWake(sessionId)
+            return true
+        }
+        // The gate says `active`, `refused` (it tried) or `deferred` (backoff, or the hub's resume budget is spent).
+        if ((await this.deliveryWakeGate.wake(sessionId)).type === 'active') {
+            this.endBotWake(sessionId)
+            return true
+        }
+        return false
+    }
+
+    /** Whether one of the hub's own messages for this session is stored and not taken yet. */
+    private hasPendingBotMessage(sessionId: string): boolean {
+        return this.store.messages.getImmediateQueuedLocalMessages(sessionId)
+            .some((message) => isBotHubMessageLocalId(message.localId))
+    }
+
+    /** Note that the hub still owes this session something: a message not stored yet, or a start. */
+    private oweBotDelivery(sessionId: string, message?: { text: string; localId: string }): void {
+        let entry = this.botWakeRetries.get(sessionId)
+        if (!entry) {
+            entry = { unstored: [], wakeAttempts: 0, storeFailures: 0, timer: null }
+            this.botWakeRetries.set(sessionId, entry)
+        }
+        if (message && !entry.unstored.some((waiting) => waiting.localId === message.localId)) entry.unstored.push(message)
+        this.armBotDeliveryRetry(sessionId)
+    }
+
+    /**
+     * Schedule the next try, if none is pending. A start that keeps failing
+     * is given up after a while (the message is stored; the machine reporting
+     * in takes it from there). A message not stored yet is never given up: it
+     * exists only here.
+     */
+    private armBotDeliveryRetry(sessionId: string): void {
+        const entry = this.botWakeRetries.get(sessionId)
+        if (!entry || entry.timer) return
+        if (entry.unstored.length === 0) {
+            entry.wakeAttempts += 1
+            if (entry.wakeAttempts > BOT_DELIVERY_RETRY_MAX_ATTEMPTS) return
+        }
+        const delays = botDeliveryRetryDelaysOverride ?? BOT_DELIVERY_RETRY_DELAYS_MS
+        const delay = delays[Math.min(Math.max(entry.wakeAttempts - 1, 0), delays.length - 1)]
+        const timer = setTimeout(() => {
+            entry.timer = null
+            void this.retryBotDelivery(sessionId, entry).catch((error) => {
+                console.warn('[bots] delivery retry failed', sessionId, error instanceof Error ? error.message : error)
+            })
+        }, delay)
+        // A pending retry must not be what keeps a process alive.
+        timer.unref?.()
+        entry.timer = timer
+    }
+
+    /** One try: store what is not stored, start the session if it has to be, and ask for the next try if anything is still owed. */
+    private async retryBotDelivery(sessionId: string, entry: BotDeliveryRetry): Promise<void> {
+        if (!this.sessionCache.getSession(sessionId)) {
+            this.botWakeRetries.delete(sessionId)
+            return
+        }
+        if (entry.unstored.length > 0 && !this.transcriptHeld(sessionId)) {
+            for (const message of [...entry.unstored]) {
+                try {
+                    if (!this.hasLocalMessage(sessionId, message.localId)) {
+                        await this.sendMessage(sessionId, { text: message.text, localId: message.localId, sentFrom: 'hapi-system' })
+                    }
+                } catch (error) {
+                    if (isTranscriptHeldError(error)) {
+                        this.again(sessionId, entry)
+                        return
+                    }
+                    // Not a held transcript: the store itself failed. The message stays owed; say so once in a while,
+                    // not on every try.
+                    entry.storeFailures += 1
+                    if (entry.storeFailures === 1 || entry.storeFailures % 20 === 0) {
+                        console.warn('[bots] message could not be stored, still trying', sessionId, error instanceof Error ? error.message : error)
+                    }
+                    break
+                }
+                entry.unstored = entry.unstored.filter((waiting) => waiting.localId !== message.localId)
+                entry.storeFailures = 0
+            }
+        }
+        await this.wakeForBotMessage(sessionId)
+        this.again(sessionId, entry)
+    }
+
+    /** Ask for the next try if this entry still owes something and has none pending. */
+    private again(sessionId: string, entry: BotDeliveryRetry): void {
+        if (entry.unstored.length === 0) {
+            if (this.sessionCache.getSession(sessionId)?.active === true || !this.hasPendingBotMessage(sessionId)) {
+                this.endBotWake(sessionId)
+                return
+            }
+        }
+        this.armBotDeliveryRetry(sessionId)
+    }
+
+    private transcriptHeld(sessionId: string): boolean {
+        return this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)
+    }
+
+    /**
+     * No start is owed any more: drop its retries and its count. A message
+     * still to be stored keeps its own.
+     */
+    private endBotWake(sessionId: string): void {
+        const entry = this.botWakeRetries.get(sessionId)
+        if (!entry) return
+        entry.wakeAttempts = 0
+        if (entry.unstored.length === 0) {
+            if (entry.timer) clearTimeout(entry.timer)
+            this.botWakeRetries.delete(sessionId)
+        }
+    }
+
+    /**
+     * A machine reported in: what the hub owes its sessions can be handed
+     * over now instead of at the next retry. What made the last attempt fail
+     * (nobody there to start the session) no longer holds, so the gate's
+     * backoff for these sessions is dropped.
+     */
+    private retryBotWakes(): void {
+        for (const [sessionId, entry] of [...this.botWakeRetries]) {
+            entry.wakeAttempts = 0
+            if (entry.timer) clearTimeout(entry.timer)
+            entry.timer = null
+            this.deliveryWakeGate.forget(sessionId)
+            void this.retryBotDelivery(sessionId, entry).catch((error) => {
+                console.warn('[bots] delivery retry failed', sessionId, error instanceof Error ? error.message : error)
+            })
+        }
+    }
+
+    /** Nothing is owed to this session any more. */
+    private forgetBotWake(sessionId: string): void {
+        const entry = this.botWakeRetries.get(sessionId)
+        if (!entry) return
+        if (entry.timer) clearTimeout(entry.timer)
+        this.botWakeRetries.delete(sessionId)
+    }
+
+    /**
+     * A session was deleted or archived for good. What it was waiting on,
+     * and what was waiting on it, cannot be settled; a bot whose home chat
+     * it was cannot run any more.
+     */
+    private onSessionRemoved(sessionId: string): void {
+        this.forgetBotWake(sessionId)
+        this.deliveryWakeGate.forget(sessionId)
+        this.receiptService?.forgetSession(sessionId)
+        this.botService.onHomeChatGone(sessionId)
+    }
+
+    private async spawnBotHomeChat(input: {
+        /** The id the home chat gets; the bot is already recorded under it. */
+        sessionId: string
+        /** Set on the session before the machine starts it. */
+        name: string
+        machineId: string
+        homeDir: string
+        agent: string
+        model: string | undefined
+        permissionMode: string | undefined
+        namespace: string
+    }): Promise<{ sessionId: string } | { error: string }> {
+        const machine = this.getMachineByNamespace(input.machineId, input.namespace) ?? this.getMachine(input.machineId)
+        if (!machine) return { error: 'Machine not found' }
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentAvailability)) {
+            return { error: 'This runner must be upgraded before creating sessions' }
+        }
+        const result = await this.spawnSession(
+            input.machineId,
+            input.homeDir,
+            input.agent as AgentFlavor,
+            input.model,
+            undefined, // modelReasoningEffort
+            undefined, // yolo
+            'simple',
+            undefined, // worktreeName
+            undefined, // resumeSessionId
+            undefined, // effort
+            input.permissionMode as PermissionMode | undefined,
+            undefined, // serviceTier
+            undefined, // existingSessionId
+            undefined, // collaborationMode
+            undefined, // copilotAgentMode
+            undefined, // startingMode
+            input.namespace,
+            undefined, // resumeSessionAt
+            { reservedSessionId: input.sessionId, name: input.name }
+        )
+        return result.type === 'success' ? { sessionId: result.sessionId } : { error: result.message }
+    }
+
+    private snapshotWatchedState(session: Session | undefined): WatchedState {
+        const requests = session?.agentState?.requests
+        return {
+            thinking: session?.thinking === true,
+            active: session?.active === true,
+            requestIds: requests && Object.keys(requests).length > 0 ? Object.keys(requests) : null
+        }
+    }
+
+    /**
+     * Tell receipts and bots what changed for a session: its turn ended, it
+     * went away, or a request appeared that a worker cannot continue without.
+     */
+    private observeWatchedState(sessionId: string, before: WatchedState, after: Session | undefined): void {
+        const next = this.snapshotWatchedState(after)
+        this.receiptService?.observe(sessionId, {
+            thinking: next.thinking,
+            active: next.active,
+            ...(after ? sessionWork(after) : { blocked: false, background: false })
+        })
+        // Compare the sets, not the counts: one request answered and another
+        // raised in the same update leaves the count where it was.
+        const beforeIds = before.requestIds ?? []
+        if ((next.requestIds?.length ?? 0) > 0 && !sameIds(beforeIds, next.requestIds ?? [])) {
+            const requests = after?.agentState?.requests
+            if (!requests) return
+            const known = new Set(beforeIds)
+            const added = Object.entries(requests)
+                .filter(([requestId]) => !known.has(requestId))
+                .map(([requestId, request]) => ({ requestId, request }))
+            this.botService.onRequestsChanged(sessionId, added)
+        } else if (beforeIds.length > 0 && !next.requestIds) {
+            // All of them are gone (answered or denied): the owner's lists change just the same.
+            this.botService.onRequestsChanged(sessionId, [])
+        }
     }
 
     /**
@@ -2621,6 +3145,9 @@ export class SyncEngine {
         if (!wasActive && nowActive) {
             // Runner recovery: requeue wakes whose rapid-retry budget expired.
             this.requeuePendingJobTerminalWakes()
+            // And receipts that were waiting for a session on this machine, and messages the hub itself has queued for one.
+            this.receiptService?.retryPending()
+            this.retryBotWakes()
         }
         // Guard the runtime shape too: the socket layer sanitizes, but a rogue
         // payload must not reach the declared-alive cache as e.g. a string.
@@ -2668,8 +3195,28 @@ export class SyncEngine {
         }
     }
 
+    /** Counts the inactivity ticks; the bot sweep runs on every twelfth (a minute). */
+    private botSweepTick = 0
+
+    /**
+     * Once a minute, on the inactivity tick: a bot whose creation was
+     * interrupted by a restart is not stale at the next hub start if that
+     * came less than ten minutes in; it becomes so while the hub runs.
+     */
+    private sweepStaleBots(): void {
+        if (!this.botServiceInstance) return
+        this.botSweepTick += 1
+        if (this.botSweepTick % 12 === 0) this.botServiceInstance.sweep()
+    }
+
     private expireInactive(): void {
+        this.sweepStaleBots()
         const expired = this.sessionCache.expireInactive()
+        // A session that just went away may be a worker someone waits on; the
+        // expiry does not pass through handleRealtimeEvent, so say it here.
+        for (const id of expired) {
+            this.receiptService?.onExpired(id)
+        }
         // Sort by most recent first so dedup keeps the newest session when multiple
         // duplicates for the same agent thread expire in the same sweep.
         const sorted = expired
@@ -4779,6 +5326,8 @@ export class SyncEngine {
         }
         this.releaseSessionEnumerations(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+        // An archived session never runs again: for receipts and bots this is the same as deleted.
+        this.onSessionRemoved(sessionId)
         const archivedSession = this.sessionCache.getSession(sessionId)
         if (archivedSession?.metadata?.codexResumePending) this.writeCodexResumePending(sessionId, archivedSession.namespace, undefined)
     }
@@ -5113,6 +5662,7 @@ export class SyncEngine {
         this.titleTurnCompletedIds.delete(sessionId)
         this.automaticTitleSuggestionService.forgetSession(sessionId)
         this.releaseSessionEnumerations(sessionId)
+        this.onSessionRemoved(sessionId)
     }
 
     async applySessionConfig(
@@ -5208,7 +5758,14 @@ export class SyncEngine {
         // argv before the first webhook (#1911 Major: unreapable window).
         namespace?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
-        resumeSessionAt?: string
+        resumeSessionAt?: string,
+        /**
+         * `reservedSessionId`: the id the preallocated row must get, for a
+         * caller that has to know it before the machine starts the session
+         * (a bot is recorded under its home chat's id first, so the session's
+         * first bootstrap already knows it is a bot).
+         */
+        opts?: { reservedSessionId?: string; name?: string }
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -5220,7 +5777,7 @@ export class SyncEngine {
         if (!allocatedSessionId && namespace) {
             const machine = this.getMachineByNamespace(machineId, namespace)
                 ?? this.getMachine(machineId)
-            allocatedSessionId = randomUUID()
+            allocatedSessionId = opts?.reservedSessionId || randomUUID()
             this.sessionCache.getOrCreateSession(
                 `machine-spawn:${allocatedSessionId}`,
                 {
@@ -5239,6 +5796,13 @@ export class SyncEngine {
                 allocatedSessionId
             )
             preallocated = true
+            if (opts?.name) {
+                // Named before anything runs under it, so the first process to
+                // bootstrap already reads this name.
+                await this.sessionCache.renameSession(allocatedSessionId, opts.name).catch((error) => {
+                    console.warn('[spawn] could not name the preallocated session', allocatedSessionId, error instanceof Error ? error.message : error)
+                })
+            }
         }
 
         let result: Awaited<ReturnType<RpcGateway['spawnSession']>>

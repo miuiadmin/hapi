@@ -2569,6 +2569,9 @@ export class SessionCache {
         return this.store.runInTransaction(() => {
             const moved = this.store.sessionJobs.transfer(fromSessionId, toSessionId)
             const tasksMoved = this.store.sessionTasks.transfer(fromSessionId, toSessionId)
+            // So do pending receipts and the bot ledger rows that name the session.
+            this.store.sessionReceipts.transfer(fromSessionId, toSessionId)
+            this.store.bots.followMergedSession(fromSessionId, toSessionId, Date.now())
             if (
                 targetWasRedirectedToSource
                 && !this.clearJobsTransferredToSession(toSessionId, namespace)

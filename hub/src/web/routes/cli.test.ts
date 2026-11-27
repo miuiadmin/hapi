@@ -4,12 +4,15 @@ import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { createConfiguration, getConfiguration } from '../../configuration'
 import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
+import { writeDisablePeerToolsEnabled, writePeerToolsBotsOnlyEnabled } from '../../config/disablePeerTools'
 import { createCliRoutes } from './cli'
 import { SessionIdentityConflictError } from '../../store/sessions'
 
 function createApp(engine: Partial<SyncEngine>) {
     const app = new Hono()
-    app.route('/cli', createCliRoutes(() => engine as SyncEngine))
+    // Every session bootstrap asks which bot, if any, the session is the home chat of.
+    const withBots = { botService: { botIdForHomeChat: () => undefined }, ...engine }
+    app.route('/cli', createCliRoutes(() => withBots as SyncEngine))
     return app
 }
 
@@ -570,5 +573,55 @@ describe('cli HTTP gzip compression', () => {
         expect(refusedRes.headers.get('content-encoding')).toBeNull()
         expect(refusedRes.headers.get('vary')).toContain('Accept-Encoding')
         expect(await refusedRes.json()).toEqual({ messages })
+    })
+})
+
+describe('cli session bootstrap: the peer tools and bots', () => {
+    afterEach(async () => {
+        await writeDisablePeerToolsEnabled(getConfiguration().dataDir, false)
+        await writePeerToolsBotsOnlyEnabled(getConfiguration().dataDir, false)
+    }, 30_000)
+
+    /** Bootstrap one session and read what the hub says about the tools and the bot. */
+    async function bootstrap(botIdForHomeChat: (sessionId: string) => string | undefined) {
+        const sessionId = '33333333-3333-4333-8333-333333333333'
+        const app = createApp({
+            botService: { botIdForHomeChat },
+            getMachine: () => null,
+            getOrCreateMachine: () => ({ id: 'machine-1' }),
+            getOrCreateSession: () => ({ id: sessionId })
+        } as never)
+        const response = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: { ...authHeaders(), 'content-type': 'application/json' },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'bootstrap-tag',
+                metadata: { path: '/tmp/project' },
+                agentState: { controlledByUser: true },
+                machine: { id: 'machine-1', metadata: { host: 'localhost' } }
+            })
+        })
+        expect(response.status).toBe(200)
+        return await response.json() as { disablePeerTools?: boolean; botId?: string }
+    }
+
+    it('hands the peer tools out as the hub is set to, and names the bot only for its home chat', async () => {
+        await writeDisablePeerToolsEnabled(getConfiguration().dataDir, true)
+        await writePeerToolsBotsOnlyEnabled(getConfiguration().dataDir, true)
+
+        // Which sessions are a bot's home chat is the bot service's answer, per session.
+        expect(await bootstrap((sessionId) => (sessionId.startsWith('3333') ? 'bot-1' : undefined)))
+            .toMatchObject({ disablePeerTools: false, botId: 'bot-1' })
+        // A session that is nobody's home chat — an ordinary one, or what a failed bot left behind — gets nothing.
+        expect(await bootstrap(() => undefined)).toMatchObject({ disablePeerTools: true })
+        expect((await bootstrap(() => undefined)).botId).toBeUndefined()
+    })
+
+    it('with the tools off for everyone, a bot does not get them either', async () => {
+        await writeDisablePeerToolsEnabled(getConfiguration().dataDir, true)
+        const boot = await bootstrap(() => 'bot-1')
+        expect(boot.disablePeerTools).toBe(true)
+        expect(boot.botId).toBe('bot-1')
     })
 })

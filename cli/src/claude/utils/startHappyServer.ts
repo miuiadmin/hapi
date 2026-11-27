@@ -52,6 +52,28 @@ import {
     type SessionJobToolArgs,
 } from "@/modules/sessionJob/sessionJobMcp";
 import { SpawnPeerError, spawnPeer } from "@/modules/spawnPeer/spawnPeer";
+import {
+    PEER_REPLY_VIA_PARAM_DESCRIPTION,
+    resolveReplyVia,
+    settlePeerReply,
+    type PeerReplyVia
+} from "@/modules/bot/replyVia";
+import { registerReceipt } from "@/modules/bot/receipts";
+import { updateItem } from "@/modules/bot/items";
+import {
+    BOT_ITEM_TOOL_DESCRIPTION,
+    BOT_ITEM_TOOL_NAME,
+    botItemInputSchema,
+    handleBotItemTool,
+    type BotItemToolArgs
+} from "@/modules/bot/botItemMcp";
+import {
+    BOT_TASK_TOOL_DESCRIPTION,
+    BOT_TASK_TOOL_NAME,
+    botTaskInputSchema,
+    handleBotTaskTool,
+    type BotTaskToolArgs
+} from "@/modules/bot/botTaskMcp";
 
 export type HapiMcpToolName =
     | 'change_title'
@@ -65,7 +87,9 @@ export type HapiMcpToolName =
     | 'spawn_peer'
     | 'session_job'
     | 'skill_lookup'
-    | 'ask_user_question';
+    | 'ask_user_question'
+    | 'bot_item'
+    | 'bot_task';
 
 type AskUserQuestionOption = {
     label: string;
@@ -310,17 +334,49 @@ function createHapiMcpServer(
         title: z.string().trim().min(1).max(255).optional().describe('Optional display title or filename'),
     });
 
-    /** Start reply forwarding when asked; returns the note for the tool result. */
-    const forwardReplyIfRequested = (
-        waitForReply: boolean | undefined,
+    // The hub marks a bot's home chat with `botId` on the bootstrap row; only
+    // then are the ledger / task tools registered and hub receipts defaulted.
+    const botId = (client.botId ?? '').trim() || undefined;
+
+    /**
+     * Settle how a delivered message's reply comes back; returns the note for
+     * the tool result. `replyVia` beats `waitForReply`; a bot's home chat
+     * defaults to the hub receipt (any flavor, survives restarts), every other
+     * session to no reply unless it asked. A failed receipt registration falls
+     * back to the historical in-process watch.
+     */
+    const settleReply = async (
+        args: { waitForReply?: boolean; replyVia?: PeerReplyVia },
         task: { sessionId: string; localId?: string; flavor?: string | null }
-    ): string => {
-        if (!waitForReply) return '';
-        if (!task.localId) return '; the delivered message could not be identified, so check the reply with inspect_peer';
-        if (!supportsPeerReply(task.flavor)) return `; ${task.flavor} peers do not report turn ends, so check the reply with inspect_peer`;
-        forwardPeerReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: client.sessionId })
-            .catch((error) => logger.debug('[hapiMCP] peer reply forwarding failed:', error));
-        return '; its reply will be posted here';
+    ): Promise<string> => {
+        const via = resolveReplyVia({ replyVia: args.replyVia, waitForReply: args.waitForReply, botId });
+        if (!via) return '';
+        const result = await settlePeerReply({
+            via,
+            task,
+            callerSessionId: client.sessionId,
+            onHubFailure: 'forward',
+            flavorSupported: supportsPeerReply(task.flavor),
+            // The MCP server outlives the tool call, so the watch runs detached.
+            forward: async ({ peerSessionId, taskLocalId, callerSessionId }) => {
+                forwardPeerReply({ peerSessionId, taskLocalId, callerSessionId })
+                    .catch((error) => logger.debug('[hapiMCP] peer reply forwarding failed:', error));
+            },
+            registerReceipt: (childSessionId, receipt) => registerReceipt(childSessionId, receipt)
+        });
+        return result.note;
+    };
+
+    /** `--item`: attach a freshly opened worker to a ledger item. */
+    const attachWorkerToItem = async (itemId: string | number, workerSessionId: string): Promise<string> => {
+        if (!botId) return '';
+        try {
+            const item = await updateItem({ botId, itemId, fromSessionId: client.sessionId, body: { workerSessionId } });
+            return `; attached to item #${item.number} [${item.status}] ${item.title}`;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return `; could not attach to item ${itemId} (${message}) — attach it with bot_item set workerSessionId=${workerSessionId}`;
+        }
     };
 
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
@@ -329,6 +385,7 @@ function createHapiMcpServer(
         deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
         wake: z.boolean().optional().describe(PEER_WAKE_PARAM_DESCRIPTION),
         waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
+        replyVia: z.enum(['caller', 'hub']).optional().describe(PEER_REPLY_VIA_PARAM_DESCRIPTION),
     });
 
     const spawnPeerInputSchema: z.ZodTypeAny = z.object({
@@ -355,6 +412,10 @@ function createHapiMcpServer(
                 + 'Pass only to tighten or when the operator names a mode — do not clone the parent session.'
             ),
         waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
+        replyVia: z.enum(['caller', 'hub']).optional().describe(PEER_REPLY_VIA_PARAM_DESCRIPTION),
+        item: z.union([z.number().int().positive(), z.string().trim().min(1)]).optional().describe(
+            'Bot only: ledger item (number or id) this worker delivers. The new session is attached as its worker.'
+        ),
     });
 
     const maxInlineMediaBytes = 25 * 1024 * 1024;
@@ -646,12 +707,41 @@ function createHapiMcpServer(
         };
     });
 
+    // Ledger and schedules exist only for a bot's home chat (hub-marked).
+    if (botId) {
+        registerTool(BOT_ITEM_TOOL_NAME, {
+            description: BOT_ITEM_TOOL_DESCRIPTION,
+            title: 'Bot Ledger',
+            inputSchema: botItemInputSchema,
+        }, async (args: BotItemToolArgs) => {
+            logger.debug('[hapiMCP] bot_item:', args.action);
+            const result = await handleBotItemTool(args, { botId, sessionId: client.sessionId });
+            return {
+                content: [{ type: 'text' as const, text: result.text }],
+                isError: result.isError,
+            };
+        });
+
+        registerTool(BOT_TASK_TOOL_NAME, {
+            description: BOT_TASK_TOOL_DESCRIPTION,
+            title: 'Bot Tasks',
+            inputSchema: botTaskInputSchema,
+        }, async (args: BotTaskToolArgs) => {
+            logger.debug('[hapiMCP] bot_task:', args.action);
+            const result = await handleBotTaskTool(args, { botId, sessionId: client.sessionId });
+            return {
+                content: [{ type: 'text' as const, text: result.text }],
+                isError: result.isError,
+            };
+        });
+    }
+
     if (!peerToolsDisabled) {
         registerTool('ping_peer', {
             description: PING_PEER_TOOL_DESCRIPTION,
             title: 'Ping Peer Session',
             inputSchema: pingPeerInputSchema,
-        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: PeerDeliveryMode; wake?: boolean; waitForReply?: boolean }) => {
+        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: PeerDeliveryMode; wake?: boolean; waitForReply?: boolean; replyVia?: PeerReplyVia }) => {
             logger.debug('[hapiMCP] ping_peer:', args.sessionIdPrefix);
             try {
                 const result = await pingPeer({
@@ -661,7 +751,7 @@ function createHapiMcpServer(
                     deliveryMode: args.deliveryMode,
                     wake: args.wake === true,
                 });
-                const replyNote = forwardReplyIfRequested(args.waitForReply, result);
+                const replyNote = await settleReply(args, result);
                 return {
                     content: [
                         {
@@ -707,8 +797,17 @@ function createHapiMcpServer(
             sessionType?: 'simple' | 'worktree'
             permissionMode?: string
             waitForReply?: boolean
+            replyVia?: PeerReplyVia
+            item?: number | string
         }) => {
             logger.debug('[hapiMCP] spawn_peer:', args.directory, args.machine ? `machine=${args.machine}` : '');
+            // Before anything is spawned: an item belongs to a bot's ledger.
+            if (args.item !== undefined && !botId) {
+                return {
+                    content: [{ type: 'text' as const, text: 'Failed to spawn peer: item can only be attached by a bot\'s home chat (this session is not one); drop item and attach the worker with hapi item set <n> --worker <sessionId>' }],
+                    isError: true,
+                }
+            }
             try {
                 const metadata = client.getMetadata()
                 const summaryMeta = toSessionSummaryMetadata(metadata)
@@ -733,12 +832,16 @@ function createHapiMcpServer(
                         agentSessionId: summaryMeta?.agentSessionId ?? null,
                     },
                     requireParent: true,
+                    // A bot's workers carry the worker contract (report + stop before irreversible actions).
+                    ...(botId ? { workerContract: { botId, botName: metadata?.name?.trim() || null } } : {}),
                 });
+                const itemNote = args.item !== undefined ? await attachWorkerToItem(args.item, result.sessionId) : '';
+                const replyNote = await settleReply(args, result)
                 return {
                     content: [
                         {
                             type: 'text' as const,
-                            text: `Spawned ${result.sessionId} (${result.name})${forwardReplyIfRequested(args.waitForReply, result)}`,
+                            text: `Spawned ${result.sessionId} (${result.name})${itemNote}${replyNote}`,
                         },
                     ],
                     isError: false,
@@ -1007,6 +1110,13 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         }
     }
     if (includeTool(SESSION_JOB_TOOL_NAME)) toolNames.push(SESSION_JOB_TOOL_NAME);
+    // Bot tools ride on the hub's per-session marker, never on a machine flag.
+    const botId = (client.botId ?? '').trim() || undefined;
+    if (botId) {
+        for (const name of [BOT_ITEM_TOOL_NAME, BOT_TASK_TOOL_NAME] as const) {
+            if (includeTool(name)) toolNames.push(name);
+        }
+    }
     if (options.skillLookup && includeTool('skill_lookup')) toolNames.push('skill_lookup');
     if (options.askUserTool && includeTool('ask_user_question')) toolNames.push('ask_user_question');
     if (toolNames.length === 0) {

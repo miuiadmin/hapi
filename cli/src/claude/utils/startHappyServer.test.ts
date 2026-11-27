@@ -9,6 +9,11 @@ import { applyHubAutoTitlePerTurn, resetAutoTitlePerTurnForTests } from '@/modul
 import { applyHubPeerToolsDisabled, resetPeerToolsForTests } from '@/modules/common/peerTools'
 import * as peerMessages from '@/modules/pingPeer/pingPeer'
 import * as peerSpawn from '@/modules/spawnPeer/spawnPeer'
+import * as botReceipts from '@/modules/bot/receipts'
+import * as botItems from '@/modules/bot/items'
+import * as botItemMcp from '@/modules/bot/botItemMcp'
+import * as botTaskMcp from '@/modules/bot/botTaskMcp'
+import { BotClientError } from '@/modules/bot/botClient'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 // The ping_peer core is stubbed so the cross-flip regression can observe the
@@ -1061,5 +1066,195 @@ describe('startHappyServer peer tools kill switch', () => {
             sessionIdPrefix: 'abc123',
             peerToolsDisabled: false
         }))
+    })
+})
+
+describe('startHappyServer bot tools and replyVia', () => {
+    afterEach(() => {
+        vi.restoreAllMocks()
+    })
+
+    const CHILD = 'child-1111-1111-1111-111111111111'
+    const HOME = 'home-1111-1111-1111-111111111111'
+
+    function sessionClient(extra: Record<string, unknown> = {}): ApiSessionClient {
+        return {
+            sessionId: HOME,
+            peerToolsDisabled: false,
+            getMetadata: () => ({ name: 'Ops', path: '/home/ops/.hapi/bots/ops', flavor: 'claude' }),
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn(),
+            ...extra
+        } as unknown as ApiSessionClient
+    }
+
+    async function connect(client: ApiSessionClient) {
+        const server = await startHappyServer(client, {})
+        const mcp = new Client({ name: 'hapi-bot-test', version: '1.0.0' }, { capabilities: {} })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        return { mcp, server }
+    }
+
+    it('registers bot_item / bot_task only for a bot home chat', async () => {
+        const plain = await connect(sessionClient())
+        const plainTools = (await plain.mcp.listTools()).tools.map((tool) => tool.name)
+        expect(plain.server.toolNames).not.toContain('bot_item')
+        expect(plain.server.toolNames).not.toContain('bot_task')
+        expect(plainTools).not.toContain('bot_item')
+        await plain.mcp.close()
+        plain.server.stop()
+
+        const bot = await connect(sessionClient({ botId: 'bot-1' }))
+        expect(bot.server.toolNames).toEqual(expect.arrayContaining(['bot_item', 'bot_task']))
+        const botTools = (await bot.mcp.listTools()).tools
+        expect(botTools.find((tool) => tool.name === 'bot_item')?.inputSchema.properties?.action).toMatchObject({
+            enum: ['add', 'set', 'ask', 'comment', 'list', 'show', 'done']
+        })
+        expect(botTools.find((tool) => tool.name === 'bot_task')?.inputSchema.properties?.action).toMatchObject({
+            enum: ['add', 'list', 'pause', 'resume', 'delete']
+        })
+        // Hub REST on the bot's own records: auto-approved like session_job.
+        expect(toClaudeAllowedHapiMcpTools(bot.server.toolNames)).toEqual(expect.arrayContaining(['mcp__hapi__bot_item', 'mcp__hapi__bot_task']))
+        await bot.mcp.close()
+        bot.server.stop()
+    })
+
+    it('routes bot_item and bot_task to the handlers with the session identity', async () => {
+        const item = vi.spyOn(botItemMcp, 'handleBotItemTool').mockResolvedValue({ text: 'ITEM TEXT', isError: false })
+        const task = vi.spyOn(botTaskMcp, 'handleBotTaskTool').mockResolvedValue({ text: 'TASK TEXT', isError: true })
+        const { mcp, server } = await connect(sessionClient({ botId: 'bot-1' }))
+        try {
+            const itemResult = await mcp.callTool({ name: 'bot_item', arguments: { action: 'list' } }) as ToolResult
+            expect(item).toHaveBeenCalledWith({ action: 'list' }, { botId: 'bot-1', sessionId: HOME })
+            expect(itemResult).toEqual({ content: [{ type: 'text', text: 'ITEM TEXT' }], isError: false })
+            const taskResult = await mcp.callTool({ name: 'bot_task', arguments: { action: 'list' } }) as ToolResult
+            expect(task).toHaveBeenCalledWith({ action: 'list' }, { botId: 'bot-1', sessionId: HOME })
+            expect(taskResult.isError).toBe(true)
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
+    })
+
+    it("replyVia 'hub' registers a receipt instead of forwarding in-process, for any flavor", async () => {
+        const ping = vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({ sessionId: CHILD, name: 'Worker', resumed: false, localId: 'ping-peer-1', delivery: 'accepted', flavor: 'hermes' })
+        const register = vi.spyOn(botReceipts, 'registerReceipt').mockResolvedValue({ id: 'r1' } as never)
+        const forward = vi.spyOn(peerMessages, 'forwardPeerReply').mockResolvedValue(undefined)
+        const { mcp, server } = await connect(sessionClient())
+        try {
+            const result = await mcp.callTool({ name: 'ping_peer', arguments: { sessionIdPrefix: CHILD, message: 'hello', replyVia: 'hub' } }) as ToolResult
+            expect(register).toHaveBeenCalledWith(CHILD, { parentSessionId: HOME, taskLocalId: 'ping-peer-1', kind: 'turn_end' })
+            expect(forward).not.toHaveBeenCalled()
+            expect(result.isError).toBe(false)
+            expect(result.content?.[0]?.text).toBe('Accepted for child-1111-1111-1111-111111111111 (Worker) localId=ping-peer-1 — delivery shows in the recipient chat when its runtime consumes it; the hub will post its reply here when its turn ends')
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
+    })
+
+    it('replyVia beats waitForReply, and defaults to the hub receipt in a bot home chat', async () => {
+        vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({ sessionId: CHILD, name: 'Worker', resumed: false, localId: 'ping-peer-1', delivery: 'accepted', flavor: 'codex' })
+        const register = vi.spyOn(botReceipts, 'registerReceipt').mockResolvedValue({ id: 'r1' } as never)
+        const forward = vi.spyOn(peerMessages, 'forwardPeerReply').mockResolvedValue(undefined)
+        const { mcp, server } = await connect(sessionClient({ botId: 'bot-1' }))
+        try {
+            await mcp.callTool({ name: 'ping_peer', arguments: { sessionIdPrefix: CHILD, message: 'a', waitForReply: true, replyVia: 'hub' } })
+            expect(register).toHaveBeenCalledTimes(1)
+            expect(forward).not.toHaveBeenCalled()
+            await mcp.callTool({ name: 'ping_peer', arguments: { sessionIdPrefix: CHILD, message: 'b' } })
+            expect(register).toHaveBeenCalledTimes(2)
+            expect(forward).not.toHaveBeenCalled()
+            const caller = await mcp.callTool({ name: 'ping_peer', arguments: { sessionIdPrefix: CHILD, message: 'c', replyVia: 'caller' } }) as ToolResult
+            expect(register).toHaveBeenCalledTimes(2)
+            expect(forward).toHaveBeenCalledWith({ peerSessionId: CHILD, taskLocalId: 'ping-peer-1', callerSessionId: HOME })
+            expect(caller.content?.[0]?.text).toContain('; its reply will be posted here')
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
+    })
+
+    it("falls back to the in-process watch when the hub refuses the receipt", async () => {
+        vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({ sessionId: CHILD, name: 'Worker', resumed: false, localId: 'ping-peer-1', delivery: 'accepted', flavor: 'codex' })
+        vi.spyOn(botReceipts, 'registerReceipt').mockRejectedValue(new BotClientError('request_failed', 'register reply receipt failed: HTTP 404', 404))
+        const forward = vi.spyOn(peerMessages, 'forwardPeerReply').mockResolvedValue(undefined)
+        const { mcp, server } = await connect(sessionClient({ botId: 'bot-1' }))
+        try {
+            const result = await mcp.callTool({ name: 'ping_peer', arguments: { sessionIdPrefix: CHILD, message: 'a' } }) as ToolResult
+            expect(forward).toHaveBeenCalledWith({ peerSessionId: CHILD, taskLocalId: 'ping-peer-1', callerSessionId: HOME })
+            expect(result.content?.[0]?.text).toContain('; hub receipt registration failed (register reply receipt failed: HTTP 404) — falling back to this session\'s hapi process: its reply will be posted here')
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
+    })
+
+    it('opens workers with the worker contract and a hub receipt in a bot home chat, and attaches --item', async () => {
+        const spawn = vi.spyOn(peerSpawn, 'spawnPeer').mockResolvedValue({ sessionId: CHILD, name: 'Worker', localId: 'ping-peer-1', flavor: 'codex' })
+        const register = vi.spyOn(botReceipts, 'registerReceipt').mockResolvedValue({ id: 'r1' } as never)
+        const update = vi.spyOn(botItems, 'updateItem').mockResolvedValue({ number: 7, status: 'working', title: 'Ship it' } as never)
+        const { mcp, server } = await connect(sessionClient({ botId: 'bot-1' }))
+        try {
+            const result = await mcp.callTool({ name: 'spawn_peer', arguments: { directory: '/srv/project', message: 'Run the tests', item: 7 } }) as ToolResult
+            expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+                requireParent: true,
+                workerContract: { botId: 'bot-1', botName: 'Ops' }
+            }))
+            expect(update).toHaveBeenCalledWith({ botId: 'bot-1', itemId: 7, fromSessionId: HOME, body: { workerSessionId: CHILD } })
+            expect(register).toHaveBeenCalledWith(CHILD, { parentSessionId: HOME, taskLocalId: 'ping-peer-1', kind: 'turn_end' })
+            expect(result.content?.[0]?.text).toBe('Spawned child-1111-1111-1111-111111111111 (Worker); attached to item #7 [working] Ship it; the hub will post its reply here when its turn ends')
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
+    })
+
+    it('an unknown registration outcome is retried once and never doubled by an in-process watch', async () => {
+        vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({ sessionId: CHILD, name: 'Worker', resumed: false, localId: 'ping-peer-1', delivery: 'accepted', flavor: 'codex' })
+        const register = vi.spyOn(botReceipts, 'registerReceipt')
+            .mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
+            .mockRejectedValueOnce(new BotClientError('request_failed', 'register reply receipt failed: HTTP 503', 503))
+        const forward = vi.spyOn(peerMessages, 'forwardPeerReply').mockResolvedValue(undefined)
+        const { mcp, server } = await connect(sessionClient({ botId: 'bot-1' }))
+        try {
+            const result = await mcp.callTool({ name: 'ping_peer', arguments: { sessionIdPrefix: CHILD, message: 'a' } }) as ToolResult
+            expect(register).toHaveBeenCalledTimes(2)
+            expect(forward).not.toHaveBeenCalled()
+            expect(result.content?.[0]?.text).toContain('; receipt registration outcome unknown (register reply receipt failed: HTTP 503), so the reply may or may not be posted back')
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
+    })
+
+    it('refuses spawn_peer with item outside a bot home chat before spawning anything', async () => {
+        const spawn = vi.spyOn(peerSpawn, 'spawnPeer')
+        const { mcp, server } = await connect(sessionClient())
+        try {
+            const result = await mcp.callTool({ name: 'spawn_peer', arguments: { directory: '/srv/project', message: 'Run the tests', item: 7 } }) as ToolResult
+            expect(result.isError).toBe(true)
+            expect(result.content?.[0]?.text).toContain("item can only be attached by a bot's home chat")
+            expect(spawn).not.toHaveBeenCalled()
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
+    })
+
+    it('keeps ordinary sessions free of the worker contract and of receipts', async () => {
+        const spawn = vi.spyOn(peerSpawn, 'spawnPeer').mockResolvedValue({ sessionId: CHILD, name: 'Worker', flavor: 'codex' })
+        const register = vi.spyOn(botReceipts, 'registerReceipt')
+        const { mcp, server } = await connect(sessionClient())
+        try {
+            const result = await mcp.callTool({ name: 'spawn_peer', arguments: { directory: '/srv/project', message: 'Run the tests' } }) as ToolResult
+            expect(spawn).toHaveBeenCalledWith(expect.not.objectContaining({ workerContract: expect.anything() }))
+            expect(register).not.toHaveBeenCalled()
+            expect(result.content?.[0]?.text).toBe('Spawned child-1111-1111-1111-111111111111 (Worker)')
+        } finally {
+            await mcp.close()
+            server.stop()
+        }
     })
 })

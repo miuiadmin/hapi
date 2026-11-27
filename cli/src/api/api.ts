@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
 import { DEFAULT_RPC_TIMEOUT_MS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
@@ -13,7 +14,6 @@ import {
     ClearOpencodeSessionResponseSchema,
     CreateMachineResponseSchema,
     CreateSessionResponseSchema,
-    GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
     LocalResumeTargetByAgentResponseSchema,
@@ -32,13 +32,26 @@ import { buildHubRequestHeaders } from './hubExtraHeaders'
 import { monotonicTimeMs } from '@/utils/time'
 
 /**
- * Session row plus the hub-level peer-tools preference captured from this
- * session's own create/fetch response. The bootstrap-time snapshot is
- * authoritative for everything derived from this session (tool registration,
- * prompts, wrapped-agent child env); absent when an older hub does not send
- * it.
+ * Session row plus the hub-level values captured from this session's own
+ * create/fetch response. The bootstrap-time snapshot is authoritative for
+ * everything derived from this session (tool registration, prompts,
+ * wrapped-agent child env); absent when an older hub does not send it.
+ *
+ * `botId` is present only when this session is a bot's home chat (the hub
+ * marks it); it switches on the bot tools (`bot_item` / `bot_task`) and the
+ * hub-side reply receipt default.
  */
-export type SessionBootstrapInfo = Session & { peerToolsDisabled?: boolean }
+export type SessionBootstrapInfo = Session & { peerToolsDisabled?: boolean; botId?: string }
+
+/**
+ * `CreateSessionResponseSchema` strips unknown keys, so `botId` — added by the
+ * hub for bot home chats — must be named here to survive parsing. Extending
+ * keeps every other field identical to the shared contract.
+ */
+const SessionBootstrapResponseSchema = CreateSessionResponseSchema.extend({
+    // nullish: a hub that sends null/blank simply has no bot for this session.
+    botId: z.string().nullish()
+})
 
 export class ApiClient {
     static async create(): Promise<ApiClient> {
@@ -126,7 +139,7 @@ export class ApiClient {
             }
         )
 
-        const parsed = CreateSessionResponseSchema.safeParse(response.data)
+        const parsed = SessionBootstrapResponseSchema.safeParse(response.data)
         if (!parsed.success) {
             throw apiValidationError('Invalid /cli/sessions response', response)
         }
@@ -184,7 +197,8 @@ export class ApiClient {
             // instead of the process-wide module value.
             ...(typeof parsed.data.disablePeerTools === 'boolean'
                 ? { peerToolsDisabled: parsed.data.disablePeerTools }
-                : {})
+                : {}),
+            ...(parsed.data.botId ? { botId: parsed.data.botId } : {})
         }
     }
 
@@ -197,7 +211,7 @@ export class ApiClient {
             }
         )
 
-        const parsed = GetSessionResponseSchema.safeParse(response.data)
+        const parsed = SessionBootstrapResponseSchema.safeParse(response.data)
         if (!parsed.success) {
             throw apiValidationError('Invalid /cli/sessions/:id response', response)
         }
@@ -253,7 +267,8 @@ export class ApiClient {
             // instead of racing the process-wide module value.
             ...(typeof parsed.data.disablePeerTools === 'boolean'
                 ? { peerToolsDisabled: parsed.data.disablePeerTools }
-                : {})
+                : {}),
+            ...(parsed.data.botId ? { botId: parsed.data.botId } : {})
         }
     }
 

@@ -27,6 +27,9 @@ Commands:
   hapi ping-peer             List peers or message another session
   hapi inspect-peer <id>     Read another session's metadata and messages
   hapi set-mode <id> <mode>  Change a session's permission mode
+  hapi peer-answer <id> <req> Answer another session's pending question or permission
+  hapi item …                A bot's ledger of deliverables and decisions
+  hapi task …                Schedules for a session: repeating, one-shot, queued (hub-run)
   hapi usage [--json]        When agents were working, across machines
   hapi mcp                   Start the MCP stdio bridge
 

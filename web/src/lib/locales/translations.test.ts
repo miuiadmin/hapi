@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { en, ja, ru, zhCN } from '@/lib/locales'
 import { formatTaskInterval, formatTaskIntervalCount, intervalToMs } from '@/lib/sessionTasks'
@@ -194,3 +196,75 @@ describe('session task strings', () => {
         }
     })
 })
+describe('bot copy', () => {
+    const english: Record<string, string> = en
+    const dictionaries: Array<[string, Record<string, string>]> = [['zh-CN', zhCN], ['ru', ru], ['ja', ja]]
+    const isBotKey = (key: string) => key.startsWith('bots.') || key.startsWith('settings.general.peerToolsBotsOnly')
+    const botKeys = Object.keys(english).filter(isBotKey)
+    // A value that is only placeholders and punctuation is language-neutral; identical copies are fine.
+    const hasLetters = (value: string) => /\p{L}/u.test(value.replace(/\{[^}]*\}/g, ''))
+
+    it('ships every bots.* key in every shipped locale, translated rather than copied', () => {
+        expect(botKeys.length).toBeGreaterThan(100)
+        for (const [locale, dict] of dictionaries) {
+            expect(botKeys.filter((key) => !(key in dict)), `${locale} is missing bot keys`).toEqual([])
+            expect(botKeys.filter((key) => dict[key] === english[key] && hasLetters(english[key])), `${locale} ships English copy`).toEqual([])
+        }
+    })
+
+    it('carries exactly the same bots.* keys in all four locales', () => {
+        for (const [locale, dict] of dictionaries) {
+            const extra = Object.keys(dict).filter((key) => isBotKey(key) && !(key in english))
+            expect(extra, `${locale} has bot keys en does not`).toEqual([])
+        }
+    })
+
+    it('names every item event kind, actor, status, worker state and bot state the code can ask for', () => {
+        for (const kind of ['created', 'status', 'comment', 'ask', 'answered', 'linked', 'unlinked', 'updated']) {
+            expect(english[`bots.ledger.event.${kind}`], `en should describe the ${kind} event`).toBeTruthy()
+        }
+        for (const actor of ['bot', 'user', 'system']) {
+            expect(english[`bots.ledger.actor.${actor}`], `en should name the ${actor} actor`).toBeTruthy()
+        }
+        for (const status of ['planned', 'working', 'waiting', 'needs_you', 'done', 'canceled']) {
+            expect(english[`bots.ledger.itemStatus.${status}`], `en should name the ${status} status`).toBeTruthy()
+        }
+        for (const activity of ['busy', 'idle', 'stopped']) {
+            expect(english[`bots.ledger.worker.${activity}`], `en should name the ${activity} worker`).toBeTruthy()
+        }
+        for (const state of ['creating', 'running', 'paused', 'failed', 'machineOffline']) {
+            expect(english[`bots.status.${state}`], `en should name the ${state} state`).toBeTruthy()
+        }
+        for (const tab of ['needsYou', 'inProgress', 'done']) {
+            expect(english[`bots.ledger.tab.${tab}`], `en should name the ${tab} tab`).toBeTruthy()
+        }
+    })
+
+    it('has a translation for every bots.* key the source asks for (a missing one shows as the key itself)', () => {
+        const used = new Set<string>()
+        for (const file of sourceFiles(SRC)) {
+            const text = readFileSync(file, 'utf8')
+            for (const match of text.matchAll(/\bt\(\s*'((?:bots|settings\.general\.peerToolsBotsOnly)[A-Za-z0-9_.]*)'/g)) {
+                used.add(match[1])
+            }
+        }
+        expect(used.size).toBeGreaterThan(80)
+        expect([...used].filter((key) => !(key in english)), 'keys used in source but missing from en').toEqual([])
+    })
+})
+
+// import.meta.url is not a file: URL under vitest's jsdom environment; the suite runs from web/.
+const SRC = resolve(process.cwd(), 'src')
+
+function sourceFiles(dir: string): string[] {
+    const out: string[] = []
+    for (const name of readdirSync(dir)) {
+        const path = join(dir, name)
+        if (statSync(path).isDirectory()) {
+            out.push(...sourceFiles(path))
+        } else if (/\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name) && !name.endsWith('.d.ts')) {
+            out.push(path)
+        }
+    }
+    return out
+}

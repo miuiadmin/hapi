@@ -255,7 +255,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
         const port = (http.address() as { port: number }).port;
         await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
-        vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home); vi.stubEnv('HAPI_SESSION_ID', 'parent-must-not-leak');
+        vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home); vi.stubEnv('HAPI_SESSION_ID', 'parent-must-not-leak'); vi.stubEnv('HAPI_BOT_ID', 'parent-bot-must-not-leak'); vi.stubEnv('HAPI_BOT_NAME', 'Parent Bot');
         const { runSharedRuntime } = await import('./runtime');
         let ready!: (value: import('./runtime').RuntimeReady) => void;
         const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
@@ -285,6 +285,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const nextSession = [...state.sessions.values()].find(session => session.metadata.codexSessionId === next)!;
             expect(web.metadata.codexSessionId).toBe(initial);
             expect(process.env.HAPI_SESSION_ID).toBe('parent-must-not-leak');
+            expect(process.env.HAPI_BOT_ID).toBe('parent-bot-must-not-leak');
             // A thread created through the gateway (native /new) is fresh: the
             // first turn must measure from the zero seed, not a null baseline.
             await first.request('turn/start', { threadId: next, input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });

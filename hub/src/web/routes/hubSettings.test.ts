@@ -49,6 +49,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -69,6 +70,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -81,6 +83,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -103,6 +106,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -123,6 +127,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: true,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -135,6 +140,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: true,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -152,6 +158,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -243,6 +250,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: true,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -269,6 +277,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -314,6 +323,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -391,6 +401,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -421,6 +432,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
             disablePeerTools: true,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
@@ -433,11 +445,36 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
             disablePeerTools: true,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
+    })
+
+    it('persists the bots-only exemption on its own, and reports it as stored', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ peerToolsBotsOnly: true })
+        })
+        expect(put.status).toBe(200)
+        const body = await put.json() as { disablePeerTools: boolean; peerToolsBotsOnly: boolean }
+        // The flag is stored as given; it takes effect once the tools are disabled.
+        expect(body).toMatchObject({ disablePeerTools: false, peerToolsBotsOnly: true })
+
+        const get = await app.request('/api/hub-settings')
+        expect(await get.json()).toMatchObject({ disablePeerTools: false, peerToolsBotsOnly: true })
+
+        // One field per request, like the other settings.
+        const both = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ peerToolsBotsOnly: false, disablePeerTools: true })
+        })
+        expect(both.status).toBe(400)
     })
 
     it('survives a prior write via settings helpers', async () => {
@@ -451,6 +488,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoTitlePerTurn: false,
             disablePeerTools: false,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: true,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',

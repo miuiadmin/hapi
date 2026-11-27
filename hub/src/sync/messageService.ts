@@ -11,7 +11,7 @@ import {
     isRedundantGoalStatusEventContent,
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
-import { AGENT_MESSAGE_PAYLOAD_TYPE, isObject, SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, isBotHubMessageLocalId, isObject, SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX } from '@hapi/protocol'
 import type {
     MessageContextResponse,
     MessageDeliveryMode,
@@ -1523,7 +1523,10 @@ export class MessageService {
      * prompt — sweeping them would strand the batch continuation (#1489 / #1424).
      * Session-task prompts (`hapi-task:`) are skipped for the same reason: the
      * task scheduler steps a task forward only on that real ACK, and resumes
-     * the session to get one.
+     * the session to get one. What the hub posts for a bot (`hapi-receipt:`,
+     * `hapi-item-comment:`, `hapi-worker-request:`, `hapi-bot-kickoff:`) is
+     * skipped for it too: a receipt is delivered once, so a swept one would
+     * be lost for good.
      *
      * Returns the list of localIds that were stamped and the invokedAt timestamp,
      * or null if no messages needed sweeping.
@@ -1540,6 +1543,7 @@ export class MessageService {
                 && !id.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX)
                 && !id.startsWith(JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX)
                 && !id.startsWith(SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX)
+                && !isBotHubMessageLocalId(id)
             )
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)

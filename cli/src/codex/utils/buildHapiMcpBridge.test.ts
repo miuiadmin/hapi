@@ -143,3 +143,34 @@ describe('buildHapiMcpBridge skill lookup config', () => {
         expect(process.env[HAPI_SESSION_ID_ENV]).toBeUndefined()
     })
 })
+
+describe('buildHapiMcpBridge bot peer tools', () => {
+    beforeEach(() => {
+        harness.startOptions = null
+        harness.cliArgs = []
+        harness.materialize.mockReset()
+        harness.materialize.mockResolvedValue(true)
+        delete process.env[HAPI_SESSION_ID_ENV]
+    })
+
+    it('auto-approves the peer MCP tools for a bot home chat', async () => {
+        const bridge = await buildHapiMcpBridge({ ...createClient(), botId: 'bot-1', getMetadata: () => ({ name: 'Ops' }) } as unknown as ApiSessionClient)
+        const tools = bridge.mcpServers.hapi.tools as Record<string, { approval_mode: string }>
+        expect(tools).toMatchObject({
+            list_peers: { approval_mode: 'approve' },
+            ping_peer: { approval_mode: 'approve' },
+            inspect_peer: { approval_mode: 'approve' },
+            spawn_peer: { approval_mode: 'approve' },
+            session_job: { approval_mode: 'approve' }
+        })
+    })
+
+    it('keeps the peer tools prompting for an ordinary session', async () => {
+        const bridge = await buildHapiMcpBridge(createClient())
+        const tools = bridge.mcpServers.hapi.tools as Record<string, { approval_mode: string }>
+        expect(tools.list_peers).toEqual({ approval_mode: 'approve' })
+        expect(tools).not.toHaveProperty('ping_peer')
+        expect(tools).not.toHaveProperty('inspect_peer')
+        expect(tools).not.toHaveProperty('spawn_peer')
+    })
+})

@@ -50,6 +50,9 @@ const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['spawn-peer', async () => (await import('./spawnPeer')).spawnPeerCommand],
     ['set-mode', async () => (await import('./setMode')).setModeCommand],
     ['job', async () => (await import('./job')).jobCommand],
+    ['item', async () => (await import('./item')).itemCommand],
+    ['task', async () => (await import('./task')).taskCommand],
+    ['peer-answer', async () => (await import('./peerAnswer')).peerAnswerCommand],
     ['usage', async () => (await import('./usage')).usageCommand]
 ])
 

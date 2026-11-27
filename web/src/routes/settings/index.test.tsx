@@ -30,6 +30,7 @@ const hubSettingsFixture = {
     sessionSummaryInChat: false,
     autoTitlePerTurn: false,
     disablePeerTools: false,
+    peerToolsBotsOnly: false,
     autoBridgeTransientModelErrors: false,
     peerSpawnDefaults: {
         agent: 'claude' as const,

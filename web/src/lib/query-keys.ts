@@ -6,6 +6,12 @@ export const queryKeys = {
     sessionTasks: (sessionId: string) => ['session-tasks', sessionId] as const,
     /** Under `sessionTasks(sessionId)`, so a task change refreshes the history too. */
     sessionTaskHistory: (sessionId: string) => ['session-tasks', sessionId, 'history'] as const,
+    bots: ['bots'] as const,
+    bot: (botId: string) => ['bot', botId] as const,
+    botItems: (botId: string) => ['bot-items', botId] as const,
+    botNeedsYou: (botId: string) => ['bot-needs-you', botId] as const,
+    botWorkers: (botId: string) => ['bot-workers', botId] as const,
+    botItemEvents: (botId: string, itemId: string) => ['bot-item-events', botId, itemId] as const,
     sessionContentSearch: (sessionId: string, query: string) => ['session-content-search', sessionId, query] as const,
     machines: ['machines'] as const,
     sqliteStorage: ['sqlite-storage'] as const,

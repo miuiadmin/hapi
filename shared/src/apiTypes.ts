@@ -81,7 +81,9 @@ export const CreateSessionResponseSchema = z.object({
     /** Hub opt-out: hide peer-session tools from agents (default off / tools available). */
     disablePeerTools: z.boolean().optional(),
     /** Hub opt-in: Cursor auto-bridge after transient model errors (default off). */
-    autoBridgeTransientModelErrors: z.boolean().optional()
+    autoBridgeTransientModelErrors: z.boolean().optional(),
+    /** Set when this session is a bot's home chat; the runner then offers the bot's tools. */
+    botId: z.string().optional()
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
@@ -94,6 +96,8 @@ export const HubSettingsResponseSchema = z.object({
     autoTitlePerTurn: z.boolean(),
     /** Hide peer-session tools (list_peers / inspect_peer / ping_peer) from agents (default off). */
     disablePeerTools: z.boolean(),
+    /** With `disablePeerTools`, still give the peer-session tools to bots' home chats (default off). */
+    peerToolsBotsOnly: z.boolean(),
     autoBridgeTransientModelErrors: z.boolean(),
     /** Developer-mode telemetry level. 0 = off (DEFAULT, opt-in only) — users must explicitly enable sharing. */
     telemetryLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
@@ -110,6 +114,7 @@ export const UpdateHubSettingsRequestSchema = z
         sessionSummaryInChat: z.boolean().optional(),
         autoTitlePerTurn: z.boolean().optional(),
         disablePeerTools: z.boolean().optional(),
+        peerToolsBotsOnly: z.boolean().optional(),
         autoBridgeTransientModelErrors: z.boolean().optional(),
         /** Developer-mode telemetry level (0 off / 1 metadata / 2 detailed / 3 debug, default 0). */
         telemetryLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
@@ -121,6 +126,7 @@ export const UpdateHubSettingsRequestSchema = z
             || data.sessionSummaryInChat !== undefined
             || data.autoTitlePerTurn !== undefined
             || data.disablePeerTools !== undefined
+            || data.peerToolsBotsOnly !== undefined
             || data.autoBridgeTransientModelErrors !== undefined
             || data.telemetryLevel !== undefined
             || data.peerSpawnDefaults !== undefined,

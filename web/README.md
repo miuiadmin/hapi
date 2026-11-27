@@ -101,6 +101,15 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
   - Reordering affects only the current view and resets when entries refresh.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
+### Bots (`src/components/Bots/`)
+
+A bot is a long-lived session (its home chat) that works on the owner's behalf; the wire contract is `shared/src/bots.ts`.
+
+- Sidebar "Bots" block (`BotsSection`): one row per bot with its state and the number of things waiting on the owner, plus "New bot" (with no bot yet the block is just that entry). Hidden while the list is loading, on a hub without bot routes, and while the list is searched or filtered; a failed load says so with a retry. A failed bot without a home chat has an inline two-click "Archive".
+- "New bot" (`CreateBotDialog`): name, purpose, machine (online ones; a chosen machine that drops offline stays chosen and is flagged), agent (only `BOT_AGENT_FLAVORS`, intersected with the machine's availability; with one agent it is a fixed line, not a dropdown), an optional permission mode (left on "Hub default" and not sent unless the owner picks one; a choice does not survive a change of agent), and under Advanced the home folder (default `~/.hapi/bots/<slug>`, previewed live with the contract's `botHomeSlug`). The agent check reports runner upgrade needed / failed with retry / no usable agent. The request is validated with the contract schema; the hub's error is shown verbatim.
+- Ledger (`BotLedgerSheet`): offered only on a bot's home chat (the session whose id is some bot's `homeChatSessionId`). Full screen on phones (entered through `BotLedgerBar` under the header), a non-modal sheet on the right from `sm:` up (entered through the header icon); on desktop the chat column is padded by the sheet's width so nothing sits under it. Tabs: Needs you (pending requests in the bot's or its workers' sessions, then the bot's questions — answered by tapping an option or writing a comment, one comment in flight per item), In progress, Done. Items and questions carry mark done / cancel (two clicks, final on the hub) and snooze (an hour, or tomorrow 9:00); items open to their background, worker link and event log; closed items are read-only. Failed decisions are shown on the tab, not in the card the optimistic edit may have removed. Drafts (comments, the new-item form) survive tab switches and are cleared when the sheet closes. The header offers pause / resume and archive (with a confirmation); workers are listed collapsed under the tabs. Opening puts focus on the title, closing hands it back to the entry; a `bot_not_found` closes the sheet with a notice.
+- Data: `useBots` (`src/hooks/queries/useBots.ts`) on react-query; `bots-changed` refetches the bot list and `bot-items-changed` the bot's lists, coalesced over 150ms across both SSE connections. A 404 with code `bot_not_found` means the bot is gone; a 404 without it means the hub has no bot routes.
+
 ### File browser (`src/routes/sessions/files.tsx`)
 
 - Git status view (staged/unstaged files).

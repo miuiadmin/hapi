@@ -218,6 +218,63 @@ describe('getOrCreateSession: requested identity', () => {
         store.close()
     })
 
+    it('keeps a name the hub pinned on the stub before anything ran under it', () => {
+        const store = makeStore()
+        const id = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${id}`,
+            { path: '/tmp/bots/ops', host: 'localhost', flavor: 'claude', machineId: 'machine-1', startedBy: 'runner', startedFromRunner: true },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            id
+        )
+        // What SessionCache.renameSession writes for a bot's home chat when the bot is created.
+        const stub = store.sessions.getSession(id)
+        store.sessions.updateSessionMetadata(
+            id,
+            { ...(stub?.metadata as Record<string, unknown>), name: 'Ops', nameLocked: true },
+            stub?.metadataVersion ?? 0,
+            'default',
+            { touchUpdatedAt: false, allowTitleUpdate: true }
+        )
+
+        // The CLI's create-time snapshot has no name of its own.
+        const adopted = store.sessions.adoptPreallocatedSession(
+            id,
+            `cli-${id}`,
+            { path: '/tmp/bots/ops', host: 'localhost', flavor: 'claude', machineId: 'machine-1', startedBy: 'runner', startedFromRunner: true, hostPid: 4242 },
+            { controlledByUser: false },
+            'default'
+        )
+        expect(adopted.metadata).toMatchObject({ name: 'Ops', nameLocked: true, hostPid: 4242 })
+
+        // A stub nobody named is not given one.
+        const plain = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${plain}`,
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude', machineId: 'machine-1', startedBy: 'runner', startedFromRunner: true },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            plain
+        )
+        const adoptedPlain = store.sessions.adoptPreallocatedSession(
+            plain,
+            `cli-${plain}`,
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude', startedBy: 'runner' },
+            {},
+            'default'
+        )
+        expect(adoptedPlain.metadata).not.toHaveProperty('name')
+        expect(adoptedPlain.metadata).not.toHaveProperty('nameLocked')
+        store.close()
+    })
+
     it('rejects adopt when the row is not a preallocated stub', () => {
         const store = makeStore()
         const id = randomUUID()

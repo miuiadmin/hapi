@@ -499,7 +499,21 @@ export function adoptPreallocatedSession(
         }
 
         const now = Date.now()
-        const metadataJson = JSON.stringify(preserveSessionTitle(existing.metadata, mergeSessionMetadata(existing.metadata, metadata)))
+        let mergedMetadata: unknown = preserveSessionTitle(existing.metadata, mergeSessionMetadata(existing.metadata, metadata))
+        // A name the hub pinned on the stub before anything ran under it (a
+        // bot's home chat is named when the bot is created, so its first run
+        // already knows the bot) must survive the CLI's create-time snapshot,
+        // which knows nothing about it. Same rule as for every later snapshot
+        // (preserveHubOwnedMetadata on the socket path).
+        const prior = existing.metadata
+        if (isPlainObject(prior) && prior.nameLocked === true && typeof prior.name === 'string') {
+            mergedMetadata = {
+                ...(isPlainObject(mergedMetadata) ? mergedMetadata : {}),
+                name: prior.name,
+                nameLocked: true
+            }
+        }
+        const metadataJson = JSON.stringify(mergedMetadata)
         const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
         const stubTag = machineSpawnPreallocTag(id)
 

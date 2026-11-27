@@ -1,10 +1,23 @@
 import type {
     AttachedJob,
+    BotItemAskRequest,
+    BotItemCommentRequest,
+    BotItemListResponse,
+    BotItemEventsResponse,
+    BotDeletedResponse,
+    BotListResponse,
+    BotResponse,
+    BotWorkersResponse,
+    CreateBotItemRequest,
+    CreateBotRequest,
     CreateSessionTaskRequest,
+    NeedsYouResponse,
     SessionTaskDeleteResponse,
     SessionTaskListResponse,
     SessionTaskResponse,
     SessionTaskRunListResponse,
+    UpdateBotItemRequest,
+    UpdateBotRequest,
     UpdateSessionTaskRequest
 } from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
@@ -1198,6 +1211,86 @@ export class ApiClient {
         return await this.request<SessionTaskRunListResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/tasks/history${query}`
         )
+    }
+
+    // ── Bots ────────────────────────────────────────────────────────
+    // The contract lives in shared/src/bots.ts. The item write routes
+    // return bodies the contract does not name yet, so those are not read:
+    // callers refetch the item list and the needs-you feed after a write.
+
+    async listBots(): Promise<BotListResponse> {
+        return await this.request<BotListResponse>('/api/bots')
+    }
+
+    async createBot(request: CreateBotRequest): Promise<BotResponse> {
+        return await this.request<BotResponse>('/api/bots', {
+            method: 'POST',
+            body: JSON.stringify(request)
+        })
+    }
+
+    async getBot(botId: string): Promise<BotResponse> {
+        return await this.request<BotResponse>(`/api/bots/${encodeURIComponent(botId)}`)
+    }
+
+    async updateBot(botId: string, request: UpdateBotRequest): Promise<BotResponse> {
+        return await this.request<BotResponse>(`/api/bots/${encodeURIComponent(botId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify(request)
+        })
+    }
+
+    /** Archives the bot; its home chat and worker sessions are kept. */
+    async deleteBot(botId: string): Promise<BotDeletedResponse> {
+        return await this.request<BotDeletedResponse>(`/api/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' })
+    }
+
+    async listBotItems(botId: string): Promise<BotItemListResponse> {
+        return await this.request<BotItemListResponse>(`/api/bots/${encodeURIComponent(botId)}/items`)
+    }
+
+    async createBotItem(botId: string, request: CreateBotItemRequest): Promise<void> {
+        await this.request(`/api/bots/${encodeURIComponent(botId)}/items`, {
+            method: 'POST',
+            body: JSON.stringify(request)
+        })
+    }
+
+    async updateBotItem(botId: string, itemId: string, request: UpdateBotItemRequest): Promise<void> {
+        await this.request(`/api/bots/${encodeURIComponent(botId)}/items/${encodeURIComponent(itemId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify(request)
+        })
+    }
+
+    /** Puts the item to the owner; only the bot's home chat may call it. */
+    async askBotItem(botId: string, itemId: string, request: BotItemAskRequest): Promise<void> {
+        await this.request(`/api/bots/${encodeURIComponent(botId)}/items/${encodeURIComponent(itemId)}/ask`, {
+            method: 'POST',
+            body: JSON.stringify(request)
+        })
+    }
+
+    /** An owner's comment; the hub relays it into the home chat as a new message. */
+    async commentBotItem(botId: string, itemId: string, text: string): Promise<void> {
+        await this.request(`/api/bots/${encodeURIComponent(botId)}/items/${encodeURIComponent(itemId)}/comments`, {
+            method: 'POST',
+            body: JSON.stringify({ text } satisfies BotItemCommentRequest)
+        })
+    }
+
+    async listBotItemEvents(botId: string, itemId: string): Promise<BotItemEventsResponse> {
+        return await this.request<BotItemEventsResponse>(
+            `/api/bots/${encodeURIComponent(botId)}/items/${encodeURIComponent(itemId)}/events`
+        )
+    }
+
+    async listBotNeedsYou(botId: string): Promise<NeedsYouResponse> {
+        return await this.request<NeedsYouResponse>(`/api/bots/${encodeURIComponent(botId)}/needs-you`)
+    }
+
+    async listBotWorkers(botId: string): Promise<BotWorkersResponse> {
+        return await this.request<BotWorkersResponse>(`/api/bots/${encodeURIComponent(botId)}/workers`)
     }
 
     async cancelMessage(sessionId: string, messageId: string): Promise<CancelMessageResponse> {

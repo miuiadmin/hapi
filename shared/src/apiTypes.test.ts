@@ -214,6 +214,9 @@ describe('SendMessageRequestSchema deliveryMode', () => {
 describe('disablePeerTools hub setting wire shapes', () => {
     it('UpdateHubSettingsRequestSchema accepts a lone disablePeerTools payload but still rejects empty bodies', () => {
         expect(UpdateHubSettingsRequestSchema.safeParse({ disablePeerTools: true }).success).toBe(true)
+        // The bots-only exemption is its own setting, one field per request like the others.
+        expect(UpdateHubSettingsRequestSchema.safeParse({ peerToolsBotsOnly: true }).success).toBe(true)
+        expect(UpdateHubSettingsRequestSchema.safeParse({ peerToolsBotsOnly: 'yes' }).success).toBe(false)
         expect(UpdateHubSettingsRequestSchema.safeParse({}).success).toBe(false)
         expect(UpdateHubSettingsRequestSchema.safeParse({ disablePeerTools: 'yes' }).success).toBe(false)
     })
@@ -224,6 +227,7 @@ describe('disablePeerTools hub setting wire shapes', () => {
             sessionSummaryInChat: false,
             autoTitlePerTurn: false,
             disablePeerTools: true,
+            peerToolsBotsOnly: false,
             autoBridgeTransientModelErrors: false,
             telemetryLevel: 0,
             telemetryLevelSource: 'default',

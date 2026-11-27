@@ -15,6 +15,7 @@ import { startCodexGateway, record, string, type Envelope } from './gateway';
 import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
 import { SharedCodexRoot } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
+import { HAPI_BOT_ID_ENV, HAPI_BOT_NAME_ENV } from '@/agent/hapiSessionEnv';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
 type Reservation = { root: SharedCodexRoot; resumeId?: string };
@@ -56,6 +57,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home };
     // Every thread injects its own identity. A launch from another agent must not inherit that root's identity.
     delete env.HAPI_SESSION_ID;
+    // The bot marker is part of that identity. Only Claude Code is verified as
+    // a bot's brain today; a shared Codex engine must not grow bot shell
+    // helpers that act for a bot whose home chat it is not.
+    delete env[HAPI_BOT_ID_ENV];
+    delete env[HAPI_BOT_NAME_ENV];
     let server: ChildProcess | undefined;
     let gateway: Awaited<ReturnType<typeof startCodexGateway>> | undefined;
     let stopping = false;

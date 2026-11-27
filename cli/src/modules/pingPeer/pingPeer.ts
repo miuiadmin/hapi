@@ -73,8 +73,18 @@ export type PingPeerSessionSummary = {
     id: string
     active: boolean
     thinking?: boolean
-    agentState?: { steeringActive?: boolean; controlledByUser?: boolean } | null
+    agentState?: {
+        steeringActive?: boolean
+        controlledByUser?: boolean
+        /** Pending tool-permission / question requests keyed by request id (full session rows). */
+        requests?: Record<string, { tool?: unknown; createdAt?: unknown }> | null
+    } | null
     updatedAt?: number
+    /** Hub list summary: requests the agent is blocked on (same data as `agentState.requests`, pre-counted). */
+    pendingRequestsCount?: number
+    pendingRequests?: unknown[]
+    /** Hub list summary: background tasks the agent declared (Claude Code snapshots). */
+    backgroundTaskCount?: number
     metadata?: {
         name?: string
         flavor?: string | null
@@ -649,6 +659,30 @@ const PEER_LIST_FOOTER =
     'inspect_peer an unfamiliar peer before messaging it, and never broadcast.'
 
 /**
+ * True when the session waits on the operator: a pending tool-permission or
+ * question request. Reads the hub list summary when present, else the full
+ * row's `agentState.requests`.
+ */
+export function hasPendingRequests(session: Pick<PingPeerSessionSummary, 'agentState' | 'pendingRequestsCount' | 'pendingRequests'>): boolean {
+    if ((session.pendingRequestsCount ?? 0) > 0) return true
+    if (Array.isArray(session.pendingRequests) && session.pendingRequests.length > 0) return true
+    const requests = session.agentState?.requests
+    return typeof requests === 'object' && requests !== null && Object.keys(requests).length > 0
+}
+
+/** True when the agent declared background tasks (Claude Code `background_tasks_changed` snapshots). */
+export function hasBackgroundTasks(session: Pick<PingPeerSessionSummary, 'backgroundTaskCount'>): boolean {
+    return (session.backgroundTaskCount ?? 0) > 0
+}
+
+/** `busy [waiting] [background]` — the state word, then one bracket per thing holding the session. */
+export function formatPeerSessionState(session: PingPeerSessionSummary): string {
+    const state = session.active ? (session.thinking ? 'busy' : 'idle') : 'inactive'
+    const marks = [hasPendingRequests(session) ? '[waiting]' : null, hasBackgroundTasks(session) ? '[background]' : null].filter(Boolean)
+    return marks.length > 0 ? `${state} ${marks.join(' ')}` : state
+}
+
+/**
  * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
  * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
  */
@@ -674,12 +708,11 @@ export function formatPeerSessionsList(
         const meta = session.metadata
         const flavor = meta?.flavor ?? '?'
         const name = resolvePeerSessionLabel(session)
-        const state = session.active ? (session.thinking ? 'busy' : 'idle') : 'inactive'
         const sameMachine = Boolean(callerMachineId) && meta?.machineId === callerMachineId
         const machine = session.machineLabel ?? meta?.machineId?.slice(0, 8) ?? '?'
         const sameCwd = sameMachine && Boolean(callerPath) && meta?.path === callerPath
         const marks = [sameMachine ? 'same-machine' : null, sameCwd ? 'same-cwd' : null].filter(Boolean)
-        return `  ${session.id}  ${state}  flavor=${flavor}  machine=${machine}  cwd=${meta?.path ?? '?'}`
+        return `  ${session.id}  ${formatPeerSessionState(session)}  flavor=${flavor}  machine=${machine}  cwd=${meta?.path ?? '?'}`
             + `${marks.length > 0 ? `  [${marks.join(', ')}]` : ''}  ${name}`
     })
     const omitted = sorted.length - rows.length
@@ -883,6 +916,13 @@ export type InspectPeerMessage = {
     invokedAt?: number | null
 }
 
+export type InspectPeerPendingRequest = {
+    /** Reply with `hapi peer-answer <session> <id>` (the request map key). */
+    id: string
+    tool: string
+    createdAt: number | null
+}
+
 export type InspectPeerResult = {
     sessionId: string
     name: string
@@ -894,7 +934,32 @@ export type InspectPeerResult = {
     machine: string | null
     lifecycleState: string | null
     updatedAt: number | null
+    /** Tool-permission / question requests the agent is blocked on, oldest first. */
+    pendingRequests?: InspectPeerPendingRequest[]
     messages: InspectPeerMessage[]
+}
+
+/** Pending requests of a full session row (`agentState.requests`), oldest first. */
+export function extractPendingRequests(
+    agentState: PingPeerSessionSummary['agentState'] | null | undefined
+): InspectPeerPendingRequest[] {
+    const requests = agentState?.requests
+    if (typeof requests !== 'object' || requests === null) return []
+    const out: InspectPeerPendingRequest[] = []
+    for (const [id, request] of Object.entries(requests)) {
+        if (!request || typeof request !== 'object') continue
+        const record = request as { tool?: unknown; createdAt?: unknown }
+        out.push({
+            id,
+            tool: typeof record.tool === 'string' ? record.tool : '(unknown tool)',
+            createdAt: typeof record.createdAt === 'number' ? record.createdAt : null
+        })
+    }
+    out.sort((a, b) => {
+        if (a.createdAt !== null && b.createdAt !== null && a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
+    return out
 }
 
 const DEFAULT_INSPECT_MESSAGE_LIMIT = 30
@@ -1044,12 +1109,14 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
             : typeof matched.updatedAt === 'number'
                 ? matched.updatedAt
                 : null,
+        pendingRequests: extractPendingRequests(live.agentState),
         messages
     }
 }
 
 /** Human/agent-readable report for MCP tool results and CLI stdout. */
 export function formatInspectPeerReport(result: InspectPeerResult): string {
+    const pending = result.pendingRequests ?? []
     const lines: string[] = [
         `sessionId: ${result.sessionId}`,
         `path: /sessions/${result.sessionId}`,
@@ -1061,8 +1128,17 @@ export function formatInspectPeerReport(result: InspectPeerResult): string {
         `machine: ${result.machine ?? '(unknown)'}`,
         `cwd: ${result.path ?? '(unknown)'}`,
         `updatedAt: ${result.updatedAt ?? '(unknown)'}`,
-        `messages (text snippets, newest page): ${result.messages.length}`
+        `pending requests (waiting on an answer): ${pending.length}`
     ]
+    for (const request of pending) {
+        const since = request.createdAt !== null ? ` since ${new Date(request.createdAt).toISOString()}` : ''
+        lines.push(`  - id ${request.id}  tool ${request.tool}${since}`)
+    }
+    if (pending.length > 0) {
+        lines.push(`  answer with: hapi peer-answer ${result.sessionId} <request id> --approve | --deny   (permission prompt)`)
+        lines.push(`               hapi peer-answer ${result.sessionId} <request id> --answer <n>=<option or text>… [--deny]   (question; n from 1)`)
+    }
+    lines.push(`messages (text snippets, newest page): ${result.messages.length}`)
     if (result.messages.length === 0) {
         lines.push('(no extractable user/assistant text in this page)')
     } else {
