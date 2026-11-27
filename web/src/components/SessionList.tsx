@@ -1959,7 +1959,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     onClose={() => setArchiveOpen(false)}
                     sessionId={s.id}
                     sessionName={sessionName}
-                    active={s.active}
+                    // The row reads as inactive from the click on (the list's
+                    // overlay), which is no proof the agent stopped yet: keep
+                    // the window on its neutral "archiving" copy while the
+                    // request runs rather than claiming a disconnect.
+                    active={quickArchivePending || s.active}
                     onConfirm={archiveSession}
                     isPending={isPending}
                 />
