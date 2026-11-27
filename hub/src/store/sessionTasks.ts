@@ -121,7 +121,7 @@ export const RUNNABLE_PENDING_SQL = `SELECT ${TASK_COLUMNS} FROM session_tasks W
 export const RUNNABLE_DUE_SQL = `SELECT ${TASK_COLUMNS} FROM session_tasks WHERE state = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?`
 
 /**
- * v39 created the table without `start_at`; the v39→v40 step adds the column
+ * v39 created the table without `start_at`; the v40→v41 step adds the column
  * to such databases (see Store.migrateFromV40ToV41). A fresh database gets
  * the final shape here.
  */

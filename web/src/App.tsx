@@ -433,6 +433,7 @@ function AppInner() {
             // fail-silent
         }
     }, [])
+
     const handleToast = useCallback((event: ToastEvent) => {
         const localized = translateIncomingToast(event.data.title, event.data.body, t)
         addToast({
