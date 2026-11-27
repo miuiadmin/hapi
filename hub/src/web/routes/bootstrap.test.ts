@@ -31,6 +31,7 @@ function makeEngine(overrides: Partial<SyncEngine> = {}): SyncEngine {
         getSessionsByNamespace: () => [session],
         getFutureScheduledMessageCounts: () => new Map(),
         getNextScheduledAtBySessionIds: () => new Map(),
+        getSessionTaskSummaries: () => new Map(),
         allocateAttachedJobVersion: () => 1,
         getPrimaryAttachedJobsBySessionIds: () => new Map(),
         getOnlineMachinesByNamespace: () => [{ id: 'machine-1', namespace: 'default', active: true } as never],
@@ -54,7 +55,7 @@ describe('bootstrap routes', () => {
         const response = await app.request('/api/bootstrap')
         expect(response.status).toBe(200)
         const body = await response.json() as {
-            sessions: Array<{ id: string; metadata?: unknown; model?: unknown }>
+            sessions: Array<{ id: string; metadata?: unknown; model?: unknown; activeTaskCount?: number; nextTaskRunAt?: number | null }>
             machines: Array<{ id: string }>
             features: { githubPrAwareness: { enabled: boolean }; prChipDisplay: unknown }
             voiceBackend: { backend: string | null; backends: string[] }
@@ -63,10 +64,28 @@ describe('bootstrap routes', () => {
         expect(body.sessions[0].id).toBe('sess-1')
         // Slim projection: detail-only fields absent.
         expect(body.sessions[0].model).toBeUndefined()
+        // Empty-default task counts are omitted too, like the scheduled extras.
+        expect('activeTaskCount' in body.sessions[0]).toBe(false)
+        expect('nextTaskRunAt' in body.sessions[0]).toBe(false)
         expect(body.machines).toHaveLength(1)
         expect((body.machines[0] as { id: string }).id).toBe('machine-1')
         expect(typeof body.features.githubPrAwareness.enabled).toBe('boolean')
         expect(Array.isArray(body.voiceBackend.backends)).toBe(true)
+    })
+
+    it('carries a session\'s task counts in the slim row when it has tasks', async () => {
+        const asked: string[][] = []
+        const app = createApp(makeEngine({
+            getSessionTaskSummaries: (ids: string[]) => {
+                asked.push(ids)
+                return new Map([['sess-1', { activeTaskCount: 2, nextTaskRunAt: 1_700_000_000_000 }]])
+            }
+        }))
+        const response = await app.request('/api/bootstrap')
+        const body = await response.json() as { sessions: Array<{ id: string; activeTaskCount?: number; nextTaskRunAt?: number | null }> }
+        expect(asked).toEqual([['sess-1']])
+        expect(body.sessions[0].activeTaskCount).toBe(2)
+        expect(body.sessions[0].nextTaskRunAt).toBe(1_700_000_000_000)
     })
 
     it('caps the session list at 100 newest-first', async () => {

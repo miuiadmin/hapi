@@ -49,6 +49,7 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
         const sessionIds = sessionRecords.map((session) => session.id)
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionIds)
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionIds)
+        const taskSummaries = engine.getSessionTaskSummaries(sessionIds)
         const attachedJobVersions = new Map(sessionIds.map((id) => [id, engine.allocateAttachedJobVersion(id)]))
         const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(sessionIds)
         const sessions = sessionRecords.map((session) => {
@@ -58,10 +59,14 @@ export function createBootstrapRoutes(getSyncEngine: () => SyncEngine | null): H
             }
             const scheduledCount = scheduledCounts.get(session.id) ?? 0
             const scheduledAt = nextScheduledAt.get(session.id) ?? null
+            const activeTaskCount = taskSummaries.get(session.id)?.activeTaskCount ?? 0
+            const nextTaskRunAt = taskSummaries.get(session.id)?.nextTaskRunAt ?? null
             return {
                 ...toSlimSessionSummary(session, extras),
                 ...(scheduledCount > 0 ? { futureScheduledMessageCount: scheduledCount } : {}),
-                ...(scheduledAt !== null ? { nextScheduledAt: scheduledAt } : {})
+                ...(scheduledAt !== null ? { nextScheduledAt: scheduledAt } : {}),
+                ...(activeTaskCount > 0 ? { activeTaskCount } : {}),
+                ...(nextTaskRunAt !== null ? { nextTaskRunAt } : {})
             }
         })
 
