@@ -425,8 +425,12 @@ export function QueuedMessagesBar({
                         // sweep discards it unread. Offered only when no turn
                         // is dispatching (deliveryActive) and Steer cannot run
                         // (canSteerRow covers the mid-turn case).
+                        // A prompt a task inserted is off limits as well: the
+                        // task tracks that row and sends it in its own time,
+                        // so it offers Skip only, never a manual delivery.
                         const canDeliverNowRow = Boolean(
-                            !canSteerRow
+                            !fromTask
+                                && !canSteerRow
                                 && !deliveryActive
                                 && !sharedNative
                                 && msg.deliveryState !== 'indeterminate'

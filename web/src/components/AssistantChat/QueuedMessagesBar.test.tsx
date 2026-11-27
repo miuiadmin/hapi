@@ -837,6 +837,8 @@ describe('QueuedMessagesBar prompts inserted by a task', () => {
         expect(screen.queryByRole('button', { name: 'Edit queued message' })).toBeNull()
         expect(screen.queryByRole('button', { name: 'Steer queued message' })).toBeNull()
         expect(screen.queryByRole('button', { name: 'Cancel queued message' })).toBeNull()
+        // The task sends the prompt in its own time; the fork's ↑ (deliver now) stays off too.
+        expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
     })
 
     it('keeps Edit, Cancel and Steer for a prompt the user queued', () => {
@@ -1016,6 +1018,13 @@ describe('QueuedMessagesBar send-now affordance', () => {
     it('shows ↑ for a scheduled row once it has matured', () => {
         renderQueuedMessage(Date.now() - 1_000, null, 0, false, null)
         expect(screen.getByRole('button', { name: 'queuedMessages.deliverNow' })).toBeTruthy()
+    })
+
+    it('hides ↑ for a prompt a task sent — the task tracks that row and sends it itself', () => {
+        renderQueuedMessage(null, null, 0, false, null, { localId: 'hapi-task:task-1:2' })
+        expect(screen.getByText('queuedMessages.fromTask')).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'queuedMessages.skipTaskPrompt' })).toBeTruthy()
     })
 
     it('hides ↑ for shared-native sessions — the hub refuses deliver-now for them', () => {
