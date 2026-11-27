@@ -415,6 +415,7 @@ export default {
   // Session inactive
   'session.inactive.autoResume': '此会话已停止。发送消息即可恢复。',
   'session.inactive.cannotResume': '此会话已停止，无法恢复。',
+  'session.restoring': '正在恢复会话…',
 
   // Session header
   'session.title': '文件',

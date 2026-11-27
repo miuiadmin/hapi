@@ -303,6 +303,7 @@ export default {
   // Неактивная сессия
   'session.inactive.autoResume': 'Эта сессия неактивна. Отправьте сообщение, чтобы возобновить.',
   'session.inactive.cannotResume': 'Эта сессия неактивна и не может быть возобновлена.',
+  'session.restoring': 'Восстановление сессии…',
 
   // Шапка сессии
   'session.title': 'Файлы',

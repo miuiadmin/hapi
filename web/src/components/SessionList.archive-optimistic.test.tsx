@@ -171,7 +171,7 @@ describe('session row archive is shown at once', () => {
         const archive = pendingArchive()
         const api = { archiveSession: vi.fn(() => archive.promise) }
         function Driver() {
-            const { archiveSession } = useSessionActions(api as ApiClient, 'a')
+            const { archiveSession } = useSessionActions(api as unknown as ApiClient, 'a')
             return <button type="button" onClick={() => void archiveSession().catch(() => {})}>archive from elsewhere</button>
         }
         const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
@@ -180,7 +180,7 @@ describe('session row archive is shown at once', () => {
             <QueryClientProvider client={client}>
                 <ToastProvider>
                     <I18nProvider>
-                        <CachedList api={api as ApiClient} />
+                        <CachedList api={api as unknown as ApiClient} />
                         <Driver />
                     </I18nProvider>
                 </ToastProvider>

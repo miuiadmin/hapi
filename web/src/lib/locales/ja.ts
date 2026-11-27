@@ -371,6 +371,7 @@ export default {
   // セッション非アクティブ
   'session.inactive.autoResume': 'このセッションは非アクティブです。メッセージを送信すると再開します。',
   'session.inactive.cannotResume': 'このセッションは非アクティブで、再開できません。',
+  'session.restoring': 'セッションを復元しています…',
 
   // セッションヘッダー
   'session.title': 'ファイル',

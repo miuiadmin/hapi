@@ -13,8 +13,8 @@ import {
 import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
-import { sessionArchiveMutationKey, sessionArchiveMutationScope, sessionPinMutationKey, usePendingSessionIds, useSessionActions } from '@/hooks/mutations/useSessionActions'
-import { useIsMutating } from '@tanstack/react-query'
+import { isSessionReopening, sessionArchiveMutationKey, sessionArchiveMutationScope, sessionPinMutationKey, sessionReopenMutationScope, usePendingSessionIds, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 import { showPendingArchives } from '@/lib/sessionArchiveLook'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { GroupActionMenu } from '@/components/GroupActionMenu'
@@ -138,7 +138,6 @@ import {
     useSessionLastSeenVersion
 } from '@/lib/sessionLastSeen'
 import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
-import { formatReopenError } from '@/lib/reopenError'
 import { formatDeleteSessionError } from '@/lib/deleteSessionError'
 import { resolveCursorReopenGate } from '@/lib/sessionResume'
 import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
@@ -1457,6 +1456,8 @@ type SessionItemProps = {
     lastSeenVersion: number
     /** Stopped rows show the stop time they are ordered by (Active first). */
     showStoppedTime?: boolean
+    /** A resume of this session is in flight (from anywhere): the row shows a green spinner and starts no second one. */
+    restoring?: boolean
 }
 
 function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
@@ -1488,9 +1489,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         targetMessageId,
         targetMessageQuery,
         lastSeenVersion,
-        showStoppedTime = false
+        showStoppedTime = false,
+        restoring = false
     } = props
     const { haptic } = usePlatform()
+    const queryClient = useQueryClient()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
@@ -1541,9 +1544,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         s.id,
         s.metadata?.flavor ?? null
     )
-    const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen || reopenError !== null
+    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1575,8 +1577,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         }
     }
 
-    const handleReopen = async (onError: (message: string) => void = setReopenError) => {
-        setReopenError(null)
+    // A reopen runs keyed in the mutation cache (the spinner reads it), and its
+    // failure is reported to the app's failure dialog by the mutation itself,
+    // not here: this row need not be mounted when the hub answers.
+    const handleReopen = async () => {
+        if (restoring || isSessionReopening(queryClient, s.id)) return
         try {
             const result = await reopenSession()
             // resumeSession may merge the row into a freshly-spawned sessionId.
@@ -1589,8 +1594,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     () => onSelect(result.sessionId),
                 )
             }
-        } catch (error) {
-            onError(formatReopenError(error))
+        } catch {
+            // Reported by the mutation (useSessionActions).
         }
     }
 
@@ -1602,7 +1607,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const isPinned = Boolean(s.pinned || s.globalPinned)
     // The row can lose its pinned flags before the unpin request settles;
     // keep the spinner until it does.
-    const showQuickUnpin = isPinned || quickUnpinPending
+    const showQuickUnpin = quickUnpinPending || (isPinned && !restoring)
     const handleQuickUnpin = async (event: MouseEvent<HTMLButtonElement>) => {
         const hadFocus = rowRef.current?.contains(document.activeElement) ?? false
         if (event.detail === 0 && hadFocus && quickUnpinFocusRef) {
@@ -1676,12 +1681,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 url: `/sessions/${s.id}`,
                 action: {
                     label: t('session.action.reopen'),
-                    onClick: () => void handleReopen((message) => addToast({
-                        title: t('dialog.reopen.errorTitle'),
-                        body: message,
-                        sessionId: s.id,
-                        url: `/sessions/${s.id}`
-                    }))
+                    onClick: () => void handleReopen()
                 }
             })
         } catch {
@@ -1766,6 +1766,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
                 data-archive-pending={quickArchivePending ? '' : undefined}
+                data-reopening={restoring ? '' : undefined}
             >
                 <button
                     ref={rowButtonRef}
@@ -1803,6 +1804,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
                         showStoppedTime={showStoppedTime}
+                        restoring={restoring}
                     />
                 </button>
                 {hasQuickAction ? (
@@ -1861,8 +1863,12 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 // Reopening a session whose archive is still being confirmed
                 // races the hub (it refuses with "in progress"); the row already
                 // reads as archived, so Reopen waits for the request to settle.
-                onReopen={cursorReopenDisabledReason || quickArchivePending ? undefined : () => void handleReopen()}
-                reopenDisabledReason={quickArchivePending ? t('dialog.archive.confirming') : cursorReopenDisabledReason}
+                onReopen={cursorReopenDisabledReason || quickArchivePending || restoring ? undefined : () => void handleReopen()}
+                reopenDisabledReason={restoring
+                    ? t('session.restoring')
+                    : quickArchivePending
+                        ? t('dialog.archive.confirming')
+                        : cursorReopenDisabledReason}
                 reopenHint={cursorReopenUnverifiedHint}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
@@ -1911,20 +1917,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
                         else forkFlow.closePreview()
                     }}
-                />
-            ) : null}
-
-            {reopenError ? (
-                <ConfirmDialog
-                    isOpen={true}
-                    onClose={() => setReopenError(null)}
-                    title={t('dialog.reopen.errorTitle')}
-                    description={reopenError}
-                    confirmLabel={t('dialog.reopen.dismiss')}
-                    confirmingLabel={t('dialog.reopen.dismiss')}
-                    onConfirm={async () => setReopenError(null)}
-                    isPending={false}
-                    centerTitle
                 />
             ) : null}
 
@@ -2291,6 +2283,10 @@ export function SessionList(props: {
     // the cache: keep-alive patches and list refetches keep reporting the
     // session active until the hub confirms, and they must not undo the look.
     const archivingSessionIds = usePendingSessionIds(sessionArchiveMutationScope)
+    // A reopen in flight greys nothing but spins the row: read once here and
+    // handed to the rows, so a reopen started from anywhere (menu, toast,
+    // conversation view, a send to an inactive session) shows on its row.
+    const reopeningSessionIds = usePendingSessionIds(sessionReopenMutationScope)
     const listedSessions = useMemo(
         () => showPendingArchives(props.sessions, archivingSessionIds),
         [props.sessions, archivingSessionIds]
@@ -2918,6 +2914,7 @@ export function SessionList(props: {
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
                                             showStoppedTime={stoppedTimeShown}
+                                            restoring={reopeningSessionIds.has(s.id)}
                                         />
                                     ))}
                                 </div>
@@ -3022,6 +3019,7 @@ export function SessionList(props: {
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
             showStoppedTime={stoppedTimeShown}
+            restoring={reopeningSessionIds.has(s.id)}
         />
     )
 
@@ -3950,6 +3948,7 @@ export function SessionList(props: {
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
                                             showStoppedTime={stoppedTimeShown}
+                                            restoring={reopeningSessionIds.has(s.id)}
                                         />
                                     ))}
                                 </div>

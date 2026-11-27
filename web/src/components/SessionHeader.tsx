@@ -4,18 +4,16 @@ import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
-import { sessionArchiveMutationKey, sessionModelMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { isSessionReopening, sessionArchiveMutationKey, sessionModelMutationKey, sessionReopenMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { LinkPrDialog } from '@/components/LinkPrDialog'
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { useScratchlistCount } from '@/lib/use-scratchlist-count'
 import { formatDeleteSessionError } from '@/lib/deleteSessionError'
 import { useSessionListAttachedJob } from '@/hooks/queries/useSessionListAttachedJob'
-import { formatReopenError } from '@/lib/reopenError'
 import { formatReasoningLabel, getReasoningEffortForFlavor } from '@/lib/codexStatusLabels'
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
@@ -303,8 +301,9 @@ export function SessionHeader(props: {
         session.metadata?.flavor ?? null
     )
     const isArchiving = useIsMutating({ mutationKey: sessionArchiveMutationKey(session.id), exact: true }) > 0
+    // Keyed like the archive: a reopen started anywhere shows as in flight here.
+    const isReopening = useIsMutating({ mutationKey: sessionReopenMutationKey(session.id), exact: true }) > 0
     const isPending = isActionPending || isArchiving
-    const [reopenError, setReopenError] = useState<string | null>(null)
 
     const handleSetPinMode = async (mode: 'none' | 'project' | 'global') => {
         try {
@@ -346,16 +345,18 @@ export function SessionHeader(props: {
         onSessionDeleted?.()
     }
 
+    // The reopen runs keyed in the mutation cache, and its failure is reported
+    // to the app's failure dialog by the mutation itself, not here.
     const handleReopen = async () => {
-        setReopenError(null)
+        if (isReopening || isSessionReopening(queryClient, session.id)) return
         try {
             const result = await reopenSession()
             if (result.sessionId && result.sessionId !== session.id) {
                 retargetSharePendingTransfer(session.id, result.sessionId)
                 await onSessionReopened?.(result.sessionId)
             }
-        } catch (error) {
-            setReopenError(formatReopenError(error))
+        } catch {
+            // Reported by the mutation (useSessionActions).
         }
     }
 
@@ -669,26 +670,12 @@ export function SessionHeader(props: {
                 onSyncPi={api && piSessionId && !session.active ? handleSyncPi : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={props.canReopen === false ? undefined : handleReopen}
-                reopenDisabledReason={props.reopenDisabledReason}
+                reopenDisabledReason={isReopening ? t('session.restoring') : props.reopenDisabledReason}
                 reopenHint={props.reopenHint}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
             />
-
-            {reopenError ? (
-                <ConfirmDialog
-                    isOpen={true}
-                    onClose={() => setReopenError(null)}
-                    title={t('dialog.reopen.errorTitle')}
-                    description={reopenError}
-                    confirmLabel={t('dialog.reopen.dismiss')}
-                    confirmingLabel={t('dialog.reopen.dismiss')}
-                    onConfirm={async () => setReopenError(null)}
-                    isPending={false}
-                    centerTitle
-                />
-            ) : null}
 
             <RenameSessionDialog
                 isOpen={renameOpen}

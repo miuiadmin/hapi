@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
+import { MutationObserver, useMutation, useMutationState, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { ApiError, type ApiClient } from '@/api/client'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
@@ -7,6 +7,7 @@ import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { isAttachedJobDeleteConflict } from '@/lib/deleteSessionError'
+import { formatReopenError } from '@/lib/reopenError'
 import { isKnownFlavor } from '@hapi/protocol'
 import { archivedSessionDetailLook, archivedSessionLook } from '@/lib/sessionArchiveLook'
 import { reportSessionActionFailure } from '@/lib/sessionActionFailures'
@@ -14,11 +15,16 @@ import { reportSessionActionFailure } from '@/lib/sessionActionFailures'
 const SESSION_MODEL_KEY = 'session-model'
 const SESSION_ARCHIVE_KEY = 'session-archive'
 const SESSION_PIN_KEY = 'session-pin'
+const SESSION_REOPEN_KEY = 'session-reopen'
 export const sessionModelMutationKey = (sessionId: string) => [SESSION_MODEL_KEY, sessionId] as const
 export const sessionArchiveMutationKey = (sessionId: string | null) => [SESSION_ARCHIVE_KEY, sessionId] as const
 /** Every archive in flight, across sessions: the key without its session id. */
 export const sessionArchiveMutationScope = [SESSION_ARCHIVE_KEY] as const
 export const sessionPinMutationKey = (sessionId: string | null) => [SESSION_PIN_KEY, sessionId] as const
+/** Every resume of a stopped session runs under this key, whoever started it, so the row and the conversation view can show it in flight. */
+export const sessionReopenMutationKey = (sessionId: string | null) => [SESSION_REOPEN_KEY, sessionId] as const
+/** Every reopen in flight, across sessions: the key without its session id. */
+export const sessionReopenMutationScope = [SESSION_REOPEN_KEY] as const
 
 /**
  * The session ids with a pending mutation under `<scope>/<id>` (a per-session
@@ -35,6 +41,25 @@ export function usePendingSessionIds(scope: readonly unknown[]): ReadonlySet<str
         () => new Set(pending.filter((id): id is string => typeof id === 'string')),
         [pending]
     )
+}
+
+/** True while a resume or reopen of `sessionId` is in flight, for a caller that only needs the answer now (a click). */
+export function isSessionReopening(queryClient: QueryClient, sessionId: string): boolean {
+    return queryClient.isMutating({ mutationKey: sessionReopenMutationKey(sessionId), exact: true }) > 0
+}
+
+/**
+ * Run a resume of a stopped session that does not go through the reopen
+ * mutation (a send to an inactive session, the composer's Reopen) under the
+ * reopen key, so the row spinner and the conversation banner show it like a
+ * Reopen. The observer detaches once settled so the mutation can be collected.
+ */
+export function runTrackedSessionResume<T>(queryClient: QueryClient, sessionId: string, run: () => Promise<T>): Promise<T> {
+    const observer = new MutationObserver(queryClient, {
+        mutationKey: sessionReopenMutationKey(sessionId),
+        mutationFn: () => run(),
+    })
+    return observer.mutate().finally(() => observer.reset())
 }
 
 export type DeleteSessionOptions = {
@@ -217,7 +242,10 @@ export function useSessionActions(
         },
     })
 
+    // Keyed, so the row (spinner) and the conversation view (banner, composer
+    // status) can show the reopen in flight from wherever it was started.
     const reopenMutation = useMutation<ReopenSessionResponse, Error, void>({
+        mutationKey: sessionReopenMutationKey(sessionId),
         mutationFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
@@ -236,6 +264,16 @@ export function useSessionActions(
                 }
                 markSessionActiveInCache(result.sessionId)
             })()
+        },
+        // The hub puts the archived state back; the refetch shows that. The
+        // failure is reported for the app-root dialog rather than handed to the
+        // caller, because the caller (a row, the header, a toast action) need
+        // not be mounted by the time the hub answers.
+        onError: (error) => {
+            if (sessionId) {
+                reportSessionActionFailure({ kind: 'reopen', sessionId, message: formatReopenError(error) })
+            }
+            void invalidateSession()
         },
     })
 

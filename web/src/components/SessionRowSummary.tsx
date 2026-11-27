@@ -163,6 +163,8 @@ export function SessionRowSummary(props: {
     trailingClassName?: string
     /** Show a stopped row's stop time, for lists that order stopped rows by it (Active first). */
     showStoppedTime?: boolean
+    /** The session is being restored (reopen in flight): a green spinner takes the time's place at the row's right edge. */
+    restoring?: boolean
 }) {
     const {
         session: s,
@@ -187,6 +189,7 @@ export function SessionRowSummary(props: {
         contentSearchTruncated = false,
         trailingClassName,
         showStoppedTime = false,
+        restoring = false,
     } = props
     // List density + presence badge are display preferences shared with the
     // sidebar menu; rows read them directly so every surface stays in sync.
@@ -235,6 +238,7 @@ export function SessionRowSummary(props: {
     const legacyImportedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const importedAt = s.metadata?.codexImportedAt !== undefined ? s.metadata.codexImportedAt : legacyImportedAt
     const timeLabel = getSessionTimeLabel(s, importedAt, t, showStoppedTime)
+    const restoringLabel = t('session.restoring')
     const attachedJob = s.attachedJob?.status === 'running' ? s.attachedJob : null
     const jobStale = attachedJob ? isAttachedJobStale(attachedJob, nowMs) : false
     const jobFraction = attachedJob ? attachedJobFraction(attachedJob) : null
@@ -460,7 +464,16 @@ export function SessionRowSummary(props: {
                                 {t('session.item.newActivity')}
                             </span>
                         ) : null}
-                        {timeLabel ? (
+                        {restoring ? (
+                            <span
+                                data-testid="session-reopen-spinner"
+                                role="status"
+                                aria-label={restoringLabel}
+                                className="inline-flex shrink-0"
+                            >
+                                <LoaderIcon className="h-3.5 w-3.5 animate-spin text-[var(--app-badge-success-text)]" />
+                            </span>
+                        ) : timeLabel ? (
                             <span className={`min-w-0 translate-y-[0.5px] truncate whitespace-nowrap tabular-nums ${
                                 emphasizeUnread ? 'font-semibold text-[var(--app-link)]' : 'text-[var(--app-hint)]'
                             }`}>{timeLabel}</span>

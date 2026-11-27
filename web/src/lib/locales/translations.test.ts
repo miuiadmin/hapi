@@ -268,3 +268,16 @@ function sourceFiles(dir: string): string[] {
     }
     return out
 }
+
+describe('archive and restore copy', () => {
+    const english: Record<string, string> = en
+    const dictionaries: Array<[string, Record<string, string>]> = [['zh-CN', zhCN], ['ru', ru], ['ja', ja]]
+
+    it.each(['session.restoring'])('says what is happening in every locale, not the English copy (%s)', (key) => {
+        expect(english[key], 'en should define the key').toBeTruthy()
+        for (const [locale, dict] of dictionaries) {
+            expect(dict[key], `${locale} should define ${key}`).toBeTruthy()
+            expect(dict[key], `${locale} should not ship the English copy`).not.toBe(english[key])
+        }
+    })
+})
