@@ -70,6 +70,8 @@ export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: Syn
 }
 
 export function shouldInvalidateSessionListForEvent(scope: SSEScope, eventType: SyncEvent['type']): boolean {
+    // A session's task count and next run are part of its list row, on every connection scope.
+    if (eventType === 'session-tasks-changed') return true
     return scope === 'global' && eventType === 'messages-invalidated'
 }
 
@@ -661,7 +663,10 @@ export function useSSE(options: {
                         ? existing?.lastUserMessageAt
                         : Math.max(existing?.lastUserMessageAt ?? 0, session.lastUserMessageAt),
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
-                    nextScheduledAt: existing?.nextScheduledAt ?? null
+                    nextScheduledAt: existing?.nextScheduledAt ?? null,
+                    // Neither a Session record nor its summary derive these; the list refetch brings them.
+                    activeTaskCount: existing?.activeTaskCount ?? 0,
+                    nextTaskRunAt: existing?.nextTaskRunAt ?? null
                 }
                 const nextSessions = previous.sessions.slice()
                 if (existingIndex >= 0) {
@@ -904,7 +909,9 @@ export function useSSE(options: {
                 return
             }
 
-            // The event names the session only; the tasks themselves are refetched.
+            // The event names the session only; the tasks themselves (and their
+            // run history, keyed under them) are refetched. The session list row
+            // shows the task count and next run, so it is refreshed below.
             if (event.type === 'session-tasks-changed') {
                 void queryClient.invalidateQueries({ queryKey: queryKeys.sessionTasks(event.sessionId) })
             }

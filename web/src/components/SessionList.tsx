@@ -1753,9 +1753,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         [s, selected, showDetailedStatus, lastSeenVersion]
     )
     const hasScheduleTooltip = showDetailedStatus && s.futureScheduledMessageCount > 0
-    const { attentionId, scheduleId, describedBy } = useSessionRowTooltipIds(
+    const hasTaskTooltip = showDetailedStatus && s.activeTaskCount > 0
+    const { attentionId, scheduleId, taskId, describedBy } = useSessionRowTooltipIds(
         Boolean(attention),
-        hasScheduleTooltip
+        hasScheduleTooltip,
+        hasTaskTooltip
     )
     return (
         <>
@@ -1790,6 +1792,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         attentionTooltipId={attentionId}
                         lastSeenVersion={lastSeenVersion}
                         scheduleTooltipId={scheduleId}
+                        taskTooltipId={taskId}
                         githubPrAwarenessEnabled={githubPrAwarenessEnabled}
                         prChipDisplay={prChipDisplay}
                         prChipInteractive={githubPrAwarenessEnabled && Boolean(primaryPrRef)}
