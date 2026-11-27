@@ -2741,6 +2741,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}
                         createSessionTask={createSessionTaskFromComposer}
+                        api={props.api}
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
