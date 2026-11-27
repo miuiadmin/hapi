@@ -1,5 +1,5 @@
-import { useCallback } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useMemo } from 'react'
+import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { ApiError, type ApiClient } from '@/api/client'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
@@ -8,10 +8,34 @@ import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { isAttachedJobDeleteConflict } from '@/lib/deleteSessionError'
 import { isKnownFlavor } from '@hapi/protocol'
+import { archivedSessionDetailLook, archivedSessionLook } from '@/lib/sessionArchiveLook'
+import { reportSessionActionFailure } from '@/lib/sessionActionFailures'
 
-export const sessionModelMutationKey = (sessionId: string) => ['session-model', sessionId] as const
-export const sessionArchiveMutationKey = (sessionId: string | null) => ['session-archive', sessionId] as const
-export const sessionPinMutationKey = (sessionId: string | null) => ['session-pin', sessionId] as const
+const SESSION_MODEL_KEY = 'session-model'
+const SESSION_ARCHIVE_KEY = 'session-archive'
+const SESSION_PIN_KEY = 'session-pin'
+export const sessionModelMutationKey = (sessionId: string) => [SESSION_MODEL_KEY, sessionId] as const
+export const sessionArchiveMutationKey = (sessionId: string | null) => [SESSION_ARCHIVE_KEY, sessionId] as const
+/** Every archive in flight, across sessions: the key without its session id. */
+export const sessionArchiveMutationScope = [SESSION_ARCHIVE_KEY] as const
+export const sessionPinMutationKey = (sessionId: string | null) => [SESSION_PIN_KEY, sessionId] as const
+
+/**
+ * The session ids with a pending mutation under `<scope>/<id>` (a per-session
+ * key such as `sessionArchiveMutationKey` without its id). One subscription
+ * for a whole list: whoever started the request, every row can show it in
+ * flight, and rows stay memoized until their own id appears.
+ */
+export function usePendingSessionIds(scope: readonly unknown[]): ReadonlySet<string> {
+    const pending = useMutationState({
+        filters: { mutationKey: scope, status: 'pending' },
+        select: (mutation) => mutation.options.mutationKey?.[1],
+    })
+    return useMemo(
+        () => new Set(pending.filter((id): id is string => typeof id === 'string')),
+        [pending]
+    )
+}
 
 export type DeleteSessionOptions = {
     /**
@@ -119,6 +143,27 @@ export function useSessionActions(
         await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
     }
 
+    // The list showed this session as archived for as long as the request ran
+    // (SessionList's overlay). The moment it settles that overlay lifts, and
+    // until the refetch lands the cache may still say active: write the result
+    // the hub just confirmed so the row does not flash back.
+    const markSessionArchivedInCache = (targetSessionId: string) => {
+        queryClient.setQueryData<SessionResponse | undefined>(queryKeys.session(targetSessionId), (previous) => {
+            if (!previous?.session) return previous
+            return { ...previous, session: archivedSessionDetailLook(previous.session) }
+        })
+        queryClient.setQueryData<SessionsResponse | undefined>(queryKeys.sessions, (previous) => {
+            if (!previous) return previous
+            let changed = false
+            const sessions = previous.sessions.map((summary) => {
+                if (summary.id !== targetSessionId) return summary
+                changed = true
+                return archivedSessionLook(summary)
+            })
+            return changed ? { ...previous, sessions } : previous
+        })
+    }
+
     const invalidateCursorModels = async () => {
         if (!sessionId || agentFlavor !== 'cursor') return
         await queryClient.invalidateQueries({ queryKey: queryKeys.sessionCursorModels(sessionId) })
@@ -151,7 +196,25 @@ export function useSessionActions(
             }
             await api.archiveSession(sessionId)
         },
-        onSuccess: () => void invalidateSession(),
+        onSuccess: () => {
+            if (sessionId) markSessionArchivedInCache(sessionId)
+            void invalidateSession()
+        },
+        // The row looked archived while this ran. A failure is the one thing
+        // the operator must hear about, and the row that started it may be gone
+        // by now (filtered out, moved section), so the dialog is reported here
+        // and shown by the app-root host; the refetch puts the row back on
+        // what the hub says (the agent may have stopped before the hub gave up).
+        onError: (error) => {
+            if (sessionId) {
+                reportSessionActionFailure({
+                    kind: 'archive',
+                    sessionId,
+                    message: error instanceof Error && error.message ? error.message : null,
+                })
+            }
+            void invalidateSession()
+        },
     })
 
     const reopenMutation = useMutation<ReopenSessionResponse, Error, void>({

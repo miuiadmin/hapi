@@ -61,7 +61,7 @@ describe('ArchiveSessionDialog', () => {
         { active: true, unmountOnClose: true },
         { active: false, unmountOnClose: false },
         { active: false, unmountOnClose: true },
-    ])('surfaces a failure after dismissal (active=$active, unmount=$unmountOnClose)', async ({ active, unmountOnClose }) => {
+    ])('leaves a failure after dismissal to the app dialog, never a toast (active=$active, unmount=$unmountOnClose)', async ({ active, unmountOnClose }) => {
         const archive = pendingArchive()
         const confirm = vi.fn(() => archive.promise)
         const rendered = render(view(true, confirm, unmountOnClose))
@@ -71,8 +71,10 @@ describe('ArchiveSessionDialog', () => {
         fireEvent.click(within(screen.getByRole('dialog')).getAllByRole('button', { name: 'Close' })[0]!)
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
         await act(async () => archive.reject(new Error('Session process is still running')))
-        expect(await screen.findByRole('alert')).toHaveTextContent('Archive could not be confirmed: Session process is still running')
         expect(confirm).toHaveBeenCalledTimes(1)
+        // The row looked archived from the click on; the mutation reports the failure to the app's dialog host.
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
     it.each([true, false])('keeps the archive running after closing (active=%s)', async active => {
@@ -91,14 +93,14 @@ describe('ArchiveSessionDialog', () => {
         expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
 
-    it('keeps failures visible in an open dialog without claiming success', async () => {
+    it('closes on a failed archive without showing the error itself: the app dialog reports it', async () => {
         const archive = pendingArchive()
-        render(view(false, () => archive.promise))
+        const confirm = vi.fn(() => archive.promise)
+        render(view(false, confirm))
         fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
         await act(async () => archive.reject(new Error('Stop not confirmed')))
-        expect(screen.getByRole('dialog')).toBeVisible()
-        expect(screen.getByText('Stop not confirmed')).toBeVisible()
-        expect(screen.getByRole('button', { name: 'Archive' })).toBeEnabled()
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+        expect(confirm).toHaveBeenCalledTimes(1)
         expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
 })

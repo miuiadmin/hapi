@@ -13,8 +13,9 @@ import {
 import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
-import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, sessionArchiveMutationScope, sessionPinMutationKey, usePendingSessionIds, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
+import { showPendingArchives } from '@/lib/sessionArchiveLook'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { GroupActionMenu } from '@/components/GroupActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -1683,13 +1684,9 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     }))
                 }
             })
-        } catch (error) {
-            addToast({
-                title: t('dialog.archive.error'),
-                body: error instanceof Error ? error.message : t('dialog.error.default'),
-                sessionId: s.id,
-                url: `/sessions/${s.id}`
-            })
+        } catch {
+            // The row already looked archived; the mutation reports the failure
+            // to the dialog host and refetches the row (useSessionActions).
         }
     }
 
@@ -1768,6 +1765,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 data-session-row-id={s.id}
                 data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
+                data-archive-pending={quickArchivePending ? '' : undefined}
             >
                 <button
                     ref={rowButtonRef}
@@ -1860,8 +1858,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
                 onArchive={() => setArchiveOpen(true)}
-                onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
-                reopenDisabledReason={cursorReopenDisabledReason}
+                // Reopening a session whose archive is still being confirmed
+                // races the hub (it refuses with "in progress"); the row already
+                // reads as archived, so Reopen waits for the request to settle.
+                onReopen={cursorReopenDisabledReason || quickArchivePending ? undefined : () => void handleReopen()}
+                reopenDisabledReason={quickArchivePending ? t('dialog.archive.confirming') : cursorReopenDisabledReason}
                 reopenHint={cursorReopenUnverifiedHint}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
@@ -2283,13 +2284,24 @@ export function SessionList(props: {
         return t('machine.unknown')
     }
 
+    // Archiving is shown at once: a row whose archive request is still being
+    // confirmed gets the archived look here, before sorting and filtering, so
+    // it sinks to the archived rows and leaves the Active lens immediately.
+    // Derived from the mutation cache on every render rather than written into
+    // the cache: keep-alive patches and list refetches keep reporting the
+    // session active until the hub confirms, and they must not undo the look.
+    const archivingSessionIds = usePendingSessionIds(sessionArchiveMutationScope)
+    const listedSessions = useMemo(
+        () => showPendingArchives(props.sessions, archivingSessionIds),
+        [props.sessions, archivingSessionIds]
+    )
     const sidebarSessions = useMemo(
-        () => prepareSidebarSessions(props.sessions, selectedSessionId),
-        [props.sessions, selectedSessionId]
+        () => prepareSidebarSessions(listedSessions, selectedSessionId),
+        [listedSessions, selectedSessionId]
     )
     const readableSessions = useMemo(
-        () => props.sessions.filter(session => shouldShowSessionInSidebar(session, selectedSessionId)),
-        [props.sessions, selectedSessionId]
+        () => listedSessions.filter(session => shouldShowSessionInSidebar(session, selectedSessionId)),
+        [listedSessions, selectedSessionId]
     )
     // Keep status filtering separate from the unread lens. Machine choices are
     // derived from this set, so selecting a machine with no unread matches must
@@ -2701,10 +2713,12 @@ export function SessionList(props: {
         ), groupSettings), groupSettings),
         [machineFilteredSessions, listView, groupSettings]
     )
-    // Unfiltered project membership for group-wide actions (archive all).
+    // Unfiltered project membership for group-wide actions (archive all). A
+    // session whose archive is still being confirmed already reads as archived
+    // here, so "Archive all" does not ask for it a second time.
     const projectSessionsByKey = useMemo(
-        () => new Map(groupSessionsByDirectory(props.sessions).map((group) => [group.key, group.sessions])),
-        [props.sessions]
+        () => new Map(groupSessionsByDirectory(listedSessions).map((group) => [group.key, group.sessions])),
+        [listedSessions]
     )
     const actionOnlyGroups = useMemo(() => {
         if (effectivePinInProgressMode === 'off') {

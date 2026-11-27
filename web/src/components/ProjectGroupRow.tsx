@@ -4,7 +4,6 @@ import { isLiveLifecycleState } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { useTranslation } from '@/lib/use-translation'
-import { useAddToast } from '@/lib/toast-context'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { queryKeys } from '@/lib/query-keys'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -12,6 +11,7 @@ import { useLongPress } from '@/hooks/useLongPress'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
 import { sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { reportSessionActionFailure } from '@/lib/sessionActionFailures'
 import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
 
 // Same liveness the hub archive route accepts.
@@ -42,7 +42,6 @@ export function ProjectGroupRow(props: {
     const { directory, displayName, api, onClick, onNewSession } = props
     const { t } = useTranslation()
     const { haptic } = usePlatform()
-    const addToast = useAddToast()
     const queryClient = useQueryClient()
     const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null)
     const [confirmOpen, setConfirmOpen] = useState(false)
@@ -83,11 +82,12 @@ export function ProjectGroupRow(props: {
             void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
             const failed = results.filter((r) => r.status === 'rejected').length
             if (failed > 0) {
-                addToast({
-                    title: t('dialog.archive.error'),
-                    body: t('dialog.archiveAll.failed', { n: failed, total: results.length }),
+                // The rows already read as archived; the failure dialog says
+                // how many the hub did not confirm.
+                reportSessionActionFailure({
+                    kind: 'archive',
                     sessionId: '',
-                    url: ''
+                    message: t('dialog.archiveAll.failed', { n: failed, total: results.length })
                 })
             }
         }

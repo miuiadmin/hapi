@@ -7,10 +7,13 @@ import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider, useToast, type Toast } from '@/lib/toast-context'
 import * as sessionActions from '@/hooks/mutations/useSessionActions'
+import { clearSessionActionFailures } from '@/lib/sessionActionFailures'
 import { SessionList } from './SessionList'
+import { SessionActionErrorDialog } from './SessionActionErrorDialog'
 
 afterEach(() => {
     cleanup()
+    clearSessionActionFailures()
     vi.restoreAllMocks()
 })
 
@@ -167,14 +170,28 @@ describe('session row hover archive', () => {
         expect(archiveSession).not.toHaveBeenCalled()
     })
 
-    it('reports a failed archive in a toast', async () => {
+    it('reports a failed archive in the failure dialog, not a toast', async () => {
         const archiveSession = vi.fn(async () => { throw new Error('runner offline') })
-        renderList([makeSession({ id: 'idle' })], { archiveSession } as Partial<ApiClient>)
+        render(
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <ToastProbe />
+                        <SessionList sessions={[makeSession({ id: 'idle' })]} selectedSessionId={null} onSelect={vi.fn()}
+                            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+                            api={{ archiveSession } as Partial<ApiClient> as ApiClient} />
+                        <SessionActionErrorDialog />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
 
         fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
-        await waitFor(() => expect(toasts.map(toast => [toast.title, toast.body])).toEqual([
-            ['Archive could not be confirmed', 'runner offline']
-        ]))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByText('Archive could not be confirmed')).toBeInTheDocument()
+        expect(within(dialog).getByText('runner offline')).toBeInTheDocument()
+        expect(within(dialog).getAllByRole('button').map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Close', 'Close'])
+        expect(toasts).toEqual([])
     })
 
     it('offers no hover archive for sessions that are already disconnected', () => {

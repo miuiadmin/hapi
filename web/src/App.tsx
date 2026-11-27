@@ -37,6 +37,7 @@ import { canUseAppBadging, useAppBadge } from '@/hooks/useAppBadge'
 import { useAppBadgePreference } from '@/hooks/useAppBadgePreference'
 import { reconcileQueuedStateAfterConnect } from '@/lib/queued-state-reconciliation'
 import { LoginPrompt } from '@/components/LoginPrompt'
+import { SessionActionErrorDialog } from '@/components/SessionActionErrorDialog'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
 import { PwaUpdateBanner, PwaUpdateBannerWithStatusOffset } from '@/components/PwaUpdateBanner'
@@ -633,6 +634,7 @@ function AppInner() {
                     <Outlet />
                 </div>
                 <ToastContainer />
+                <SessionActionErrorDialog />
                 <InstallPrompt />
             </VoiceProvider>
         </AppContextProvider>
