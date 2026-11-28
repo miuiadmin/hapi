@@ -171,10 +171,12 @@ export function formatContextUsageLabel(contextSize: number, maxContextSize: num
     return `${usedPercentage}% · ${formatTokenCount(contextSize)} / ${formatTokenCount(maxContextSize)}`
 }
 
+/** The context meter's text on a phone, next to its bar. The bar shows how full it is, so the text
+ *  says what it is: what is used, out of what. */
 export function formatCompactContextUsageLabel(contextSize: number, maxContextSize: number | null | undefined): string {
-    if (!maxContextSize) return `ctx ${formatTokenCount(contextSize)}`
-    const { remainingPercentage } = getContextPercentages(contextSize, maxContextSize)
-    return `ctx ${formatTokenCount(maxContextSize)} (${remainingPercentage}% left)`
+    const used = formatTokenCount(contextSize)
+    if (!maxContextSize) return `ctx ${used}`
+    return `ctx ${used} / ${formatTokenCount(maxContextSize)}`
 }
 
 export function getContextUsageDetails(
@@ -283,6 +285,18 @@ export function StatusBar(props: {
         return getContextUsageDetails(props.contextSize, maxContextSize, props.contextCacheRead)
     }, [props.contextSize, props.contextCacheRead, props.contextWindow, contextHeuristicModel, props.agentFlavor])
     const contextUsedPercentage = contextUsageDetails?.usedPercentage ?? null
+    // The same meter on a phone and on a wider screen: a glance is enough to see how full the context is.
+    const contextMeter = contextUsedPercentage !== null ? (
+        <span
+            aria-hidden="true"
+            className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-[var(--app-link-muted)] sm:w-12"
+        >
+            <span
+                className="block h-full rounded-full bg-current"
+                style={{ width: `${contextUsedPercentage}%` }}
+            />
+        </span>
+    ) : null
 
     const permissionMode = props.permissionMode
     // Copilot always shows permission (including Default) so model=auto sessions
@@ -434,21 +448,14 @@ export function StatusBar(props: {
                             <button
                                 type="button"
                                 aria-label={t('misc.contextDetails')}
-                                className={`min-w-0 cursor-pointer whitespace-nowrap rounded-sm bg-transparent p-0 text-[10px] leading-4 outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] ${contextWarning?.color ?? 'text-[var(--app-hint)]'}`}
+                                className={`flex min-w-0 max-w-full cursor-pointer whitespace-nowrap rounded-sm bg-transparent p-0 text-[10px] leading-4 outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] ${contextWarning?.color ?? 'text-[var(--app-hint)]'}`}
                             >
-                                <span className="sm:hidden">{compactContextUsageLabel}</span>
+                                <span className="flex min-w-0 items-center gap-1.5 sm:hidden" data-testid="context-usage-compact">
+                                    {contextMeter}
+                                    <span className="min-w-0 truncate">{compactContextUsageLabel}</span>
+                                </span>
                                 <span className="hidden items-center gap-2 sm:inline-flex">
-                                    {contextUsedPercentage !== null ? (
-                                        <span
-                                            aria-hidden="true"
-                                            className="h-1 w-12 shrink-0 overflow-hidden rounded-full bg-[var(--app-link-muted)]"
-                                        >
-                                            <span
-                                                className="block h-full rounded-full bg-current"
-                                                style={{ width: `${contextUsedPercentage}%` }}
-                                            />
-                                        </span>
-                                    ) : null}
+                                    {contextMeter}
                                     <span>{contextUsageLabel}</span>
                                 </span>
                             </button>

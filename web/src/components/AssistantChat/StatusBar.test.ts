@@ -28,8 +28,8 @@ describe('context usage labels', () => {
         expect(formatContextUsageLabel(90_000, 258_000)).toBe('35% · 90k / 258k')
     })
 
-    it('uses the compact parenthesized mobile label with a fixed English suffix', () => {
-        expect(formatCompactContextUsageLabel(186_000, 262_000)).toBe('ctx 262k (29% left)')
+    it('says on a phone what is used out of the window; the bar beside it shows how full that is', () => {
+        expect(formatCompactContextUsageLabel(186_000, 262_000)).toBe('ctx 186k / 262k')
     })
 
     it('orders cache, used, and remaining metrics for the desktop details', () => {
@@ -44,7 +44,7 @@ describe('context usage labels', () => {
 
     it('keeps external and detailed percentages complementary at rounding midpoints', () => {
         expect(formatContextUsageLabel(69, 200)).toBe('35% · 69 / 200')
-        expect(formatCompactContextUsageLabel(69, 200)).toBe('ctx 200 (65% left)')
+        expect(formatCompactContextUsageLabel(69, 200)).toBe('ctx 69 / 200')
         expect(getContextUsageDetails(69, 200, 0)).toMatchObject({
             usedPercentage: 35,
             remainingPercentage: 65

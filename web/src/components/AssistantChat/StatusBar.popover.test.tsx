@@ -203,7 +203,7 @@ describe('StatusBar context details popover', () => {
         expect(trigger.className.split(' ')).toContain('text-[10px]')
         expect(trigger.className.split(' ')).toContain('leading-4')
         expect(trigger.className.split(' ')).toContain('text-[var(--app-hint)]')
-        expect(trigger.textContent).toBe('ctx 258k (65% left)35% · 90k / 258k')
+        expect(trigger.textContent).toBe('ctx 90k / 258k35% · 90k / 258k')
         expect(trigger.className.split(' ')).not.toContain('hidden')
         const progressTrack = trigger.querySelector('[aria-hidden="true"]')
         expect((progressTrack?.firstElementChild as HTMLElement | null)?.style.width).toBe('35%')
@@ -214,6 +214,32 @@ describe('StatusBar context details popover', () => {
         const details = cacheLine.parentElement
         expect(details?.textContent).toBe('缓存：86k使用：90k（35%）剩余：168k（65%）')
         expect(screen.queryByText('上下文详情')).toBeNull()
+    })
+
+    it('gives the phone line the same meter as the wider layout', () => {
+        localStorage.setItem('hapi-lang', 'zh-CN')
+        render(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    contextSize={90_000}
+                    contextWindow={258_000}
+                />
+            </I18nProvider>
+        )
+
+        const trigger = screen.getByRole('button', { name: '上下文详情' })
+        const compact = trigger.querySelector('[data-testid="context-usage-compact"]')!
+        const track = compact.querySelector('[aria-hidden="true"]') as HTMLElement
+        // A little narrower on a phone, and nothing else changes.
+        expect(track.className.split(' ')).toEqual(expect.arrayContaining(['h-1', 'w-10', 'sm:w-12', 'overflow-hidden', 'rounded-full']))
+        expect((track.firstElementChild as HTMLElement).style.width).toBe('35%')
+        expect(compact.textContent).toBe('ctx 90k / 258k')
+        // One meter for each layout, both filled to the same point.
+        expect(trigger.querySelectorAll('[aria-hidden="true"]')).toHaveLength(2)
+        expect(screen.getByText('35% · 90k / 258k')).toBeTruthy()
     })
 
     it('localizes the popover content without localizing the external left label', async () => {
@@ -232,7 +258,7 @@ describe('StatusBar context details popover', () => {
         )
 
         const trigger = screen.getByRole('button', { name: 'Context details' })
-        expect(trigger.textContent).toContain('ctx 258k (65% left)')
+        expect(trigger.textContent).toContain('ctx 90k / 258k')
 
         fireEvent.click(trigger)
 
