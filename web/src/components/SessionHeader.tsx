@@ -6,6 +6,8 @@ import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { isSessionReopening, sessionArchiveMutationKey, sessionModelMutationKey, sessionReopenMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
+import { SessionOpenTraceDialog, isDeveloperModeOn } from '@/components/SessionOpenTraceDialog'
+import { installSessionOpenTraceDebugHook } from '@/lib/sessionOpenTrace'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { LinkPrDialog } from '@/components/LinkPrDialog'
@@ -274,6 +276,12 @@ export function SessionHeader(props: {
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const [openTraceOpen, setOpenTraceOpen] = useState(false)
+    const showOpenTrace = isDeveloperModeOn()
+    // Measuring tools read an open's timeline without opening the dialog.
+    useEffect(() => {
+        if (showOpenTrace) installSessionOpenTraceDebugHook()
+    }, [showOpenTrace])
     const [isSyncingCodex, setIsSyncingCodex] = useState(false)
     const [isSyncingPi, setIsSyncingPi] = useState(false)
     const { features } = useFeatures(api)
@@ -668,6 +676,7 @@ export function SessionHeader(props: {
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId && !session.active ? handleSyncCodex : undefined}
                 onSyncPi={api && piSessionId && !session.active ? handleSyncPi : undefined}
+                onShowOpenTrace={showOpenTrace ? () => setOpenTraceOpen(true) : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={props.canReopen === false ? undefined : handleReopen}
                 reopenDisabledReason={isReopening ? t('session.restoring') : props.reopenDisabledReason}
@@ -675,6 +684,12 @@ export function SessionHeader(props: {
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
+            />
+
+            <SessionOpenTraceDialog
+                isOpen={openTraceOpen}
+                onClose={() => setOpenTraceOpen(false)}
+                sessionId={session.id}
             />
 
             <RenameSessionDialog

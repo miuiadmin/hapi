@@ -1,6 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SessionOpenTraceChip, formatOpenTraceBytes, formatOpenTraceMs } from './SessionOpenTraceChip'
+import {
+    SessionOpenTraceDialog,
+    formatOpenTraceBytes,
+    formatOpenTraceMs,
+    isDeveloperModeOn,
+} from './SessionOpenTraceDialog'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     SESSION_OPEN_TRACE_SETTLE_GRACE_MS,
@@ -58,6 +63,7 @@ function chip(): HTMLElement | null {
 }
 
 beforeEach(() => {
+    onClose.mockReset()
     vi.useFakeTimers()
     // One presented frame every 16ms of fake time.
     vi.stubGlobal('requestAnimationFrame', (callback: (time: number) => void) => {
@@ -75,14 +81,29 @@ afterEach(() => {
     vi.useRealTimers()
 })
 
-function renderChip(): void {
-    render(<I18nProvider><SessionOpenTraceChip sessionId={SESSION} /></I18nProvider>)
+const onClose = vi.fn()
+
+function renderDialog(isOpen = true): void {
+    render(<I18nProvider><SessionOpenTraceDialog isOpen={isOpen} onClose={onClose} sessionId={SESSION} /></I18nProvider>)
 }
 
-describe('SessionOpenTraceChip', () => {
-    it('is a bar of its own from the start, and shows the open in progress', async () => {
-        renderChip()
-        // The bar keeps its place before any open was recorded, so nothing below it moves later.
+describe('SessionOpenTraceDialog', () => {
+    it('is in the session menu only while developer mode is on', () => {
+        getLevel.mockReturnValue(0)
+        expect(isDeveloperModeOn()).toBe(false)
+        getLevel.mockReturnValue(1)
+        expect(isDeveloperModeOn()).toBe(true)
+    })
+
+    it('takes no room while closed', () => {
+        renderDialog(false)
+        act(() => { beginSessionOpenTrace(SESSION, false) })
+        expect(chip()).toBeNull()
+        expect(screen.queryByRole('dialog')).toBeNull()
+    })
+
+    it('shows the open in progress', async () => {
+        renderDialog()
         expect(chip()?.dataset.state).toBe('none')
         expect(chip()).toHaveTextContent('No open recorded for this session yet')
 
@@ -101,7 +122,7 @@ describe('SessionOpenTraceChip', () => {
             resource('/api/sessions/open-trace-chip-session', 2, 40, { transferSize: 900, encodedBodySize: 800, decodedBodySize: 5_200 }),
             resource('/api/sessions/open-trace-chip-session/messages?limit=20&minConversation=1', 45, 245, { transferSize: 12_300, encodedBodySize: 12_000, decodedBodySize: 90_000 })
         )
-        renderChip()
+        renderDialog()
         act(() => { beginSessionOpenTrace(SESSION, false) })
         await pass(245)
         act(() => {
@@ -120,8 +141,10 @@ describe('SessionOpenTraceChip', () => {
         expect(chip()?.dataset.state).toBe('settled')
         expect(chip()).toHaveTextContent('First row 277ms · current 290ms · 2 requests · 13KB · 200 rows')
 
-        fireEvent.click(screen.getByRole('button', { expanded: false }))
-        const rows = screen.getAllByRole('row')
+        // A dialog is already the second level: the request list is right there, with nothing to expand.
+        const dialog = screen.getByRole('dialog')
+        expect(dialog).toHaveTextContent('How long this session took to open')
+        const rows = within(dialog).getAllByRole('row')
         expect(rows).toHaveLength(3)
         expect(rows[1]).toHaveTextContent('Session detail')
         expect(rows[1]).toHaveTextContent('+2ms')
@@ -133,16 +156,13 @@ describe('SessionOpenTraceChip', () => {
         expect(rows[2]).toHaveTextContent('200ms')
         expect(rows[2]).toHaveTextContent('12KB')
         expect(rows[2]).toHaveTextContent('200')
-
-        fireEvent.click(screen.getByRole('button', { expanded: true }))
-        expect(screen.queryByRole('table')).toBeNull()
     })
 
     it('says when the user left before the tail arrived', async () => {
         serve(
             resource('/api/sessions/open-trace-chip-session/messages?limit=20', 5, 9_005, { transferSize: 0, encodedBodySize: 0, decodedBodySize: 0 }, 0)
         )
-        renderChip()
+        renderDialog()
         act(() => { beginSessionOpenTrace(SESSION, true) })
         await pass(100)
         act(() => { noteSessionOpenFirstRow(SESSION) })
@@ -152,24 +172,15 @@ describe('SessionOpenTraceChip', () => {
         expect(chip()?.dataset.state).toBe('left')
         expect(chip()).toHaveTextContent('from cache · First row 132ms · left before the tail arrived')
 
-        fireEvent.click(screen.getByRole('button'))
         const rows = screen.getAllByRole('row')
         expect(rows[1]).toHaveTextContent('Latest page (failed)')
         expect(rows[1]).toHaveTextContent('9.0s')
     })
 
-    it('is not rendered while developer mode is off, and cannot be expanded without a trace', () => {
-        getLevel.mockReturnValue(0)
-        renderChip()
-        act(() => { beginSessionOpenTrace(SESSION, false) })
-        expect(chip()).toBeNull()
-
-        cleanup()
-        getLevel.mockReturnValue(1)
-        renderChip()
-        fireEvent.click(screen.getByRole('button'))
-        expect(screen.queryByRole('table')).toBeNull()
-        expect(chip()).toHaveTextContent('No open recorded for this session yet')
+    it('closes from its own close button', async () => {
+        renderDialog()
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+        expect(onClose).toHaveBeenCalledTimes(1)
     })
 
     it('formats sizes and durations for reading', () => {

@@ -22,9 +22,11 @@ import { peekSessionEntry } from '@/chat/sessionVisitTelemetry'
  * starting. (The stream's own first connection no longer triggers anything.)
  *
  * The finished timeline goes to the hub as the `session_open_trace` event (so
- * every open can be looked up later with its wall-clock time) and is shown by
- * the open-trace chip while developer mode is on. Observation only: nothing
- * here may throw into the feature it watches.
+ * every open can be looked up later with its wall-clock time) and, while
+ * developer mode is on, can be opened from the session's menu (the
+ * SessionOpenTraceDialog). Nothing of it stands over the conversation; tools
+ * read it through `window.__hapiOpenTrace` (installSessionOpenTraceDebugHook).
+ * Observation only: nothing here may throw into the feature it watches.
  */
 
 export const SESSION_OPEN_TRACE_EVENT = 'session_open_trace'
@@ -476,6 +478,28 @@ export function getSessionOpenTrace(sessionId: string | null): SessionOpenTrace 
 export function subscribeSessionOpenTrace(listener: () => void): () => void {
     listeners.add(listener)
     return () => listeners.delete(listener)
+}
+
+export type SessionOpenTraceDebugHook = Readonly<{
+    /** The last (or in-progress) open of a session, as the dialog shows it. */
+    get: (sessionId: string | null) => SessionOpenTrace | null
+    /** Called whenever any open's timeline moved; returns the unsubscribe. */
+    subscribe: (listener: () => void) => () => void
+}>
+
+/**
+ * `window.__hapiOpenTrace`: the same timeline the dialog shows, for tools that measure an
+ * open (the measurement harness used to read it off a bar that stood over every
+ * conversation). Installed by the session header while developer mode is on.
+ */
+export function installSessionOpenTraceDebugHook(): void {
+    if (typeof window === 'undefined') return
+    const target = window as unknown as { __hapiOpenTrace?: SessionOpenTraceDebugHook }
+    if (target.__hapiOpenTrace) return
+    target.__hapiOpenTrace = Object.freeze({
+        get: (sessionId: string | null) => getSessionOpenTrace(sessionId),
+        subscribe: (listener: () => void) => subscribeSessionOpenTrace(listener)
+    })
 }
 
 /** Tests only. */

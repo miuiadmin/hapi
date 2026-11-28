@@ -406,6 +406,7 @@ export default {
   'session.action.syncPi': 'Pi 履歴を同期',
   'session.action.archive': 'アーカイブ',
   'session.archived.title': 'セッションをアーカイブしました',
+  'session.action.openTrace': '表示にかかった時間',
   'session.action.reopen': '再開',
   'session.action.reopenCursorChecking': '記録されたマシン上で Cursor のチャットデータがまだ利用可能か確認しています。',
   'session.action.reopenCursorMissing': '記録されたマシン上の Cursor チャットデータは利用できなくなりました。',

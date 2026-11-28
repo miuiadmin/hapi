@@ -7,9 +7,18 @@ import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider, useToast } from '@/lib/toast-context'
 import { resolveSessionHeaderMachineLabel, SessionHeader } from './SessionHeader'
 
+const traceMock = vi.hoisted(() => ({ developerMode: false }))
+// The dialog itself has its own tests; here only whether and when the header opens it matters.
+vi.mock('@/components/SessionOpenTraceDialog', () => ({
+    isDeveloperModeOn: () => traceMock.developerMode,
+    SessionOpenTraceDialog: (props: { isOpen: boolean }) => (props.isOpen ? <div data-testid="open-trace-dialog">timing</div> : null),
+}))
+
 afterEach(() => {
     cleanup()
     localStorage.clear()
+    traceMock.developerMode = false
+    delete (window as unknown as { __hapiOpenTrace?: unknown }).__hapiOpenTrace
 })
 
 function ToastMessages() {
@@ -125,6 +134,24 @@ describe('SessionHeader', () => {
 
         fireEvent.click(screen.getByRole('button', { name: /More/ }))
         expect(screen.getByRole('menuitem', { name: /Sync Codex/ })).toBeInTheDocument()
+    })
+
+    it('keeps the open timing out of the conversation: a menu item in developer mode, opening a dialog', () => {
+        renderHeader(baseSession())
+        fireEvent.click(screen.getByRole('button', { name: /More/ }))
+        expect(screen.queryByRole('menuitem', { name: /Open timing/ })).toBeNull()
+        // Measuring tools get the timeline only in developer mode too.
+        expect((window as unknown as { __hapiOpenTrace?: unknown }).__hapiOpenTrace).toBeUndefined()
+
+        cleanup()
+        traceMock.developerMode = true
+        renderHeader(baseSession())
+        // Nothing of it is on screen until it is asked for.
+        expect(screen.queryByTestId('open-trace-dialog')).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: /More/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: /Open timing/ }))
+        expect(screen.getByTestId('open-trace-dialog')).toBeTruthy()
+        expect(typeof (window as unknown as { __hapiOpenTrace?: { get: unknown } }).__hapiOpenTrace?.get).toBe('function')
     })
 
     it('hides title generation when the Hub does not advertise the capability', () => {

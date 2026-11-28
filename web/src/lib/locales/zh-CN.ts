@@ -450,6 +450,7 @@ export default {
   'session.action.syncPi': '同步 Pi 历史',
   'session.action.archive': '归档',
   'session.archived.title': '会话已归档',
+  'session.action.openTrace': '本次打开耗时',
   'session.action.reopen': '重新打开',
   'session.action.reopenCursorChecking': '正在检查记录设备上的 Cursor 聊天数据是否仍然可用。',
   'session.action.reopenCursorMissing': '记录设备上的 Cursor 聊天数据已不可用。',

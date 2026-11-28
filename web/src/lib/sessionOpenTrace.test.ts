@@ -16,13 +16,15 @@ import {
     cancelSessionOpenSettle,
     endSessionOpenTrace,
     getSessionOpenTrace,
+    installSessionOpenTraceDebugHook,
     noteSessionOpenFirstRow,
     noteSessionOpenPage,
     noteSessionOpenSync,
     prepareSessionOpenResourceTimings,
     resetSessionOpenTrace,
     scheduleSessionOpenSettle,
-    subscribeSessionOpenTrace
+    subscribeSessionOpenTrace,
+    type SessionOpenTraceDebugHook
 } from './sessionOpenTrace'
 
 const capture = vi.mocked(telemetryClient.capture)
@@ -549,5 +551,44 @@ describe('session open trace: the first page leaves on the tap', () => {
         prepareSessionOpenResourceTimings()
         expect(traces()).toHaveLength(2)
         expect(traces()[1]).toMatchObject({ outcome: 'left' })
+    })
+})
+
+describe('session open trace debug hook', () => {
+    const hookOnWindow = () => (window as unknown as { __hapiOpenTrace?: SessionOpenTraceDebugHook }).__hapiOpenTrace
+
+    afterEach(() => {
+        delete (window as unknown as { __hapiOpenTrace?: SessionOpenTraceDebugHook }).__hapiOpenTrace
+    })
+
+    // The dialog shows the timeline on request; measuring tools read the same object without opening it.
+    it('hands tools the timeline the dialog shows, tells them when it moves, and installs once', () => {
+        recordSessionEntry('s1', 'list-click')
+        beginSessionOpenTrace('s1', false)
+        expect(hookOnWindow()).toBeUndefined()
+
+        installSessionOpenTraceDebugHook()
+        const hook = hookOnWindow()
+        expect(hook).toBeTruthy()
+        expect(hook!.get('s1')).toMatchObject({ sessionId: 's1', entry: 'list-click', done: false })
+        expect(hook!.get('never-opened')).toBeNull()
+        expect(hook!.get(null)).toBeNull()
+
+        const moved = vi.fn()
+        const unsubscribe = hook!.subscribe(moved)
+        noteSessionOpenFirstRow('s1')
+        presentFrame()
+        presentFrame()
+        expect(moved).toHaveBeenCalled()
+        expect(hook!.get('s1')!.firstRowMs).not.toBeNull()
+        unsubscribe()
+        moved.mockClear()
+        // Another open moves the timeline; the tool that unsubscribed is not told.
+        beginSessionOpenTrace('s2', true)
+        expect(moved).not.toHaveBeenCalled()
+        expect(hook!.get('s2')).toMatchObject({ sessionId: 's2', fromCache: true })
+
+        installSessionOpenTraceDebugHook()
+        expect(hookOnWindow()).toBe(hook)
     })
 })

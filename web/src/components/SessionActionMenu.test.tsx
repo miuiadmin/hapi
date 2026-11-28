@@ -291,6 +291,21 @@ describe('SessionActionMenu - Pi sync action', () => {
     })
 })
 
+describe('SessionActionMenu - Open timing action', () => {
+    it('is offered only when developer mode gives it something to show, and closes the menu', () => {
+        renderMenu()
+        expect(screen.queryByRole('menuitem', { name: /Open timing/ })).toBeNull()
+
+        cleanup()
+        const onShowOpenTrace = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ onShowOpenTrace, onClose })
+        fireEvent.click(screen.getByRole('menuitem', { name: /Open timing/ }))
+        expect(onShowOpenTrace).toHaveBeenCalledTimes(1)
+        expect(onClose).toHaveBeenCalledTimes(1)
+    })
+})
+
 describe('SessionActionMenu - Copy reference action', () => {
     it('renders the Copy reference item', () => {
         renderMenu()

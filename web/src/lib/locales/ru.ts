@@ -338,6 +338,7 @@ export default {
   'session.action.syncPi': 'Синхронизировать историю Pi',
   'session.action.archive': 'Архивировать',
   'session.archived.title': 'Сессия архивирована',
+  'session.action.openTrace': 'Время открытия',
   'session.action.reopen': 'Открыть заново',
   'session.action.reopenCursorChecking': 'Проверка доступности данных чата Cursor на записанной машине.',
   'session.action.reopenCursorMissing': 'Данные чата Cursor больше недоступны на записанной машине.',
