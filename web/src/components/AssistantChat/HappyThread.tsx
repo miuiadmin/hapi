@@ -20,6 +20,7 @@ import {
 import { HappyAssistantMessage } from '@/components/AssistantChat/messages/AssistantMessage'
 import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessage'
 import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMessage'
+import { FloatingStatusPill } from '@/components/FloatingStatusPill'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
@@ -760,6 +761,8 @@ export const HappyThread = memo(function HappyThread(props: {
     onJumpToTail?: () => void
     readThroughRevision?: number
     isSyncingTail: boolean
+    /** The hub is resuming this session (a Reopen, or a send to a stopped one): the thread says so in its status pill. */
+    restoring?: boolean
     /** Cached re-entry: rendering the persisted window while the authoritative latest-page fetch is in flight. */
     isCatchingUpFromCache?: boolean
     /**
@@ -867,6 +870,8 @@ export const HappyThread = memo(function HappyThread(props: {
     const targetSearchQuery = props.initialTargetMessageQuery?.trim() ?? ''
     const initialSearchTargetId = props.initialTargetMessageId?.trim() ?? ''
     const hasSearchTarget = Boolean(initialSearchTargetId && targetSearchQuery)
+    // The status pill sits below the search bar while one is open.
+    const statusPillTop = hasSearchTarget ? 'top-12' : 'top-3'
     const [activeSearchMatchId, setActiveSearchMatchId] = useState<string | null>(null)
     const activeSearchMatchRequestIdRef = useRef<number | undefined>(undefined)
     const sessionContentMatchesQuery = useQuery({
@@ -3066,45 +3071,33 @@ export const HappyThread = memo(function HappyThread(props: {
                         </div>
                     </div>
                 ) : null}
-                {isLocatingSearchTarget ? (
-                    <div
-                        data-testid="search-target-status"
-                        role="status"
-                        aria-live="polite"
-                        className={`pointer-events-none absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur ${hasSearchTarget ? 'top-12' : 'top-3'}`}
-                    >
-                        <Spinner size="sm" label={null} className="text-current" />
-                        <span>{t('misc.locatingMessage')}</span>
-                    </div>
+                {/* One status pill for every "the thread is working on it" state (the app's
+                    FloatingStatusPill, the one the session list and the pull-to-load
+                    notices use too), so the restoring notice cannot drift apart from
+                    them in look or place. Restoring comes first: while the hub resumes
+                    the session it is what the user is waiting on. */}
+                {props.restoring ? (
+                    <FloatingStatusPill testId="session-restoring-banner" top={statusPillTop}>
+                        {t('session.restoring')}
+                    </FloatingStatusPill>
+                ) : isLocatingSearchTarget ? (
+                    <FloatingStatusPill testId="search-target-status" top={statusPillTop}>
+                        {t('misc.locatingMessage')}
+                    </FloatingStatusPill>
                 ) : props.isCatchingUpFromCache && props.rawMessagesCount > 0 ? (
-                    <div
-                        data-testid="tail-sync-status"
-                        role="status"
-                        aria-live="polite"
-                        className={`pointer-events-none absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur ${hasSearchTarget ? 'top-12' : 'top-3'}`}
-                    >
-                        <Spinner size="sm" label={null} className="text-current" />
-                        <span>{t('misc.syncingLatest')}</span>
-                    </div>
+                    <FloatingStatusPill testId="tail-sync-status" top={statusPillTop}>
+                        {t('misc.syncingLatest')}
+                    </FloatingStatusPill>
                 ) : !props.isSyncingTail && (
                     props.isLoadingMoreMessages || pullToLoadState !== 'idle'
                 ) ? (
-                    <div
-                        role="status"
-                        aria-live="polite"
-                        className={`pointer-events-none absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur ${hasSearchTarget ? 'top-12' : 'top-3'}`}
-                    >
-                        {props.isLoadingMoreMessages ? (
-                            <Spinner size="sm" label={null} className="text-current" />
-                        ) : null}
-                        <span>
-                            {props.isLoadingMoreMessages
-                                ? t('misc.loading')
-                                : pullToLoadState === 'ready'
-                                    ? t('misc.releaseToLoadOlder')
-                                    : t('misc.pullToLoadOlder')}
-                        </span>
-                    </div>
+                    <FloatingStatusPill spinner={props.isLoadingMoreMessages} top={statusPillTop}>
+                        {props.isLoadingMoreMessages
+                            ? t('misc.loading')
+                            : pullToLoadState === 'ready'
+                                ? t('misc.releaseToLoadOlder')
+                                : t('misc.pullToLoadOlder')}
+                    </FloatingStatusPill>
                 ) : null}
                 <ThreadPrimitive.Viewport
                     asChild

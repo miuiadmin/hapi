@@ -111,7 +111,6 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
 import { GoalModeBanner, useGoalModeTransitionBanner } from '@/components/AssistantChat/GoalModeBanner'
-import { SessionRestoringBanner } from '@/components/AssistantChat/SessionRestoringBanner'
 import { usePlatform } from '@/hooks/usePlatform'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useConciseChatMode } from '@/hooks/useConciseChatMode'
@@ -2596,7 +2595,6 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
-                        {restoring ? <SessionRestoringBanner /> : null}
                         <SessionOpenTraceChip sessionId={props.session.id} />
                         {canViewAgentTerminal && terminalMounted && (
                             // SessionChatInner is keyed by session.id, so switching sessions remounts this subtree.
@@ -2641,6 +2639,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                         // React reconciliation issues when switching sessions rapidly.
                         // Without prefixes, React may reuse the wrong component's DOM/localStorage.
                         key={`thread-${props.session.id}`}
+                        restoring={restoring}
                         api={props.api}
                         session={props.session}
                         serviceTier={effectiveCodexServiceTier}

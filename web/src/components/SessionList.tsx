@@ -36,6 +36,7 @@ import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { ProjectGroupRow } from '@/components/ProjectGroupRow'
 import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon, PinOffIcon } from '@/components/icons'
+import { FloatingStatusPill } from '@/components/FloatingStatusPill'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 
@@ -3839,24 +3840,19 @@ export function SessionList(props: {
 
             <div className="relative flex min-h-0 flex-1 flex-col">
             {isRefreshing || pullState !== 'idle' || props.isLoading ? (
-                <div
-                    role="status"
-                    aria-live="polite"
-                    className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur"
-                >
-                    {isRefreshing || props.isLoading
+                <FloatingStatusPill
+                    icon={isRefreshing || props.isLoading
                         ? <Spinner size="sm" label={null} className="text-current" />
                         : <PullRefreshIcon rotation={getPullRefreshIndicatorRotation(pullState)} />}
-                    <span>
-                        {isRefreshing
-                            ? t('sessions.refresh.refreshing')
-                            : props.isLoading
-                                ? t('misc.loading')
-                                : pullState === 'ready'
-                                    ? t('sessions.refresh.release')
-                                    : t('sessions.refresh.pull')}
-                    </span>
-                </div>
+                    >
+                    {isRefreshing
+                        ? t('sessions.refresh.refreshing')
+                        : props.isLoading
+                            ? t('misc.loading')
+                            : pullState === 'ready'
+                                ? t('sessions.refresh.release')
+                                : t('sessions.refresh.pull')}
+                </FloatingStatusPill>
             ) : null}
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
             {botsSupported ? (

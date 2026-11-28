@@ -143,6 +143,11 @@ describe('restoring a session from the conversation view', () => {
         expect(floating!.className).toContain('absolute')
         expect(floating!.className).toContain('pointer-events-none')
         expect(floating!.className).toContain('left-1/2')
+        // The thread's own status pill (the one that says it is pulling the latest messages), not a banner of its own.
+        for (const token of ['border-[var(--app-border)]', 'bg-[var(--app-bg)]/90', 'text-[var(--app-hint)]', 'top-3']) {
+            expect(floating!.className.split(/\s+/)).toContain(token)
+        }
+        expect(floating!.className).not.toContain('app-banner')
         expect(floating!.querySelector('.animate-spin')).not.toBeNull()
         expect(document.activeElement).not.toBe(floating)
         expect(statusText()).toBe('restoring')

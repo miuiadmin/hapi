@@ -1940,7 +1940,7 @@ describe('session switch tail anchoring', () => {
 })
 
 describe('cached re-entry tail-sync indicator', () => {
-    function renderCatchUpThread(options: { isCatchingUpFromCache: boolean; rawMessagesCount: number }) {
+    function renderCatchUpThread(options: { isCatchingUpFromCache: boolean; rawMessagesCount: number; restoring?: boolean }) {
         const queryClient = new QueryClient({
             defaultOptions: { queries: { retry: false } }
         })
@@ -1957,6 +1957,7 @@ describe('cached re-entry tail-sync indicator', () => {
                         onViewModeChange={vi.fn()}
                         isSyncingTail={options.isCatchingUpFromCache}
                         isCatchingUpFromCache={options.isCatchingUpFromCache}
+                        restoring={options.restoring}
                         messagesWarning={null}
                         hasMoreMessages={false}
                         isLoadingMoreMessages={false}
@@ -1989,6 +1990,30 @@ describe('cached re-entry tail-sync indicator', () => {
         expect(pill).not.toBeNull()
         expect(pill?.getAttribute('role')).toBe('status')
         expect((pill?.textContent ?? '').trim().length).toBeGreaterThan(0)
+    })
+
+    // One style for every "the thread is working on it" notice: a session being restored says so in
+    // the same pill, in the same place, as the thread pulling the latest messages.
+    it('says "restoring" in the same pill, in the same place, as the fetch of the latest messages', () => {
+        const catchingUp = renderCatchUpThread({ isCatchingUpFromCache: true, rawMessagesCount: 3 })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        const fetchPill = queryIndicator(catchingUp.container)
+        expect(fetchPill).not.toBeNull()
+
+        const restoring = renderCatchUpThread({ isCatchingUpFromCache: true, rawMessagesCount: 3, restoring: true })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        const restoringPill = restoring.container.querySelector<HTMLElement>('[data-testid="session-restoring-banner"]')
+        expect(restoringPill).not.toBeNull()
+        expect(restoringPill!.className).toBe(fetchPill!.className)
+        expect(restoringPill!.getAttribute('role')).toBe('status')
+        expect(restoringPill!.querySelectorAll('.animate-spin')).toHaveLength(1)
+        // Only one pill at a time: restoring is what the user is waiting on.
+        expect(queryIndicator(restoring.container)).toBeNull()
+        expect(restoring.container.querySelectorAll('[role="status"][aria-live="polite"].pointer-events-none')).toHaveLength(1)
     })
 
     it('hides the pill once the catch-up fetch settles', () => {
