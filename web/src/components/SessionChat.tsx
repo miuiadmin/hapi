@@ -49,6 +49,7 @@ import { codexModelAdvertisesFastTier, getEffectiveCodexServiceTier } from '@/co
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { QueuedMessageActionsProvider } from '@/components/AssistantChat/queuedMessageActions'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { SessionTasksBar } from '@/components/AssistantChat/SessionTasksBar'
 import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
@@ -728,6 +729,10 @@ type SessionChatProps = {
     onViewModeChange: (mode: 'tail' | 'history') => void
     onJumpToTail: () => void
     onRetryMessage?: (localId: string) => void
+    /** Stops the send of a message whose POST is still in flight (useSendMessage). */
+    onCancelSending?: (localId: string) => 'dropped' | 'aborted' | false
+    /** Whether the composer has to wait before the next send; defaults to `isSending`. */
+    composerLocked?: boolean
     autocompleteSuggestions?: SuggestionHandler
     availableSlashCommands?: readonly SlashCommand[]
     // The latest send the hub rejected (4xx/5xx/network).  When set, the
@@ -1871,10 +1876,10 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
         setOutlineOpen(false)
     }, [props.session.id])
 
-    // Exclude user messages that haven't been invoked yet — those appear in the
-    // QueuedMessagesBar above the composer, not in the thread timeline. The
-    // `isQueuedForInvocation` predicate is shared with the window store and the
-    // floating bar so the three views never disagree about queued state.
+    // The thread holds what the agent already has. A user message it does not have yet is not a
+    // thread message: HappyThread draws those after the thread, in the same list, from the moment
+    // they leave the composer (see PendingUserMessages). The `isQueuedForInvocation` predicate is
+    // shared with the window store, so the two views never disagree about which rows those are.
     const visibleMessages = useMemo(
         () => props.messages.filter((m) => !isQueuedForInvocation(m)),
         [props.messages]
@@ -2441,7 +2446,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
         viewMode: props.viewMode,
         isSyncingTail: props.isSyncingTail,
         isLoadingMore: props.isLoadingMoreMessages,
-        isSending: props.isSending,
+        isSending: props.composerLocked ?? props.isSending,
         isRunning: props.session.thinking || hasRunningChildAgent,
         onSendMessage: handleSend,
         attachmentOrderRef,
@@ -2534,6 +2539,28 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
             ) : null}
 
             <AssistantRuntimeProvider runtime={runtime}>
+            {/* What can still be done with a message the agent does not have yet, shared by the
+                thread's waiting bubble and the queue panel above the composer. It reads the composer,
+                so it sits inside the runtime. */}
+            <QueuedMessageActionsProvider
+                api={props.api}
+                sessionId={props.session.id}
+                pendingSchedule={pendingSchedule}
+                pendingScheduleRevision={pendingScheduleRevision}
+                onEdit={({ pendingSchedule: restored }) => {
+                    // Restore the schedule so the clock button re-activates
+                    updatePendingSchedule(restored)
+                }}
+                deliveryActive={props.session.active && props.session.thinking}
+                canSteer={props.session.active && props.session.thinking
+                    && hasActiveSteeringTurn(props.session)
+                    && !controlledByUser}
+                sharedNative={props.session.metadata?.capabilities?.concurrentClients === true}
+                compactionPendingMessageIds={agentFlavor === 'codex' && props.session.active
+                    && props.session.agentState?.steeringActive === true
+                    ? props.session.agentState.codexCompactionPendingMessageIds ?? undefined : undefined}
+                onCancelSending={props.onCancelSending}
+            >
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
                 {forkFlow.preview ? (
                     <ForkPreviewDialog
@@ -2747,9 +2774,6 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                             <SessionTasksBar api={props.api} sessionId={props.session.id} />
                             <QueuedMessagesBar
                                 sessionId={props.session.id}
-                                compactionPendingMessageIds={agentFlavor === 'codex' && props.session.active
-                                    && props.session.agentState?.steeringActive === true
-                                    ? props.session.agentState.codexCompactionPendingMessageIds ?? undefined : undefined}
                                 api={props.api}
                                 pendingSchedule={pendingSchedule}
                                 pendingScheduleRevision={pendingScheduleRevision}
@@ -2757,11 +2781,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
                                 }}
-                                deliveryActive={props.session.active && props.session.thinking}
-                                canSteer={props.session.active && props.session.thinking
-                                    && hasActiveSteeringTurn(props.session)
-                                    && !controlledByUser}
-                                sharedNative={props.session.metadata?.capabilities?.concurrentClients === true}
+                                onCancelSending={props.onCancelSending}
                             />
                         </div>
 
@@ -2779,7 +2799,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                         }}
                         attachmentOrderRef={attachmentOrderRef}
                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
-                        disabled={props.isSending}
+                        disabled={props.composerLocked ?? props.isSending}
                         pendingSchedule={pendingSchedule}
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}
@@ -3032,6 +3052,7 @@ const SessionChatInner = memo(function SessionChatInner(props: SessionChatProps)
                     </div>
                     </div>
                 </DragDropZone>
+            </QueuedMessageActionsProvider>
             </AssistantRuntimeProvider>
             </div>
 

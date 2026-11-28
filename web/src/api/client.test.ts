@@ -53,6 +53,24 @@ describe('ApiClient error mapping', () => {
         await rejected
     })
 
+    it('passes cancellation through to a send, and sends nothing of the kind otherwise', async () => {
+        const controller = new AbortController()
+        fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+            init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        }))
+        const api = new ApiClient('test-token')
+        const request = api.sendMessage('session-1', 'never mind', 'local-1', undefined, null, 'queue', { signal: controller.signal })
+        const rejected = expect(request).rejects.toMatchObject({ name: 'AbortError' })
+        expect(String(fetchMock.mock.calls[0][0])).toBe('/api/sessions/session-1/messages')
+        expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+        controller.abort()
+        await rejected
+
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+        await api.sendMessage('session-1', 'goes through', 'local-2')
+        expect(fetchMock.mock.calls[1][1].signal).toBeUndefined()
+    })
+
     it('prefers the stable `code` field over the human-readable `error` message in ApiError.code', async () => {
         // Match the shape /sessions/:id/reopen actually returns on a 503.
         fetchMock.mockResolvedValueOnce(

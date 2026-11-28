@@ -71,9 +71,13 @@ describe('UserBubbleContent', () => {
         expect(formatDirectiveLabel('$DeEp-INTERVIEW')).toBe('DeEp INTERVIEW')
     })
 
-    it('uses the shadowless queued bubble styling', () => {
-        const className = getUserBubbleClassName('queued')
-        expect(className).toContain('shadow-none')
-        expect(className).toContain('opacity-60')
+    it('uses the shadowless bubble styling for every send state', () => {
+        for (const status of [undefined, 'queued', 'sending', 'failed'] as const) {
+            const className = getUserBubbleClassName(status)
+            expect(className).toContain('shadow-none')
+            // The status row under the text says a message is still waiting; the bubble itself keeps its strength.
+            expect(className).not.toMatch(/\bopacity-/)
+        }
+        expect(getUserBubbleClassName('queued')).toBe(getUserBubbleClassName())
     })
 })

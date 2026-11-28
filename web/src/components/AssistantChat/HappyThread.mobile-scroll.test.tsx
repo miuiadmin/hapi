@@ -35,7 +35,7 @@ vi.mock('@assistant-ui/react', async (importOriginal) => {
 
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import type { ApiClient } from '@/api/client'
-import type { OlderLoadOutcome } from '@/lib/message-window-store'
+import { appendOptimisticMessage, clearMessageWindow, markMessagesConsumed, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { queryKeys } from '@/lib/query-keys'
 import type { Session } from '@/types/api'
 
@@ -2032,3 +2032,124 @@ describe('cached re-entry tail-sync indicator', () => {
         expect(queryIndicator(container)).toBeNull()
     })
 })
+
+describe('arrival of a message just sent', () => {
+    const sessionId = 'mobile-scroll-session'
+    type Animated = { element: Element; keyframes: Keyframe[] }
+    let played: Animated[]
+    let reduceMotion: boolean
+    const originalAnimate = Object.getOwnPropertyDescriptor(Element.prototype, 'animate')
+    const originalRect = Object.getOwnPropertyDescriptor(Element.prototype, 'getBoundingClientRect')
+    const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+
+    beforeEach(() => {
+        played = []
+        reduceMotion = false
+        Object.defineProperty(Element.prototype, 'animate', {
+            configurable: true,
+            writable: true,
+            value(this: Element, keyframes: Keyframe[]) {
+                played.push({ element: this, keyframes })
+                return { finished: Promise.resolve(), cancel: vi.fn() } as unknown as Animation
+            },
+        })
+        // jsdom lays nothing out; give every element a plausible box.
+        Object.defineProperty(Element.prototype, 'getBoundingClientRect', {
+            configurable: true,
+            writable: true,
+            value: () => ({ top: 0, bottom: 60, left: 0, right: 300, width: 300, height: 60, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect,
+        })
+        Object.defineProperty(window, 'matchMedia', {
+            configurable: true,
+            writable: true,
+            value: (query: string) => ({ matches: /reduced-motion/.test(query) && reduceMotion, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+        })
+        clearMessageWindow(sessionId)
+    })
+
+    afterEach(() => {
+        clearMessageWindow(sessionId)
+        for (const [target, key, descriptor] of [
+            [Element.prototype, 'animate', originalAnimate],
+            [Element.prototype, 'getBoundingClientRect', originalRect],
+            [window, 'matchMedia', originalMatchMedia],
+        ] as const) {
+            if (descriptor) Object.defineProperty(target, key, descriptor)
+            else Reflect.deleteProperty(target, key)
+        }
+    })
+
+    const sendNow = (localId: string, createdAt: number) => {
+        appendOptimisticMessage(sessionId, {
+            id: localId, seq: null, localId, createdAt, invokedAt: null, scheduledAt: null, status: 'sending', originalText: 'just sent',
+            content: { role: 'user', content: { type: 'text', text: 'just sent' } },
+        } as never)
+    }
+
+    it('plays once for the row that just arrived, after the tail has followed', () => {
+        const view = renderThread()
+        expect(played).toHaveLength(0)
+
+        // A waiting row only arrives with a new window, which is what the thread is keyed on.
+        act(() => { sendNow('local-new', 2_000) })
+        const list = view.container.querySelector('.happy-thread-messages')!
+        const row = list.lastElementChild as HTMLElement
+        expect(row).toHaveAttribute('data-hapi-local-send', 'true')
+        expect(row).toHaveAttribute('data-hapi-send-phase', 'sending')
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
+        view.rerenderThread(0)
+
+        // One row's worth of glide for the whole list, then the bubble settling into place.
+        expect(played.map((entry) => entry.element)).toEqual([list, row.querySelector('.happy-user-bubble')])
+        const glide = played[0]!.keyframes as Keyframe[]
+        expect((glide[0] as CSSStyleLike).transform).toBe('translateY(72px)')
+        expect((glide[1] as CSSStyleLike).transform).toBe('translateY(0)')
+
+        // Another commit, with or without a new window behind it, does not play it again.
+        act(() => { view.rerenderThread(1) })
+        searchTargetTestState.extras = { messagesVersion: 3, historyVersion: 0 }
+        view.rerenderThread(1)
+        expect(played).toHaveLength(2)
+    })
+
+    it('plays for the next one when it takes the place of the one before it, and only then', () => {
+        // Two were already waiting when the conversation opened: the first is in the thread, the
+        // second behind it in the queue panel. Neither arrives.
+        sendNow('local-first', 1_000)
+        sendNow('local-second', 2_000)
+        const view = renderThread()
+        const list = view.container.querySelector('.happy-thread-messages')!
+        expect(list.lastElementChild).not.toHaveAttribute('data-hapi-local-send')
+        expect(played).toHaveLength(0)
+
+        // The agent takes the first: the second leaves the panel and takes its place. That is its arrival.
+        act(() => { markMessagesConsumed(sessionId, ['local-first'], 9_000) })
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
+        view.rerenderThread(0)
+        expect(played).toHaveLength(2)
+        expect(played.map((entry) => entry.element)).toEqual([list, list.lastElementChild!.querySelector('.happy-user-bubble')])
+
+        act(() => { view.rerenderThread(1) })
+        expect(played).toHaveLength(2)
+    })
+
+    it('plays nothing for what was already waiting when the conversation opened', () => {
+        sendNow('local-waiting', 1_000)
+        renderThread()
+        const list = document.querySelector('.happy-thread-messages')!
+        expect(list.lastElementChild).not.toHaveAttribute('data-hapi-local-send')
+        expect(played).toHaveLength(0)
+    })
+
+    it('plays nothing when the page is asked to reduce motion', () => {
+        reduceMotion = true
+        const view = renderThread()
+        act(() => { sendNow('local-new', 2_000) })
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
+        view.rerenderThread(0)
+        expect(view.container.querySelector('.happy-thread-messages')!.lastElementChild).toHaveAttribute('data-hapi-local-send', 'true')
+        expect(played).toHaveLength(0)
+    })
+})
+
+type CSSStyleLike = { transform?: string }

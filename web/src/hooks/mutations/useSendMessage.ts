@@ -1,14 +1,17 @@
 import { useMutation } from '@tanstack/react-query'
-import { useCallback, useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ApiError, apiErrorMessage, type ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
 import {
     appendOptimisticMessage,
     getMessageWindowState,
     removeOptimisticMessage,
+    subscribeMessageWindow,
     updateMessageStatus,
 } from '@/lib/message-window-store'
+import { isSendAborted, markSendAborted, subscribeAbortedSends } from '@/lib/abortedSends'
+import { clearSendFailure, noteSendFailure } from '@/lib/sendFailures'
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { getRetryDeliveryMode } from '@/lib/messageDelivery'
@@ -24,6 +27,8 @@ type SendMessageInput = {
     attachments?: AttachmentMetadata[]
     scheduledAt?: number | null
     deliveryMode: MessageDeliveryMode
+    /** The session was live when the send started, so no resume step ran. */
+    live: boolean
 }
 
 export type SendMessageAcceptance = {
@@ -65,11 +70,11 @@ const SEND_WATCHDOG_MS = 10_000
  *   recovery retains queue, while turn-scoped steer safely degrades to queue
  *   because the original Pi generation can no longer be proven.
  *
- * Only fired for text-only sends.  Sends with attachments fall back to
- * the legacy failed-bubble UX (the optimistic row stays as `failed` and
- * the user retries via the in-thread retry button); the composer-restore
- * path can't reinstate uploaded attachment metadata, so doing the swap
- * for attachment sends would silently drop the attachments.
+ * Fired for sends of an inactive session (text and attachments alike when the
+ * session was live and the hub answered `session_inactive`, attachments
+ * otherwise) and for a resume that failed before any POST. A failed send to a
+ * live session does not come through here: its row stays in the thread as a
+ * failed bubble with a retry (see `isActive`).
  */
 export type SendErrorInfo = {
     sessionId: string
@@ -108,6 +113,22 @@ type UseSendMessageOptions = {
     onSuccess?: (sessionId: string) => void
     onError?: (info: SendErrorInfo) => void
     isSessionThinking?: boolean
+    /**
+     * The session is live, so a send needs no resume step and the hub is the
+     * only thing between the composer and the thread. That changes three things:
+     *
+     * - The composer is never locked by a POST in flight (`isComposerLocked`),
+     *   so the next message can be typed straight away. Every row goes up the
+     *   moment it is sent, and one message is on its way to the agent at a
+     *   time: the next one is posted once the agent has taken the one before
+     *   it (see SEND_ORDERING_GRACE_MS for the one limit on that wait).
+     * - A send the user cancels while its POST is in flight is stopped here
+     *   (`cancelSending`).
+     * - A failed send keeps its row in the thread as a failed bubble with a
+     *   retry, instead of handing its text back to the composer: by then the
+     *   composer may well hold the next message.
+     */
+    isActive?: boolean
 }
 
 /** Create an optimistic message for display. Extracted as an extension point
@@ -187,6 +208,44 @@ function getMessageDeliveryMode(message: DecryptedMessage): MessageDeliveryMode 
         : 'queue'
 }
 
+/**
+ * How long a message typed behind another one waits for the agent to take that
+ * other one before it is posted anyway.
+ *
+ * The CLI hands the agent every prompt waiting in its queue as one turn. Posted
+ * back to back, two quick messages can both be in that queue before the turn
+ * starts, and reach the agent as a single prompt. So the second waits until the
+ * first is taken. It does not wait for ever: with the agent busy on an earlier
+ * turn the first may not be taken for minutes, and a message that exists only
+ * on this device is one closed tab from gone. After this long it is posted and
+ * waits in the hub's queue instead, as it always did.
+ */
+export const SEND_ORDERING_GRACE_MS = 2_000
+
+/** A send due at a time still ahead: it is not on its way to the agent now. */
+function isScheduledAhead(input: SendMessageInput): boolean {
+    return input.scheduledAt != null && input.scheduledAt > Date.now()
+}
+
+/**
+ * Whether nothing more waits on the message at the front of the order: the agent
+ * took it, it can never be given, or it was dropped or cancelled and the hub has
+ * answered for the cancel. A cancel in flight is not settled until then, since
+ * the row the device dropped may still be on its way to the hub.
+ */
+function frontIsSettled(front: { sessionId: string; localId: string }): boolean {
+    const row = findMessageByLocalId(front.sessionId, front.localId)
+    if (row) {
+        return row.invokedAt != null || row.status === 'failed'
+    }
+    return !isSendAborted(front.sessionId, front.localId)
+}
+
+/** The hub refused the send because the session is no longer live. */
+function isSessionInactiveError(error: unknown): boolean {
+    return error instanceof ApiError && error.status === 409 && error.code === 'session_inactive'
+}
+
 export function useSendMessage(
     api: ApiClient | null,
     sessionId: string | null,
@@ -205,33 +264,75 @@ export function useSendMessage(
         deliveryMode?: MessageDeliveryMode,
     ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
+    /**
+     * Stop the send of this local id.
+     *
+     * - `dropped`: it was typed behind another send and never left this device.
+     * - `aborted`: its POST was on the wire. The row goes at once; whether the hub was already
+     *   holding the request is settled afterwards (useAbortedSendReconciler).
+     * - `false`: there was no such send to stop.
+     */
+    cancelSending: (localId: string) => 'dropped' | 'aborted' | false
+    /** A POST is on the wire or a resume is running. */
     isSending: boolean
+    /**
+     * Whether the composer has to wait: a resume is running, or a POST is in
+     * flight for a session that is not live. A live session never locks it
+     * (see `isActive`).
+     */
+    isComposerLocked: boolean
 } {
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
     const resolveGuardRef = useRef(false)
-    /** Local ids whose retry is fetching a stripped image preview before re-sending. */
-    const hydratingRetriesRef = useRef(new Set<string>())
+    /** Retries fetching a stripped image preview before re-sending: local id → session id. */
+    const hydratingRetriesRef = useRef(new Map<string, string>())
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
+    const isActiveRef = useRef(options?.isActive ?? false)
+    isActiveRef.current = options?.isActive === true
+    /** The POST on the wire, if any. */
+    const inflightRef = useRef<{ sessionId: string; localId: string; controller: AbortController } | null>(null)
+    /** Sends typed and not posted yet, in the order they were typed. */
+    const sendQueueRef = useRef<SendMessageInput[]>([])
+    /** The message the queue is waiting on the agent to take before the next one is posted. */
+    const frontRef = useRef<{ sessionId: string; localId: string } | null>(null)
+    const frontCleanupRef = useRef<(() => void) | null>(null)
+    /** Local ids handed to the mutation and not settled yet. */
+    const postingRef = useRef(new Map<string, string>())
+    /** Sends the user cancelled in flight; their settlement has nothing left to do. */
+    const userAbortedRef = useRef(new Set<string>())
+    /** Sends handed to the mutation whose request has not started yet (it starts a few ticks later). */
+    const startingRef = useRef(new Map<string, SendMessageInput>())
 
     const mutation = useMutation({
         mutationFn: async (input: SendMessageInput) => {
             if (!api) {
                 throw new Error('API unavailable')
             }
-            await api.sendMessage(
-                input.sessionId,
-                input.text,
-                input.localId,
-                input.attachments,
-                input.scheduledAt,
-                input.deliveryMode,
-            )
+            const controller = new AbortController()
+            inflightRef.current = { sessionId: input.sessionId, localId: input.localId, controller }
+            startingRef.current.delete(input.localId)
+            // Cancelled in the ticks between being handed over and its request starting.
+            if (userAbortedRef.current.has(input.localId)) controller.abort()
+            try {
+                await api.sendMessage(
+                    input.sessionId,
+                    input.text,
+                    input.localId,
+                    input.attachments,
+                    input.scheduledAt,
+                    input.deliveryMode,
+                    { signal: controller.signal },
+                )
+            } finally {
+                if (inflightRef.current?.controller === controller) {
+                    inflightRef.current = null
+                }
+            }
         },
         onMutate: async (input) => {
             const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const
-            appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, 'sending'))
             // Observation only (send_stall): reuses this exact state machine —
             // no second timer. The box records whether the watchdog already
             // fired so a late settlement reports as late-success/late-error.
@@ -276,9 +377,17 @@ export function useSendMessage(
             // first-agent-event clock for this session's turn.
             noteSendSettled(input.sessionId)
             options?.onSuccess?.(input.sessionId)
+            // The wire is free; the next one typed behind this goes out once the agent has taken it.
+            settleAfterPost(input)
         },
         onError: (error, input, context) => {
             clearTimeout(context?.watchdog)
+            if (userAbortedRef.current.delete(input.localId)) {
+                // The user cancelled this send: its row is gone and there is
+                // nothing to restore or to report.
+                settleAfterDrop(input)
+                return
+            }
             if (context?.watchdogFired.current) {
                 try {
                     telemetryClient.capture('diag', 'send_stall', {
@@ -289,25 +398,33 @@ export function useSendMessage(
                     // fail-silent
                 }
             }
-            // Attachment sends keep the legacy failed-bubble UX: the
-            // composer-restore path can only re-seat text + scheduledAt,
-            // not the uploaded attachment metadata.  Removing the row
-            // would destroy the attachment preview AND leave the operator
-            // with no retry surface for it.  Keep the row as `failed` so
-            // the in-thread retry button can re-fire the send (with
-            // attachments) via retryMessage.
-            if (input.attachments && input.attachments.length > 0) {
+            // These stay in the thread as a failed bubble, so the user retries
+            // from the row:
+            // - sends with attachments: the composer-restore path can only
+            //   re-seat text + scheduledAt, not the uploaded attachment
+            //   metadata. Removing the row would destroy the attachment
+            //   preview AND leave the operator with no retry surface for it;
+            // - sends to a live session: the composer is not locked while a
+            //   POST is in flight, so it may hold the next message by now, and
+            //   a restore would have to drop either that draft or this text.
+            //   The one exception is the hub answering `session_inactive`: the
+            //   row cannot be retried until the session is reopened, so that
+            //   one goes back to the composer with the reopen affordance.
+            if ((input.attachments && input.attachments.length > 0) || (input.live && !isSessionInactiveError(error))) {
                 updateMessageStatus(input.sessionId, input.localId, 'failed')
+                // What the hub said, in its own words, without the envelope.
+                const reason = error instanceof Error ? apiErrorMessage(error, error.message).trim() : ''
+                if (reason) noteSendFailure(input.sessionId, input.localId, reason)
                 haptic.notification('error')
+                settleAfterDrop(input)
                 return
             }
-            // Text-only sends use the composer-restore path: drop the
-            // optimistic row from the thread (otherwise the failed bubble
-            // would visually duplicate the same text the composer is
-            // about to restore, and the operator could stack a stale
-            // failed turn next to a fresh send) and hand the text +
-            // scheduledAt + sessionId back so the route can put both
-            // back into the composer keyed to the right session.
+            // The composer-restore path: drop the optimistic row from the
+            // thread (otherwise the failed bubble would visually duplicate the
+            // same text the composer is about to restore, and the operator
+            // could stack a stale failed turn next to a fresh send) and hand
+            // the text + scheduledAt + sessionId back so the route can put
+            // both back into the composer keyed to the right session.
             removeOptimisticMessage(input.sessionId, input.localId)
             haptic.notification('error')
             options?.onError?.({
@@ -318,6 +435,7 @@ export function useSendMessage(
                 deliveryMode: input.deliveryMode,
                 mutationStarted: true,
             })
+            settleAfterDrop(input)
         },
     })
 
@@ -328,6 +446,105 @@ export function useSendMessage(
     optionsRef.current = options
     const mutationRef = useRef(mutation)
     mutationRef.current = mutation
+
+    const startSend = useCallback((input: SendMessageInput) => {
+        postingRef.current.set(input.localId, input.sessionId)
+        startingRef.current.set(input.localId, input)
+        mutationRef.current.mutate(input)
+    }, [])
+
+    /** Posts the next send that may go, if the wire is free. */
+    const pump = useCallback(() => {
+        if (postingRef.current.size > 0) return
+        const front = frontRef.current
+        const index = sendQueueRef.current.findIndex((input) => front === null || isScheduledAhead(input))
+        if (index === -1) return
+        const [input] = sendQueueRef.current.splice(index, 1)
+        startSend(input)
+    }, [startSend])
+    const pumpRef = useRef(pump)
+    pumpRef.current = pump
+
+    /** The front has been settled: nothing waits on it any more, so the queue moves. */
+    const releaseFront = useCallback(() => {
+        frontCleanupRef.current?.()
+        frontCleanupRef.current = null
+        frontRef.current = null
+        pumpRef.current()
+    }, [])
+    const releaseFrontRef = useRef(releaseFront)
+    releaseFrontRef.current = releaseFront
+
+    /**
+     * A message has reached the hub. The next one typed behind it now waits until
+     * the agent has taken this one (see SEND_ORDERING_GRACE_MS): the window says
+     * when that happens, the aborted-sends ledger says when a cancel of it is
+     * answered, and the timer says when to stop waiting.
+     */
+    const holdTheQueueFor = useCallback((input: SendMessageInput) => {
+        if (!input.live || isScheduledAhead(input)) {
+            pumpRef.current()
+            return
+        }
+        const front = { sessionId: input.sessionId, localId: input.localId }
+        frontRef.current = front
+        let done = false
+        const finish = () => {
+            if (done) return
+            done = true
+            unsubscribeWindow()
+            unsubscribeAborted()
+            clearTimeout(timer)
+            releaseFrontRef.current()
+        }
+        const check = () => {
+            if (frontIsSettled(front)) finish()
+        }
+        const unsubscribeWindow = subscribeMessageWindow(front.sessionId, check)
+        const unsubscribeAborted = subscribeAbortedSends(check)
+        const timer = setTimeout(finish, SEND_ORDERING_GRACE_MS)
+        frontCleanupRef.current = finish
+        // The agent may have taken it while the hub's answer was still on its way back.
+        check()
+        pumpRef.current()
+    }, [])
+
+    /** What follows a send that reached the hub: the next one waits for the agent to take it. */
+    const settleAfterPost = useCallback((input: SendMessageInput) => {
+        postingRef.current.delete(input.localId)
+        startingRef.current.delete(input.localId)
+        holdTheQueueFor(input)
+    }, [holdTheQueueFor])
+
+    /** What follows a send that did not reach the hub, or was stopped: nothing waits on it. */
+    const settleAfterDrop = useCallback((input: SendMessageInput) => {
+        postingRef.current.delete(input.localId)
+        startingRef.current.delete(input.localId)
+        pumpRef.current()
+    }, [])
+
+    // Leaving the page must not strand what was typed behind a slow send: what is
+    // still queued goes out at once, in order.
+    useEffect(() => () => {
+        frontCleanupRef.current?.()
+        frontCleanupRef.current = null
+        frontRef.current = null
+        const queued = sendQueueRef.current
+        sendQueueRef.current = []
+        for (const input of queued) startSend(input)
+    }, [startSend])
+
+    /** A send leaves this device: its row goes up at once, its POST as soon as it may go. */
+    const dispatchSend = useCallback((input: SendMessageInput) => {
+        clearSendFailure(input.sessionId, input.localId)
+        // The row goes up here and now, before anything is asked of the network layer: a message
+        // the user sent is in the conversation from this moment. (A retry keeps the row it already has.)
+        if (findMessageByLocalId(input.sessionId, input.localId) === null) {
+            appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, 'sending'))
+        }
+        sendQueueRef.current.push(input)
+        pumpRef.current()
+    }, [])
 
     const sendMessage = useCallback(async (
         text: string,
@@ -347,7 +564,9 @@ export function useSendMessage(
             haptic.notification('error')
             return false
         }
-        if (mutation.isPending || resolveGuardRef.current) {
+        const live = options?.isActive === true
+        // A live session queues behind a POST in flight instead of being refused.
+        if ((!live && mutation.isPending) || resolveGuardRef.current) {
             options?.onBlocked?.('pending')
             return false
         }
@@ -355,7 +574,7 @@ export function useSendMessage(
         const createdAt = Date.now()
         let targetSessionId = sessionId
         let sendAttachments = attachments
-        if (options?.resolveSessionId) {
+        if (!live && options?.resolveSessionId) {
             resolveGuardRef.current = true
             setIsResolving(true)
             try {
@@ -404,7 +623,7 @@ export function useSendMessage(
                 setIsResolving(false)
             }
         }
-        mutation.mutate({
+        dispatchSend({
             sessionId: targetSessionId,
             text,
             localId,
@@ -412,9 +631,44 @@ export function useSendMessage(
             attachments: sendAttachments,
             scheduledAt,
             deliveryMode,
+            live,
         })
         return { attemptId: localId }
-    }, [api, sessionId, haptic])
+    }, [api, sessionId, haptic, dispatchSend])
+
+    const cancelSending = useCallback((localId: string): 'dropped' | 'aborted' | false => {
+        // A retry still fetching a dropped image preview has not started either: it goes back to
+        // being the failed row it was.
+        const hydratingSession = hydratingRetriesRef.current.get(localId)
+        if (hydratingSession !== undefined) {
+            hydratingRetriesRef.current.delete(localId)
+            userAbortedRef.current.add(localId)
+            updateMessageStatus(hydratingSession, localId, 'failed')
+            return 'dropped'
+        }
+        const queuedIndex = sendQueueRef.current.findIndex((item) => item.localId === localId)
+        if (queuedIndex !== -1) {
+            // Typed behind another send and not posted yet: nothing of it has left this device.
+            const [queued] = sendQueueRef.current.splice(queuedIndex, 1)
+            clearSendFailure(queued.sessionId, localId)
+            removeOptimisticMessage(queued.sessionId, localId)
+            return 'dropped'
+        }
+        // Handed to the mutation, request not out the door yet: the same cancel, and the request
+        // goes out already aborted.
+        const starting = inflightRef.current?.localId === localId ? inflightRef.current : startingRef.current.has(localId)
+            ? { sessionId: startingRef.current.get(localId)!.sessionId }
+            : null
+        if (!starting) return false
+        userAbortedRef.current.add(localId)
+        // The row goes now. Aborting the request stops the wait here only; whether the hub was
+        // already holding it is settled afterwards, and its echo cancelled if it turns up.
+        markSendAborted(starting.sessionId, localId)
+        clearSendFailure(starting.sessionId, localId)
+        removeOptimisticMessage(starting.sessionId, localId)
+        inflightRef.current?.controller.abort()
+        return 'aborted'
+    }, [])
 
     const retryMessage = useCallback((localId: string): boolean => {
         const options = optionsRef.current
@@ -429,7 +683,8 @@ export function useSendMessage(
             haptic.notification('error')
             return false
         }
-        if (mutation.isPending || resolveGuardRef.current || hydratingRetriesRef.current.has(localId)) {
+        const live = options?.isActive === true
+        if ((!live && mutation.isPending) || resolveGuardRef.current || hydratingRetriesRef.current.has(localId)) {
             options?.onBlocked?.('pending')
             return false
         }
@@ -438,13 +693,16 @@ export function useSendMessage(
         if (!message?.originalText) return false
 
         const attachments = getMessageAttachments(message)
+        // A new attempt outruns an earlier cancel of this same row.
+        userAbortedRef.current.delete(localId)
         updateMessageStatus(sessionId, localId, 'sending')
 
         // Captured for the deferred retry below (narrowing does not cross into it).
         const session = sessionId
         const text = message.originalText
         const retry = (withAttachments: AttachmentMetadata[] | undefined) => {
-            mutation.mutate({
+            if (userAbortedRef.current.has(localId)) return
+            dispatchSend({
                 sessionId: session,
                 text,
                 localId,
@@ -452,6 +710,7 @@ export function useSendMessage(
                 attachments: withAttachments,
                 scheduledAt: message.scheduledAt ?? null,
                 deliveryMode: getRetryDeliveryMode(getMessageDeliveryMode(message)),
+                live,
             })
         }
 
@@ -463,16 +722,18 @@ export function useSendMessage(
         // Message pages leave large image previews out, and the CLI rebuilds
         // the file from `previewUrl`: fetch it back before the retry goes out,
         // or the retried send would drop the screenshot.
-        hydratingRetriesRef.current.add(localId)
+        hydratingRetriesRef.current.set(localId, session)
         void rehydrateAttachmentPreviews(api, session, message.id ?? localId, attachments)
             .then(retry)
             .finally(() => hydratingRetriesRef.current.delete(localId))
         return true
-    }, [api, sessionId, haptic])
+    }, [api, sessionId, haptic, dispatchSend])
 
     return {
         sendMessage,
         retryMessage,
+        cancelSending,
         isSending: mutation.isPending || isResolving,
+        isComposerLocked: isResolving || (mutation.isPending && !isActiveRef.current),
     }
 }

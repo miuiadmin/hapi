@@ -45,6 +45,7 @@ import { buildSessionMentionSuggestions } from '@/lib/sessionMentionSuggestions'
 import { createDeferredSuggestions } from '@/lib/deferredSuggestions'
 import type { Suggestion, SuggestionRequestContext } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
+import { useAbortedSendReconciler } from '@/hooks/mutations/useAbortedSendReconciler'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import { ApiError } from '@/api/client'
 import type { MessageDeliveryMode } from '@hapi/protocol'
@@ -846,9 +847,14 @@ function SessionPage() {
     const {
         sendMessage,
         retryMessage,
+        cancelSending,
         isSending,
+        isComposerLocked,
     } = useSendMessage(api, sessionId, {
         isSessionThinking: session?.thinking ?? false,
+        // A live session posts its sends in order without locking the composer, keeps a failed send
+        // in the thread, and can stop a send that is still in flight.
+        isActive: session?.active === true,
         onSuccess: (sentSessionId) => {
             clearDraftsAfterSend(sentSessionId, sessionId)
             // 中文注释：一旦用户已经在 Hapi 内继续这个 Codex 会话，就清除"刚从 Codex 导入"的标记。
@@ -914,6 +920,8 @@ function SessionPage() {
             // 'no-session' and 'pending' don't need toast - either invalid state or expected behavior
         }
     })
+    // A send cancelled in flight may still land on the hub: its row is cancelled when it shows up.
+    useAbortedSendReconciler(api, sessionId)
 
     // Get agent type from session metadata for slash commands
     const agentType = session?.metadata?.flavor ?? 'claude'
@@ -1103,6 +1111,7 @@ function SessionPage() {
             cachedTailFirstFrame={messagesCachedTailFirstFrame}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
+            composerLocked={isComposerLocked}
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}
@@ -1120,6 +1129,7 @@ function SessionPage() {
             onViewModeChange={setViewMode}
             onJumpToTail={jumpToTail}
             onRetryMessage={retryMessage}
+            onCancelSending={cancelSending}
             autocompleteSuggestions={getAutocompleteSuggestions}
             availableSlashCommands={slashCommands}
             sendError={sendError}

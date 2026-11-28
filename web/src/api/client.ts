@@ -1137,9 +1137,13 @@ export class ApiClient {
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
+        options?: { signal?: AbortSignal },
     ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
             method: 'POST',
+            // Aborting the fetch stops the wait on this device only: the hub may still be
+            // holding the request. What happens next is useSendMessage's to settle.
+            signal: options?.signal,
             body: JSON.stringify({
                 text,
                 localId: localId ?? undefined,
@@ -1294,9 +1298,11 @@ export class ApiClient {
     }
 
     async cancelMessage(sessionId: string, messageId: string): Promise<CancelMessageResponse> {
+        // `keepalive`: a cancel tapped just before the page is closed must still reach the hub,
+        // or a message the user watched disappear goes out after all.
         const response = await this.request(
             `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`,
-            { method: 'DELETE' }
+            { method: 'DELETE', keepalive: true }
         )
         return response as CancelMessageResponse
     }

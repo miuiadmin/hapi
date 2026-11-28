@@ -44,7 +44,6 @@ vi.mock('@/components/AssistantChat/context', () => ({
     useHappyChatContext: () => ctx, useOptionalHappyChatContext: () => null
 }))
 vi.mock('./MessageAttachments', () => ({ MessageAttachments: () => null }))
-vi.mock('./MessageStatusIndicator', () => ({ MessageStatusIndicator: () => null }))
 vi.mock('./user-bubble', () => ({
     UserBubbleContent: ({ text }: { text: string }) => <span>{text}</span>,
     FromTaskChip: ({ label }: { label: string }) => <span>{label}</span>,

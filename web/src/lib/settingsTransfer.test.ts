@@ -39,6 +39,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi:queued-edit-recovery',
     'hapi:message-window:v2:',
     'hapi:message-window:v3:', // cached transcript windows + their __lru__ index (device-local)
+    'hapi:aborted-sends:v1', // sends cancelled in flight, until the hub's answer settles (device-local)
     // Transient UI state and filters
     'hapi-dir-scroll-',
     'hapi-dir-expanded-',

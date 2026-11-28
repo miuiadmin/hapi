@@ -12,7 +12,14 @@ import {
     markMessagesIndeterminate,
 } from '@/lib/message-window-store'
 import { isQueuedOperationPending } from '@/lib/queued-edit-recovery'
+import { QueuedMessageActionsProvider } from './queuedMessageActions'
 import { QueuedMessagesBar } from './QueuedMessagesBar'
+import { PendingUserMessages } from './PendingUserMessages'
+
+vi.mock('./messages/MessageAttachments', () => ({ MessageAttachments: () => null }))
+vi.mock('@/components/LazyRainbowText', () => ({
+    LazyRainbowText: ({ text }: { text: string }) => <span>{text}</span>,
+}))
 
 const { addToast } = vi.hoisted(() => ({ addToast: vi.fn() }))
 vi.mock('@assistant-ui/react', () => ({
@@ -41,12 +48,13 @@ function setup() {
     const getQueuedState = vi.fn().mockResolvedValue(pendingState)
     const api = { steerMessage, getQueuedState } as unknown as ApiClient
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
-    render(<QueryClientProvider client={client}><QueuedMessagesBar sessionId={sid} api={api} canSteer deliveryActive pendingSchedule={null} pendingScheduleRevision={0} /></QueryClientProvider>)
-    const row = (text: string) => within(screen.getByText(text).closest('li')!)
-    const first = row('Correction one')
-    const second = row('Correction two')
-    const button = first.getByRole('button', { name: 'Steer queued message' })
-    const otherButton = second.getByRole('button', { name: 'Steer queued message' })
+    // The first message the agent has not taken yet is in the thread, as a bubble; the one behind it
+    // is in the queue panel above the composer. They share one set of actions.
+    render(<QueryClientProvider client={client}><QueuedMessageActionsProvider api={api} sessionId={sid} canSteer deliveryActive pendingSchedule={null} pendingScheduleRevision={0}><QueuedMessagesBar sessionId={sid} api={api} /><PendingUserMessages sessionId={sid} agentBusy /></QueuedMessageActionsProvider></QueryClientProvider>)
+    const first = within(screen.getByText('Correction one').closest('[data-hapi-pending-row]')!)
+    const second = within(screen.getByText('Correction two').closest('[data-testid="queued-panel-row"]')!)
+    const button = first.getByRole('button', { name: 'queuedMessages.steer' })
+    const otherButton = second.getByRole('button', { name: 'queuedMessages.steer' })
     const click = async () => {
         fireEvent.click(button)
         await waitFor(() => expect(steerMessage).toHaveBeenCalledWith(sid, 'server-one'))
@@ -74,7 +82,7 @@ it('shows row-local request feedback before the reply and prevents repeated or c
     expect(getMessageWindowState(sid).messages.find(message => message.localId === localId)!.invokedAt).toBeNull()
     fireEvent.click(view.button)
     fireEvent.click(view.otherButton)
-    for (const name of ['Edit queued message', 'Cancel queued message']) {
+    for (const name of ['queuedMessages.edit', 'queuedMessages.cancel']) {
         expect(view.second.getByRole('button', { name })).toBeDisabled()
     }
     expect(view.steerMessage).toHaveBeenCalledTimes(1)
@@ -110,7 +118,7 @@ it('preserves a genuine unknown event and explicit resolution after the request 
     await view.reply({ status: 'steered', localId })
     expect(view.getQueuedState).not.toHaveBeenCalled()
     expect(view.first.getByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeEnabled()
-    expect(view.first.getByRole('button', { name: 'Cancel queued message' })).toBeEnabled()
+    expect(view.first.getByRole('button', { name: 'queuedMessages.cancel' })).toBeEnabled()
 })
 
 it.each(['failed', 'network'])('clears request feedback after %s without claiming pickup', async (failure) => {
@@ -124,7 +132,7 @@ it.each(['failed', 'network'])('clears request feedback after %s without claimin
         await waitFor(() => expect(isQueuedOperationPending(sid)).toBe(false))
     }
     expect(view.first.queryByText('queuedMessages.steerRequesting')).toBeNull()
-    expect(view.first.getByRole('button', { name: 'Steer queued message' })).toBeEnabled()
+    expect(view.first.getByRole('button', { name: 'queuedMessages.steer' })).toBeEnabled()
     expect(getMessageWindowState(sid).messages.find(message => message.localId === localId)!.invokedAt).toBeNull()
     expect(addToast).toHaveBeenCalledTimes(1)
 })

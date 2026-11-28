@@ -3,7 +3,8 @@ import { isSessionTaskMessageLocalId } from '@hapi/protocol'
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
-import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
+import { useOptionalQueuedMessageActions } from '@/components/AssistantChat/queuedMessageActions'
+import { usePendingMessageRow, UserSendActions, UserSendStatus } from '@/components/AssistantChat/messages/UserSendState'
 import { MessageAttachments } from '@/components/AssistantChat/messages/MessageAttachments'
 import { FromTaskChip, UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
@@ -89,7 +90,22 @@ export const HappyUserMessage = memo(function HappyUserMessage() {
     }
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
-    const showStatus = shouldShowMessageStatus(status)
+    // A send that failed stays in the thread as a bubble that says so, with a retry, a way back
+    // into the composer and a way to drop it. A message still on its way to the agent is not drawn
+    // here (see PendingUserMessages); `invokedAt` is null for a row the agent took before the
+    // device heard of it, and that one is simply a sent message.
+    const showSendState = invokedAt == null && shouldShowMessageStatus(status)
+    const failedRow = usePendingMessageRow(ctx.sessionId, localId, showSendState)
+    const queuedActions = useOptionalQueuedMessageActions()
+    const failedState = showSendState && failedRow && queuedActions
+        ? {
+            sessionId: ctx.sessionId,
+            row: failedRow,
+            actions: queuedActions.row(failedRow),
+            agentBusy: threadIsRunning,
+            onRetry,
+        }
+        : null
 
     const historyLocked = isConversationHistoryBlocked(ctx.metadata)
     const history = historyLocked
@@ -160,14 +176,15 @@ export const HappyUserMessage = memo(function HappyUserMessage() {
             data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
-            <div className={getUserBubbleClassName(status)}>
-                {fromTask ? (
-                    <div className="mb-1.5">
-                        <FromTaskChip label={t('queuedMessages.fromTask')} />
-                    </div>
-                ) : null}
-                <div className="flex items-start gap-2">
-                    <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 max-w-full items-center justify-end gap-2">
+                {failedState ? <UserSendActions {...failedState} /> : null}
+                <div className={getUserBubbleClassName(status)}>
+                    {fromTask ? (
+                        <div className="mb-1.5">
+                            <FromTaskChip label={t('queuedMessages.fromTask')} />
+                        </div>
+                    ) : null}
+                    <div className="min-w-0">
                         {hasText ? <UserBubbleContent text={visibleText} /> : null}
                         {importedReference ? <details className="mt-2 text-xs">
                             <summary className="cursor-pointer">{t('branch.importedReference')}</summary>
@@ -175,20 +192,16 @@ export const HappyUserMessage = memo(function HappyUserMessage() {
                         </details> : null}
                         {hasAttachments ? <MessageAttachments attachments={attachments} messageId={sourceMessageId} /> : null}
                     </div>
-                    {showStatus && (
-                        <div className="happy-message-actions-first-line flex shrink-0 items-center gap-1">
-                            {showStatus ? <MessageStatusIndicator status={status} onRetry={onRetry} /> : null}
-                        </div>
-                    )}
+                    {failedState ? <UserSendStatus {...failedState} /> : null}
+                    {steered ? (
+                        <span
+                            title={t('queuedMessages.steeredBadgeTitle')}
+                            className="mt-1 inline-flex items-center gap-0.5 text-[10px] leading-none text-[var(--app-hint)]"
+                        >
+                            {t('queuedMessages.steeredBadge')}
+                        </span>
+                    ) : null}
                 </div>
-                {steered ? (
-                    <span
-                        title={t('queuedMessages.steeredBadgeTitle')}
-                        className="mt-1 inline-flex items-center gap-0.5 text-[10px] leading-none text-[var(--app-hint)]"
-                    >
-                        {t('queuedMessages.steeredBadge')}
-                    </span>
-                ) : null}
             </div>
             <MessageActions
                 align="end"

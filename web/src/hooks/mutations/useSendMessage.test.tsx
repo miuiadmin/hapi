@@ -2,14 +2,26 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useSendMessage, type SendMessageAcceptance } from './useSendMessage'
+import { SEND_ORDERING_GRACE_MS, useSendMessage, type SendMessageAcceptance } from './useSendMessage'
 import { ApiError, type ApiClient } from '@/api/client'
+
+/** What the tests let the hook see of its message window: the rows it holds, and who is watching them. */
+const window = vi.hoisted(() => ({
+    messages: [] as Array<{ localId: string; invokedAt: number | null; status?: string }>,
+    listeners: new Set<() => void>(),
+}))
 
 vi.mock('@/lib/message-window-store', () => ({
     appendOptimisticMessage: vi.fn(),
-    getMessageWindowState: vi.fn(() => ({ messages: [] })),
+    getMessageWindowState: vi.fn(() => ({ messages: window.messages })),
     updateMessageStatus: vi.fn(),
     removeOptimisticMessage: vi.fn(),
+    subscribeMessageWindow: vi.fn((_sessionId: string, listener: () => void) => {
+        window.listeners.add(listener)
+        return () => {
+            window.listeners.delete(listener)
+        }
+    }),
 }))
 
 vi.mock('@/hooks/usePlatform', () => ({
@@ -125,6 +137,8 @@ describe('useSendMessage', () => {
                 undefined,
                 null,
                 'steer',
+                // The request can still be stopped by the user; nothing else rides on it.
+                { signal: expect.any(AbortSignal) },
             )
         })
         expect(appendOptimisticMessage).toHaveBeenCalledWith(
@@ -933,7 +947,7 @@ describe('useSendMessage', () => {
             expect(sendMock).toHaveBeenCalled()
         })
 
-        // api.sendMessage(sessionId, text, localId, attachments, scheduledAt, deliveryMode)
+        // api.sendMessage(sessionId, text, localId, attachments, scheduledAt, deliveryMode, { signal })
         expect(sendMock).toHaveBeenCalledWith(
             'session-A',
             'hi later',
@@ -941,6 +955,7 @@ describe('useSendMessage', () => {
             undefined,
             scheduledAt,
             'queue',
+            { signal: expect.any(AbortSignal) },
         )
     })
 
@@ -983,8 +998,386 @@ describe('useSendMessage', () => {
                 undefined,
                 null,
                 'queue',
+                { signal: expect.any(AbortSignal) },
             )
         })
+    })
+})
+
+describe('a live session', () => {
+    beforeEach(async () => {
+        vi.clearAllMocks()
+        window.messages = []
+        window.listeners.clear()
+        // A send one test cancelled in flight must not read as cancelled in the next.
+        const { resetAbortedSends } = await import('@/lib/abortedSends')
+        resetAbortedSends()
+        // A test above may have pinned what the window holds for the rest of the file; here the
+        // window is the one this test filled.
+        const { getMessageWindowState } = await import('@/lib/message-window-store')
+        vi.mocked(getMessageWindowState).mockImplementation(() => ({ messages: window.messages }) as never)
+    })
+
+    /** Says to whoever is watching the window that a row changed. */
+    const windowChanged = () => {
+        for (const listener of [...window.listeners]) listener()
+    }
+    /** The agent takes a row: that is the window's own news, not this device's. */
+    const takenByAgent = (localId: string) => {
+        const row = window.messages.find((message) => message.localId === localId)
+        if (row) row.invokedAt = 9_000
+        windowChanged()
+    }
+    /** The hub drops a row (a cancel), and the window says so. */
+    const droppedByHub = (localId: string) => {
+        window.messages = window.messages.filter((message) => message.localId !== localId)
+        windowChanged()
+    }
+
+    type Post = { signal: AbortSignal; abortedWhenAsked: boolean; resolve: () => void; reject: (error: unknown) => void }
+
+    /** An api whose POSTs wait to be settled one by one, in the order they arrive. */
+    function holdingApi() {
+        const posts: Post[] = []
+        const sendMessage = vi.fn((_sessionId: string, _text: string, _localId: string, _a: unknown, _s: unknown, _d: unknown, options?: { signal?: AbortSignal }) =>
+            new Promise<void>((resolve, reject) => {
+                posts.push({ signal: options!.signal!, abortedWhenAsked: options!.signal!.aborted, resolve, reject })
+            }))
+        return { posts, api: { sendMessage } as unknown as ApiClient, sendMessage }
+    }
+
+    /** Two sends of one live session, each waiting for its POST. */
+    async function sendTwo(api: ApiClient) {
+        const { makeClientSideId } = await import('@/lib/messages')
+        // From a clean slate: an id another test queued and never used would be handed out first.
+        vi.mocked(makeClientSideId).mockReset().mockReturnValueOnce('local-a').mockReturnValueOnce('local-b')
+        const { result, unmount } = renderHook(
+            () => useSendMessage(api, 'session-A', { isActive: true }),
+            { wrapper: createWrapper() },
+        )
+        let first!: SendMessageAcceptance | false
+        let second!: SendMessageAcceptance | false
+        await act(async () => {
+            first = await result.current.sendMessage('first')
+            second = await result.current.sendMessage('second')
+        })
+        return { result, unmount, first, second }
+    }
+
+    it('posts one at a time, in the order typed, while every row goes up at once', async () => {
+        const { posts, api } = holdingApi()
+        const { appendOptimisticMessage } = await import('@/lib/message-window-store')
+        const appendMock = vi.mocked(appendOptimisticMessage)
+        const { first, second } = await sendTwo(api)
+
+        expect(first).toEqual({ attemptId: 'local-a' })
+        // The second message is not refused for arriving while the first is still posting.
+        expect(second).toEqual({ attemptId: 'local-b' })
+        expect(appendMock.mock.calls.map((call) => (call[1] as { localId: string }).localId)).toEqual(['local-a', 'local-b'])
+        expect(appendMock).toHaveBeenLastCalledWith('session-A', expect.objectContaining({ localId: 'local-b', status: 'sending' }))
+        expect(posts).toHaveLength(1)
+
+        await act(async () => { posts[0]!.resolve() })
+        // The first reached the hub, and nothing waits on it (the window here holds no such row).
+        await waitFor(() => expect(posts).toHaveLength(2))
+        const { updateMessageStatus } = await import('@/lib/message-window-store')
+        expect(vi.mocked(updateMessageStatus)).toHaveBeenCalledWith('session-A', 'local-a', 'sent')
+
+        await act(async () => { posts[1]!.resolve() })
+        await waitFor(() => expect(vi.mocked(updateMessageStatus)).toHaveBeenCalledWith('session-A', 'local-b', 'sent'))
+    })
+
+    it('keeps the message typed behind another on this device until the agent has taken the first', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        const { result } = await sendTwo(api)
+        window.messages.push({ localId: 'local-a', invokedAt: null, status: 'sent' })
+        expect(posts).toHaveLength(1)
+
+        await act(async () => { posts[0]!.resolve() })
+        await act(async () => { await Promise.resolve() })
+        // The first is the hub's now and still not the agent's: the second has not left, and nothing is on the wire.
+        expect(posts).toHaveLength(1)
+        expect(result.current.isSending).toBe(false)
+        expect(window.listeners.size).toBeGreaterThan(0)
+
+        act(() => { takenByAgent('local-a') })
+        await waitFor(() => expect(posts).toHaveLength(2))
+        expect(sendMessage).toHaveBeenLastCalledWith('session-A', 'second', 'local-b', undefined, undefined, 'queue', { signal: expect.any(AbortSignal) })
+        // Nothing is waited on any more.
+        expect(window.listeners.size).toBe(0)
+        await act(async () => { posts[1]!.resolve() })
+    })
+
+    it('does not make the message behind wait for ever: two seconds at most, then the hub holds it', async () => {
+        const { posts, api } = holdingApi()
+        await sendTwo(api)
+        window.messages.push({ localId: 'local-a', invokedAt: null, status: 'queued' })
+        await act(async () => { posts[0]!.resolve() })
+
+        // The agent is busy and does not take the first in that time.
+        await waitFor(() => expect(posts).toHaveLength(2), { timeout: SEND_ORDERING_GRACE_MS + 3_000 })
+        expect(window.listeners.size).toBe(0)
+        await act(async () => { posts[1]!.resolve() })
+    })
+
+    it('lets the message behind go as soon as the hub drops the first, as a cancel makes it', async () => {
+        const { posts, api } = holdingApi()
+        await sendTwo(api)
+        window.messages.push({ localId: 'local-a', invokedAt: null, status: 'queued' })
+        await act(async () => { posts[0]!.resolve() })
+        expect(posts).toHaveLength(1)
+
+        act(() => { droppedByHub('local-a') })
+        await waitFor(() => expect(posts).toHaveLength(2))
+        await act(async () => { posts[1]!.resolve() })
+    })
+
+    it('lets the message behind go at once when the first did not reach the agent', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        await sendTwo(api)
+        window.messages.push({ localId: 'local-a', invokedAt: null, status: 'sending' })
+
+        await act(async () => { posts[0]!.reject(new Error('HTTP 502 Bad Gateway')) })
+        await waitFor(() => expect(posts).toHaveLength(2))
+        expect(sendMessage).toHaveBeenCalledTimes(2)
+        await act(async () => { posts[1]!.resolve() })
+    })
+
+    it('posts a message scheduled for later as soon as the wire is free: it is not waiting its turn behind anything', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        const { makeClientSideId } = await import('@/lib/messages')
+        vi.mocked(makeClientSideId).mockReset().mockReturnValueOnce('local-a').mockReturnValueOnce('local-s')
+        const { result, unmount } = renderHook(() => useSendMessage(api, 'session-A', { isActive: true }), { wrapper: createWrapper() })
+        const later = Date.now() + 60 * 60_000
+        await act(async () => {
+            await result.current.sendMessage('now')
+            await result.current.sendMessage('in an hour', undefined, later)
+        })
+        expect(posts).toHaveLength(1)
+        window.messages.push({ localId: 'local-a', invokedAt: null, status: 'sent' })
+
+        await act(async () => { posts[0]!.resolve() })
+        // The first is still not the agent's, and that is none of the scheduled message's business.
+        await waitFor(() => expect(posts).toHaveLength(2))
+        expect(sendMessage).toHaveBeenLastCalledWith('session-A', 'in an hour', 'local-s', undefined, later, 'queue', { signal: expect.any(AbortSignal) })
+        await act(async () => { posts[1]!.resolve() })
+        // The only wait left is the first message's own; nothing waits on the scheduled one.
+        expect(window.listeners.size).toBe(1)
+        unmount()
+        expect(window.listeners.size).toBe(0)
+    })
+
+    it('drops a message typed behind another while it is still waiting here, and posts nothing of it later', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        const { result } = await sendTwo(api)
+        window.messages.push({ localId: 'local-a', invokedAt: null, status: 'queued' })
+        await act(async () => { posts[0]!.resolve() })
+        expect(posts).toHaveLength(1)
+
+        let stopped: 'dropped' | 'aborted' | false = false
+        act(() => { stopped = result.current.cancelSending('local-b') })
+        expect(stopped).toBe('dropped')
+        act(() => { takenByAgent('local-a') })
+        await act(async () => { await Promise.resolve() })
+        expect(sendMessage).toHaveBeenCalledTimes(1)
+    })
+
+    it('posts what was typed behind another when the page is left, even with the agent never taking the first', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        const { unmount } = await sendTwo(api)
+        window.messages.push({ localId: 'local-a', invokedAt: null, status: 'queued' })
+        await act(async () => { posts[0]!.resolve() })
+        expect(posts).toHaveLength(1)
+
+        unmount()
+        expect(window.listeners.size).toBe(0)
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2))
+        await act(async () => { posts[1]?.resolve() })
+    })
+
+    it('does not lock the composer while a POST is in flight', async () => {
+        const { posts, api } = holdingApi()
+        const { result } = await sendTwo(api)
+        await waitFor(() => expect(result.current.isSending).toBe(true))
+        expect(result.current.isComposerLocked).toBe(false)
+
+        await act(async () => { posts[0]!.resolve() })
+        await waitFor(() => expect(posts).toHaveLength(2))
+        await act(async () => { posts[1]!.resolve() })
+        await waitFor(() => expect(result.current.isSending).toBe(false))
+    })
+
+    it('still locks the composer for a session that is not live', async () => {
+        const request = deferred<void>()
+        const { result } = renderHook(
+            () => useSendMessage(createMockApi(() => request.promise), 'session-A'),
+            { wrapper: createWrapper() },
+        )
+        await act(async () => { void result.current.sendMessage('after a resume') })
+        await waitFor(() => expect(result.current.isComposerLocked).toBe(true))
+        await act(async () => { request.resolve() })
+        await waitFor(() => expect(result.current.isComposerLocked).toBe(false))
+    })
+
+    it('stops a send that is on the wire: the row goes, the request is aborted, nothing is restored or failed', async () => {
+        const { posts, api } = holdingApi()
+        const onError = vi.fn()
+        const { makeClientSideId } = await import('@/lib/messages')
+        vi.mocked(makeClientSideId).mockReturnValueOnce('local-a')
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A', { isActive: true, onError }),
+            { wrapper: createWrapper() },
+        )
+        await act(async () => { await result.current.sendMessage('never mind') })
+
+        let stopped: 'dropped' | 'aborted' | false = false
+        act(() => { stopped = result.current.cancelSending('local-a') })
+        expect(stopped).toBe('aborted')
+        const { removeOptimisticMessage, updateMessageStatus } = await import('@/lib/message-window-store')
+        expect(removeOptimisticMessage).toHaveBeenCalledWith('session-A', 'local-a')
+        expect(posts[0]!.signal.aborted).toBe(true)
+
+        // The aborted request settles with an error, which is not the send failing.
+        await act(async () => { posts[0]!.reject(new DOMException('The operation was aborted.', 'AbortError')) })
+        expect(onError).not.toHaveBeenCalled()
+        expect(vi.mocked(updateMessageStatus)).not.toHaveBeenCalledWith('session-A', 'local-a', 'failed')
+        expect(result.current.isSending).toBe(false)
+    })
+
+    it('stopped in the ticks before its request starts, the request never leaves', async () => {
+        const { posts, api } = holdingApi()
+        const { makeClientSideId } = await import('@/lib/messages')
+        vi.mocked(makeClientSideId).mockReturnValueOnce('local-a')
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A', { isActive: true }),
+            { wrapper: createWrapper() },
+        )
+        // No act between the two: the send was handed over and its cancel comes before anything else ran.
+        await result.current.sendMessage('changed my mind')
+        let stopped: 'dropped' | 'aborted' | false = false
+        stopped = result.current.cancelSending('local-a')
+        expect(stopped).toBe('aborted')
+
+        // The request starts a few ticks later, and dead on arrival.
+        await waitFor(() => expect(posts).toHaveLength(1))
+        expect(posts[0]!.abortedWhenAsked).toBe(true)
+        await act(async () => { posts[0]!.reject(new DOMException('The operation was aborted.', 'AbortError')) })
+        await waitFor(() => expect(result.current.isSending).toBe(false))
+    })
+
+    it('drops a send that is still waiting behind another: it is never posted', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        const { result } = await sendTwo(api)
+        const { removeOptimisticMessage } = await import('@/lib/message-window-store')
+        expect(sendMessage).toHaveBeenCalledTimes(1)
+
+        let stopped: 'dropped' | 'aborted' | false = false
+        act(() => { stopped = result.current.cancelSending('local-b') })
+        expect(stopped).toBe('dropped')
+        expect(removeOptimisticMessage).toHaveBeenCalledWith('session-A', 'local-b')
+
+        await act(async () => { posts[0]!.resolve() })
+        await act(async () => { await Promise.resolve() })
+        // The first send settled and let the queue drain; the dropped one was not in it.
+        expect(sendMessage).toHaveBeenCalledTimes(1)
+    })
+
+    it('says no when there is no send of that id to stop', async () => {
+        const { api } = holdingApi()
+        const { result } = renderHook(() => useSendMessage(api, 'session-A', { isActive: true }), { wrapper: createWrapper() })
+        expect(result.current.cancelSending('local-nobody')).toBe(false)
+    })
+
+    it('keeps a failed send in the thread as a failed row instead of handing its text back', async () => {
+        const sendMessage = vi.fn(() => Promise.reject(new Error('HTTP 502 Bad Gateway')))
+        const onError = vi.fn()
+        const { makeClientSideId } = await import('@/lib/messages')
+        vi.mocked(makeClientSideId).mockReturnValueOnce('local-a')
+        const { result } = renderHook(
+            () => useSendMessage({ sendMessage } as unknown as ApiClient, 'session-A', { isActive: true, onError }),
+            { wrapper: createWrapper() },
+        )
+        await act(async () => { await result.current.sendMessage('this one fails') })
+
+        const { removeOptimisticMessage, updateMessageStatus } = await import('@/lib/message-window-store')
+        await waitFor(() => expect(vi.mocked(updateMessageStatus)).toHaveBeenCalledWith('session-A', 'local-a', 'failed'))
+        expect(removeOptimisticMessage).not.toHaveBeenCalled()
+        expect(onError).not.toHaveBeenCalled()
+        const { getSendFailure } = await import('@/lib/sendFailures')
+        expect(getSendFailure('session-A', 'local-a')).toBe('HTTP 502 Bad Gateway')
+    })
+
+    it('hands the text back when the hub says the session is no longer live', async () => {
+        const sendMessage = vi.fn(() => Promise.reject(new ApiError('archived', 409, 'session_inactive')))
+        const onError = vi.fn()
+        const { makeClientSideId } = await import('@/lib/messages')
+        vi.mocked(makeClientSideId).mockReturnValueOnce('local-a')
+        const { result } = renderHook(
+            () => useSendMessage({ sendMessage } as unknown as ApiClient, 'session-A', { isActive: true, onError }),
+            { wrapper: createWrapper() },
+        )
+        await act(async () => { await result.current.sendMessage('too late') })
+
+        const { removeOptimisticMessage, updateMessageStatus } = await import('@/lib/message-window-store')
+        await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+        expect(removeOptimisticMessage).toHaveBeenCalledWith('session-A', 'local-a')
+        expect(vi.mocked(updateMessageStatus)).not.toHaveBeenCalledWith('session-A', 'local-a', 'failed')
+    })
+
+    it('leaves how a session that is not live reports a failure as it was', async () => {
+        const sendMessage = vi.fn(() => Promise.reject(new Error('offline')))
+        const onError = vi.fn()
+        const { makeClientSideId } = await import('@/lib/messages')
+        vi.mocked(makeClientSideId).mockReturnValueOnce('local-a')
+        const { result } = renderHook(
+            () => useSendMessage({ sendMessage } as unknown as ApiClient, 'session-A', { onError }),
+            { wrapper: createWrapper() },
+        )
+        await act(async () => { await result.current.sendMessage('draft comes back') })
+
+        const { removeOptimisticMessage, updateMessageStatus } = await import('@/lib/message-window-store')
+        await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+        expect(removeOptimisticMessage).toHaveBeenCalledWith('session-A', 'local-a')
+        expect(vi.mocked(updateMessageStatus)).not.toHaveBeenCalledWith('session-A', 'local-a', 'failed')
+    })
+
+    it('posts what was typed behind a slow send when the page is left', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        const { unmount } = await sendTwo(api)
+        expect(sendMessage).toHaveBeenCalledTimes(1)
+        unmount()
+        await act(async () => { posts[0]!.resolve() })
+        await act(async () => { posts[1]?.resolve() })
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2))
+    })
+
+    it('takes a retry of a failed row while another send is still posting', async () => {
+        const { posts, api, sendMessage } = holdingApi()
+        const { makeClientSideId } = await import('@/lib/messages')
+        const { getMessageWindowState, updateMessageStatus } = await import('@/lib/message-window-store')
+        vi.mocked(getMessageWindowState).mockReturnValue({
+            messages: [{
+                id: 'local-failed', seq: null, localId: 'local-failed',
+                content: { role: 'user', content: { type: 'text', text: 'try me again' } },
+                createdAt: 1_000, invokedAt: null, scheduledAt: null, status: 'failed', originalText: 'try me again',
+            } as never],
+        } as never)
+        vi.mocked(makeClientSideId).mockReturnValueOnce('local-a')
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A', { isActive: true }),
+            { wrapper: createWrapper() },
+        )
+        await act(async () => { await result.current.sendMessage('still going') })
+        let retried = false
+        act(() => { retried = result.current.retryMessage('local-failed') })
+        expect(retried).toBe(true)
+        expect(vi.mocked(updateMessageStatus)).toHaveBeenCalledWith('session-A', 'local-failed', 'sending')
+        expect(sendMessage).toHaveBeenCalledTimes(1)
+
+        await act(async () => { posts[0]!.resolve() })
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2))
+        expect(sendMessage).toHaveBeenLastCalledWith('session-A', 'try me again', 'local-failed', undefined, null, 'queue', { signal: expect.any(AbortSignal) })
+        await act(async () => { posts[1]!.resolve() })
     })
 })
 
@@ -1022,5 +1415,21 @@ describe('send watchdog', () => {
         } finally {
             vi.useRealTimers()
         }
+    })
+})
+
+describe('why a failed send failed', () => {
+    it('is the hub\'s own words, without the status line and the envelope', async () => {
+        const sendMessage = vi.fn(() => Promise.reject(new ApiError('HTTP 502 Bad Gateway: {"error":"Bad gateway"}', 502, undefined, '{"error":"Bad gateway"}')))
+        const { makeClientSideId } = await import('@/lib/messages')
+        vi.mocked(makeClientSideId).mockReturnValueOnce('local-a')
+        const { getSendFailure, resetSendFailures } = await import('@/lib/sendFailures')
+        resetSendFailures()
+        const { result } = renderHook(
+            () => useSendMessage({ sendMessage } as unknown as ApiClient, 'session-A', { isActive: true }),
+            { wrapper: createWrapper() },
+        )
+        await act(async () => { await result.current.sendMessage('through the gateway') })
+        await waitFor(() => expect(getSendFailure('session-A', 'local-a')).toBe('Bad gateway'))
     })
 })

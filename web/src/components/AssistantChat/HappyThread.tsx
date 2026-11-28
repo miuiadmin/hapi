@@ -44,6 +44,8 @@ import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { queryKeys } from '@/lib/query-keys'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { matchesSearchQuery } from '@hapi/protocol'
+import { playUserBubbleEntrance } from '@/lib/userBubbleEntrance'
+import { PendingUserMessages } from '@/components/AssistantChat/PendingUserMessages'
 
 type ScrollAnchor = {
     id: string
@@ -139,6 +141,14 @@ export function prependMissingUserSnapshot(
 }
 
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
+
+function prefersReducedMotion(): boolean {
+    try {
+        return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    } catch {
+        return false
+    }
+}
 const SEARCH_TARGET_HIGHLIGHT_CLASS = 'hapi-message-search-target'
 const PENDING_REQUEST_TARGET_HIGHLIGHT_CLASS = 'hapi-message-pending-target'
 const SEARCH_TARGET_MATCH_ATTRIBUTE = 'data-hapi-source-search-match'
@@ -908,6 +918,9 @@ export const HappyThread = memo(function HappyThread(props: {
     const viewportRef = useRef<HTMLDivElement | null>(null)
     useTransientScrollbar(viewportRef, 'right')
     const contentRef = useRef<HTMLDivElement | null>(null)
+    const messageListRef = useRef<HTMLDivElement | null>(null)
+    /** Rows whose arrival was already played, so it plays once. */
+    const arrivalsPlayed = useRef(new WeakSet<HTMLElement>())
     const [pullToLoadState, setPullToLoadState] = useState<PullToLoadState>('idle')
     const [searchTargetRetryVersion, setSearchTargetRetryVersion] = useState(0)
     const [isLocatingSearchTarget, setIsLocatingSearchTarget] = useState(false)
@@ -2906,6 +2919,28 @@ export const HappyThread = memo(function HappyThread(props: {
         clearFailureRetryTimer
     ])
 
+    // A message the user just sent rises out of the composer the moment its row shows (it is
+    // drawn after the thread's messages; see PendingUserMessages). The tail has already followed
+    // above, so the row is in place and the entrance only moves pixels.
+    //
+    // It runs with the tail-following above because a waiting row only ever arrives with a new
+    // window, which is what this effect is keyed on; the last row not being a new arrival costs
+    // one attribute read.
+    useLayoutEffect(() => {
+        const list = messageListRef.current
+        const row = list?.lastElementChild
+        if (!list || !(row instanceof HTMLElement)) return
+        if (row.dataset.hapiLocalSend !== 'true' || arrivalsPlayed.current.has(row)) return
+        arrivalsPlayed.current.add(row)
+        playUserBubbleEntrance({
+            list,
+            row,
+            viewport: viewportRef.current,
+            pinnedToBottom: autoScrollEnabledRef.current && atBottomRef.current,
+            reduceMotion: prefersReducedMotion(),
+        })
+    }, [appliedMessagesVersion, props.sessionId])
+
     const showSkeleton = props.isSyncingTail && props.rawMessagesCount === 0
     const handleShareTurn = useCallback((
         messageTarget: HTMLElement | string | null,
@@ -3132,8 +3167,9 @@ export const HappyThread = memo(function HappyThread(props: {
                                     ) : null}
                                 </>
                             )}
-                            <div className="happy-thread-messages flex flex-col gap-3">
+                            <div ref={messageListRef} className="happy-thread-messages flex flex-col gap-3">
                                 <ThreadMessagesById components={THREAD_MESSAGE_COMPONENTS} />
+                                <PendingUserMessages sessionId={props.sessionId} agentBusy={props.session.thinking} />
                             </div>
                         </div>
                     </div>

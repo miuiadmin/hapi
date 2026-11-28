@@ -5,13 +5,17 @@ import { cn } from '@/lib/utils'
 
 const LEADING_DIRECTIVE_REGEX = /^([$\/][a-z0-9][\w-]*)(?=\s|$)/i
 
-export function getUserBubbleClassName(status?: MessageStatus) {
+/**
+ * The same bubble whatever became of the message. It used to fade while the message waited for the
+ * agent; now the status row under the text says so, and the user's own words stay fully legible.
+ */
+export function getUserBubbleClassName(_status?: MessageStatus) {
     return cn(
-        'happy-user-bubble happy-chat-text ml-auto w-fit min-w-0 max-w-[92%] rounded-2xl bg-[var(--app-chat-user-surface-bg)] px-4 py-2.5 text-[var(--app-chat-user-fg)] shadow-none',
-        status === 'queued' && 'opacity-60'
+        'happy-user-bubble happy-chat-text ml-auto w-fit min-w-0 max-w-[92%] rounded-2xl bg-[var(--app-chat-user-surface-bg)] px-4 py-2.5 text-[var(--app-chat-user-fg)] shadow-none'
     )
 }
 
+/** The message has not reached the agent, or failed on the way: its row shows where it is. */
 export function shouldShowMessageStatus(status?: MessageStatus): boolean {
     return status === 'queued' || status === 'sending' || status === 'failed'
 }
