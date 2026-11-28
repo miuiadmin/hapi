@@ -17,7 +17,9 @@
  *   8 Browse
  * Machine chips / the mobile machine menu stay outside this ladder.
  * Fork-only Kitchen, Overseer, and agent-import use the same `keep` scale
- * when a soup layer passes them as extras (3 / 9 / 10).
+ * when a soup layer passes them as extras (3 / 9 / 10). Fork-only New bot
+ * (4.5) is painted right after New and moves into More just before it:
+ * it is the rarer of the two.
  */
 
 export type ToolbarShedSlot = {

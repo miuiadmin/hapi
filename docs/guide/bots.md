@@ -12,7 +12,7 @@ On the hub, bots add four tables to the database (the bots, their ledger, the re
 
 ## Create a bot
 
-1. In the sidebar, choose **New bot**.
+1. At the top of the session list, choose the robot icon (**New bot**), next to **New session**. On a narrow list it may sit under **More** (⋯).
 2. Name it and, in a sentence, say what it is for.
 3. Pick the **machine** it lives on. Its home folder and its home chat are created on that machine, so its runner has to be online. A hub can have as many machines as you like; each bot lives on one of them. To move a bot, create another on the other machine.
 4. Optionally, under **Advanced**, set the home folder and the permission mode (see below).

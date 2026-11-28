@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { BotSummary } from '@hapi/protocol'
 import { ApiError, type ApiClient } from '@/api/client'
@@ -7,6 +8,7 @@ import type { Machine } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { queryKeys } from '@/lib/query-keys'
 import { BotsSection } from './BotsSection'
+import { CreateBotDialog } from './CreateBotDialog'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -66,6 +68,27 @@ type SetupOptions = {
     agentError?: Error
     createError?: Error
     created?: BotSummary
+    /** Also mount the create dialog, as the session list does (opened from its toolbar). */
+    dialog?: boolean
+}
+
+/** The dialog as the session list mounts it: opened by a control outside the bots block. */
+function DialogHarness({ api, onSelect }: { api: ApiClient; onSelect: (sessionId: string) => void }) {
+    const [open, setOpen] = useState(false)
+    return (
+        <>
+            <button type="button" aria-label="New bot" onClick={() => { setOpen(true) }}>robot</button>
+            <CreateBotDialog
+                isOpen={open}
+                onClose={() => { setOpen(false) }}
+                api={api}
+                onCreated={(bot) => {
+                    setOpen(false)
+                    if (bot.homeChatSessionId) onSelect(bot.homeChatSessionId)
+                }}
+            />
+        </>
+    )
 }
 
 function setup(options: SetupOptions = {}) {
@@ -92,6 +115,7 @@ function setup(options: SetupOptions = {}) {
         <QueryClientProvider client={queryClient}>
             <I18nProvider>
                 <BotsSection api={api as unknown as ApiClient} onSelect={onSelect} />
+                {options.dialog ? <DialogHarness api={api as unknown as ApiClient} onSelect={onSelect} /> : null}
             </I18nProvider>
         </QueryClientProvider>
     )
@@ -99,14 +123,13 @@ function setup(options: SetupOptions = {}) {
 }
 
 describe('BotsSection', () => {
-    it('offers the way to make the first bot when there are none, and nothing else', async () => {
-        setup()
-        const entry = await screen.findByTestId('bots-new-first')
-        expect(entry).toHaveTextContent('New bot')
-        // No heading and no rows until there is a bot to list.
-        expect(screen.getByTestId('bots-section').querySelector('ul')).toBeNull()
-        fireEvent.click(entry)
-        expect(await screen.findByRole('dialog')).toBeTruthy()
+    it('is not there at all when there are no bots: the way to make one is the robot icon in the list’s toolbar, not a row in the list', async () => {
+        const { api } = setup()
+        await waitFor(() => expect(api.listBots).toHaveBeenCalledTimes(1))
+        await sleep(10)
+        expect(document.body.textContent).toBe('')
+        expect(screen.queryByRole('button', { name: 'New bot' })).toBeNull()
+        expect(screen.queryByRole('dialog')).toBeNull()
     })
 
     it('renders nothing on a hub that has no bot routes', async () => {
@@ -115,11 +138,13 @@ describe('BotsSection', () => {
         expect(document.body.textContent).toBe('')
     })
 
-    it('renders nothing while the list is still loading, so the entry does not flash in and out (中 8)', async () => {
-        setup({ listDelayMs: 60 })
+    it('renders nothing while the list is still loading, and nothing once it turns out to be empty (中 8)', async () => {
+        const { api } = setup({ listDelayMs: 60 })
         expect(screen.queryByTestId('bots-section')).toBeNull()
-        expect(screen.queryByTestId('bots-new-first')).toBeNull()
-        expect(await screen.findByTestId('bots-new-first')).toBeInTheDocument()
+        await waitFor(() => expect(api.listBots).toHaveBeenCalledTimes(1))
+        await sleep(10)
+        expect(screen.queryByTestId('bots-section')).toBeNull()
+        expect(document.body.textContent).toBe('')
     })
 
     it('says the list failed to load and offers a retry, instead of reading as "no bots" (中 8)', async () => {
@@ -128,7 +153,8 @@ describe('BotsSection', () => {
         const section = await screen.findByTestId('bots-section')
         const alert = await within(section).findByRole('alert')
         expect(alert).toHaveTextContent('The bots list could not be loaded.')
-        expect(within(section).queryByTestId('bots-new-first')).toBeNull()
+        // Creating a bot is not offered from the list either way.
+        expect(within(section).queryByRole('button', { name: 'New bot' })).toBeNull()
         api.listBots.mockResolvedValueOnce({ bots: [bot()] })
         fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
         await waitFor(() => expect(api.listBots).toHaveBeenCalledTimes(2))
@@ -159,14 +185,9 @@ describe('BotsSection', () => {
         ])
         expect(within(rows[2]!).getByText('Error')).toHaveClass('text-red-500')
         expect(within(rows[3]!).getByTestId('bot-needs-you-badge')).toHaveTextContent('99+')
-        expect(within(section).getByRole('button', { name: 'New bot' })).toBeTruthy()
-    })
-
-    it('opens the home chat when a row is clicked', async () => {
-        const { onSelect } = setup({ bots: [bot()] })
-        const row = await screen.findByRole('button', { name: /Release manager/ })
-        fireEvent.click(row)
-        expect(onSelect).toHaveBeenCalledWith('home-1')
+        // The block lists bots and nothing else: no way to make one in here.
+        expect(within(section).queryByRole('button', { name: 'New bot' })).toBeNull()
+        expect(within(section).getByText('Bots')).toBeInTheDocument()
     })
 
     it('leaves a bot that has no home chat yet as a plain row', async () => {
@@ -209,7 +230,7 @@ describe('BotsSection', () => {
 
 describe('CreateBotDialog', () => {
     async function openDialog(options: SetupOptions = {}) {
-        const handles = setup({ bots: [bot()], ...options })
+        const handles = setup({ bots: [bot()], dialog: true, ...options })
         fireEvent.click(await screen.findByRole('button', { name: 'New bot' }))
         const dialog = await screen.findByRole('dialog')
         return { ...handles, dialog }

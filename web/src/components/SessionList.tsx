@@ -148,6 +148,9 @@ import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineFilterBar, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { BotsSection } from '@/components/Bots/BotsSection'
+import { BotIcon } from '@/components/Bots/BotIcon'
+import { CreateBotDialog } from '@/components/Bots/CreateBotDialog'
+import { useBots } from '@/hooks/queries/useBots'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useForkFlow } from '@/hooks/useForkFlow'
 import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
@@ -2112,6 +2115,14 @@ export function SessionList(props: {
     const [customStart, setCustomStart] = useState('')
     const [customEnd, setCustomEnd] = useState('')
     const [markAllReadOpen, setMarkAllReadOpen] = useState(false)
+    // The way to make a bot is the robot icon in the toolbar, not a row in
+    // the list. The dialog lives here, not in `BotsSection`: that block
+    // steps aside while the owner filters or searches.
+    const [createBotOpen, setCreateBotOpen] = useState(false)
+    const botsList = useBots(api)
+    // Once the hub has answered the list, which also says it has bot routes
+    // at all. Not before: the icon must not flash in on a hub without them.
+    const botsSupported = api != null && !botsList.isLoading && !botsList.unsupported && botsList.error == null
     const quickUnpinFocusRef = useRef<QuickUnpinFocusTarget | null>(null)
     // Actions-box width is the real icon budget (#2039). Measuring the full
     // row and subtracting a guessed search reserve left empty space after More.
@@ -3714,6 +3725,26 @@ export function SessionList(props: {
                                         )
                                     })
                                 }
+                                // New bot: the sibling of New, and rarer, so it moves into More first.
+                                if (renderHeader && botsSupported) {
+                                    definedSlots.push({
+                                        id: 'bots',
+                                        keep: 4.5,
+                                        widthPx: slotWidth('bots', TOOLBAR_ICON_PX),
+                                        node: (
+                                            <button
+                                                type="button"
+                                                onClick={() => { setCreateBotOpen(true) }}
+                                                className="session-list-new-button flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-link)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                                title={t('bots.new')}
+                                                aria-label={t('bots.new')}
+                                                data-testid="session-list-new-bot-button"
+                                            >
+                                                <BotIcon className="h-5 w-5" />
+                                            </button>
+                                        )
+                                    })
+                                }
                                 for (const extra of props.toolbarExtras ?? []) {
                                     definedSlots.push({
                                         id: extra.id,
@@ -3828,6 +3859,17 @@ export function SessionList(props: {
                 </div>
             ) : null}
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
+            {botsSupported ? (
+                <CreateBotDialog
+                    isOpen={createBotOpen}
+                    onClose={() => { setCreateBotOpen(false) }}
+                    api={api}
+                    onCreated={(bot) => {
+                        setCreateBotOpen(false)
+                        if (bot.homeChatSessionId) props.onSelect(bot.homeChatSessionId)
+                    }}
+                />
+            ) : null}
             <QuickUnpinFocusContext.Provider value={quickUnpinFocusRef}>
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
                 {/* The bots' home chats are ordinary rows below; this is the shortcut to them, with what waits on the owner. */}
