@@ -569,11 +569,32 @@ export function getPreviousSessionVisibleCount(current: number, step: number): n
 // so agent output and liveness never reorder the list.
 const LEGACY_LIST_ORDER: Pick<SessionListView, 'sort' | 'activeFirst'> = { sort: 'last-message', activeFirst: false }
 
+/**
+ * Rows the hub is still answering about. Until it answers, such a row ranks as
+ * what it was before the click: an archive in flight as the running session it
+ * was, a reopen in flight as the stopped one. So the row stays where the user put
+ * it down, grey or spinning, and it is the answer, not the click, that moves it.
+ */
+export type SettlingSessions = { archiving?: ReadonlySet<string>; reopening?: ReadonlySet<string> }
+const NO_SESSIONS: ReadonlySet<string> = new Set()
+
 export function groupSessionsByDirectory(
     sessions: SessionSummary[],
-    order: Pick<SessionListView, 'sort' | 'activeFirst'> = LEGACY_LIST_ORDER
+    order: Pick<SessionListView, 'sort' | 'activeFirst'> = LEGACY_LIST_ORDER,
+    settling: SettlingSessions = {}
 ): SessionGroup[] {
     const compare = createSessionComparator(order)
+    const archiving = settling.archiving ?? NO_SESSIONS
+    const reopening = settling.reopening ?? NO_SESSIONS
+    // With archived rows: an archive in flight is not one yet, a reopen in flight still is.
+    const withArchived = (session: SessionSummary) => archiving.has(session.id)
+        ? false
+        : reopening.has(session.id) || session.metadata?.lifecycleState === 'archived'
+    // The comparator ranks on `active`: a held row is ranked on a copy that says what it was.
+    const asRanked = (session: SessionSummary): SessionSummary => archiving.has(session.id)
+        ? { ...session, active: true }
+        : reopening.has(session.id) ? { ...session, active: false } : session
+    const runs = (session: SessionSummary) => archiving.has(session.id) || (session.active && !reopening.has(session.id))
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
@@ -598,16 +619,16 @@ export function groupSessionsByDirectory(
                 // sort modes — archiving is an explicit "I'm done with this"
                 // signal, not an activity change (the session may already be
                 // idle, so the active/inactive rank never moves it).
-                const archivedA = a.metadata?.lifecycleState === 'archived'
-                const archivedB = b.metadata?.lifecycleState === 'archived'
+                const archivedA = withArchived(a)
+                const archivedB = withArchived(b)
                 if (archivedA !== archivedB) return archivedA ? 1 : -1
-                return compare(a, b)
+                return compare(asRanked(a), asRanked(b))
             })
             const latestOrderAt = group.sessions.reduce(
                 (max, s) => Math.max(max, getSessionSortKey(s, order.sort)),
                 -Infinity
             )
-            const hasActiveSession = group.sessions.some(s => s.active)
+            const hasActiveSession = group.sessions.some(runs)
             const hasPinnedSession = group.sessions.some(s => s.pinned)
             const displayName = getSessionProjectLabel(group.directory)
 
@@ -2303,6 +2324,11 @@ export function SessionList(props: {
     // handed to the rows, so a reopen started from anywhere (menu, toast,
     // conversation view, a send to an inactive session) shows on its row.
     const reopeningSessionIds = usePendingSessionIds(sessionReopenMutationScope)
+    // While the hub answers, those rows keep their place in the order as well.
+    const settling = useMemo<SettlingSessions>(
+        () => ({ archiving: archivingSessionIds, reopening: reopeningSessionIds }),
+        [archivingSessionIds, reopeningSessionIds]
+    )
     const listedSessions = useMemo(
         () => showPendingArchives(props.sessions, archivingSessionIds),
         [props.sessions, archivingSessionIds]
@@ -2398,8 +2424,8 @@ export function SessionList(props: {
         return truncated
     }, [contentSearchResponse])
     const allGroups = useMemo(
-        () => groupSessionsByDirectory(allSessions),
-        [allSessions]
+        () => groupSessionsByDirectory(allSessions, undefined, settling),
+        [allSessions, settling]
     )
     const machineFilters = useMemo(
         () => groupByMachine(allGroups, resolveMachineLabel),
@@ -2702,14 +2728,15 @@ export function SessionList(props: {
                 }),
                 // Search keeps its own contract: relevance first, then the stable
                 // last-message order for ties, whatever the list view says.
-                hasTextQuery ? undefined : listView
+                hasTextQuery ? undefined : listView,
+                settling
             ), groupSettings)
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
             return sortPinnedGroupsFirst(grouped, groupSettings)
         },
-        [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listView, groupSettings]
+        [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listView, groupSettings, settling]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
@@ -2721,16 +2748,17 @@ export function SessionList(props: {
     const allDirectoryGroups = useMemo(
         () => sortPinnedGroupsFirst(applyGroupDisplayNames(groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => !session.globalPinned),
-            listView
+            listView,
+            settling
         ), groupSettings), groupSettings),
-        [machineFilteredSessions, listView, groupSettings]
+        [machineFilteredSessions, listView, groupSettings, settling]
     )
     // Unfiltered project membership for group-wide actions (archive all). A
     // session whose archive is still being confirmed already reads as archived
     // here, so "Archive all" does not ask for it a second time.
     const projectSessionsByKey = useMemo(
-        () => new Map(groupSessionsByDirectory(listedSessions).map((group) => [group.key, group.sessions])),
-        [listedSessions]
+        () => new Map(groupSessionsByDirectory(listedSessions, undefined, settling).map((group) => [group.key, group.sessions])),
+        [listedSessions, settling]
     )
     const actionOnlyGroups = useMemo(() => {
         if (effectivePinInProgressMode === 'off') {

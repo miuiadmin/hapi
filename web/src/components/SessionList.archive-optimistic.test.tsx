@@ -165,6 +165,42 @@ describe('session row archive is shown at once', () => {
         expect(toasts.map(toast => toast.title)).toEqual(['Session archived'])
     })
 
+    // "Active first" (the default view) lists running groups above stopped ones. From the
+    // click on the row already reads as archived, which would send its group down to the
+    // stopped ones before the grey row is seen.
+    it('keeps the row where it is, grey, until the hub answers; then the list settles', async () => {
+        const archive = pendingArchive()
+        let archived = false
+        const api = {
+            archiveSession: vi.fn(() => archive.promise),
+            getSessions: vi.fn(async () => ({
+                sessions: [
+                    makeSession({ id: 'a', createdAt: 3_000, active: !archived, metadata: { path: '/work/app', name: 'Title a', lifecycleState: archived ? 'archived' : 'running' } }),
+                    makeSession({ id: 'b', createdAt: 1_000, metadata: { path: '/work/old', name: 'Title b' } }),
+                ],
+            })),
+        }
+        setup([
+            makeSession({ id: 'a', createdAt: 3_000 }),
+            makeSession({ id: 'b', createdAt: 1_000, metadata: { path: '/work/old', name: 'Title b' } }),
+        ], api)
+        const groupOrder = () => [...document.querySelectorAll('[data-session-scroll-anchor] > [role="button"][aria-expanded]')]
+            .map((header) => (header.textContent ?? '').includes('work/app') ? 'work/app' : (header.textContent ?? '').includes('work/old') ? 'work/old' : 'other')
+            .filter((name) => name !== 'other')
+        // Both run; the row's group is the newer one.
+        expect(groupOrder()).toEqual(['work/app', 'work/old'])
+
+        fireEvent.click(lookOf('a').archiveButton!)
+        await waitFor(() => expect(api.archiveSession).toHaveBeenCalledWith('a'))
+        expect(lookOf('a')).toMatchObject({ grey: true })
+        expect(groupOrder()).toEqual(['work/app', 'work/old'])
+
+        archived = true
+        await act(async () => archive.resolve())
+        await waitFor(() => expect(api.getSessions).toHaveBeenCalled())
+        await waitFor(() => expect(groupOrder()).toEqual(['work/old', 'work/app']))
+    })
+
     it('keeps the group open when the archive fails, with the row running again', async () => {
         const archive = pendingArchive()
         const api = { archiveSession: vi.fn(() => archive.promise) }
@@ -179,17 +215,31 @@ describe('session row archive is shown at once', () => {
         expect(groupExpanded()).toBe(true)
     })
 
-    it('sinks the row with the archived sessions and takes it out of the Active lens at once', async () => {
+    it('takes the row out of the Active lens at once, and sinks it with the archived sessions once the hub answers', async () => {
         localStorage.setItem('hapi-session-list-status', 'all')
         const archive = pendingArchive()
-        const api = { archiveSession: vi.fn(() => archive.promise) }
-        setup([makeSession({ id: 'top', updatedAt: 20 }), makeSession({ id: 'older', updatedAt: 10 })], api)
+        // What the hub lists: `archivedId` is the session it has archived, once it has.
+        let archivedId: string | null = null
+        const listed = () => ['top', 'older'].map((id) => makeSession({
+            id, updatedAt: id === 'top' ? 20 : 10, active: archivedId !== id,
+            metadata: { path: '/work/app', name: `Title ${id}`, lifecycleState: archivedId === id ? 'archived' : 'running' },
+        }))
+        const api = { archiveSession: vi.fn(() => archive.promise), getSessions: vi.fn(async () => ({ sessions: listed() })) }
+        setup(listed(), api)
         const [first, second] = rowOrder()
         expect(rowOrder()).toHaveLength(2)
 
         fireEvent.click(lookOf(first!).archiveButton!)
         await waitFor(() => expect(api.archiveSession).toHaveBeenCalledWith(first))
-        expect(rowOrder()).toEqual([second, first])
+        // In place and grey until the hub answers: the click changes the look, the answer moves the row.
+        expect(lookOf(first!)).toMatchObject({ grey: true })
+        expect(rowOrder()).toEqual([first, second])
+
+        archivedId = first!
+        await act(async () => archive.resolve())
+        // Still grey, now on the hub's own record, which says archived: the row sinks with the archived sessions.
+        await waitFor(() => expect(lookOf(first!)).toMatchObject({ grey: true }))
+        await waitFor(() => expect(rowOrder()).toEqual([second, first]))
 
         cleanup()
         localStorage.setItem('hapi-session-list-status', 'active')

@@ -1265,3 +1265,56 @@ describe('groupSessionsByDirectory archived sink', () => {
         expect(groups[0]!.sessions.map((session) => session.id)).toEqual(['older-input', 'newest-input'])
     })
 })
+
+// "Active first" (the default view) lists running groups above stopped ones, and an
+// archived row sinks to the bottom of its group. A row the hub is still answering
+// about keeps its place until it answers.
+describe('groupSessionsByDirectory keeps a row in place while the hub answers', () => {
+    const activeFirst = { sort: 'last-message', activeFirst: true } as const
+    const session = (id: string, path: string, overrides: Partial<SessionSummary> = {}) =>
+        makeSession({ id, metadata: { path }, ...overrides })
+    const directories = (sessions: SessionSummary[], settling?: Parameters<typeof groupSessionsByDirectory>[2]) =>
+        groupSessionsByDirectory(sessions, activeFirst, settling).map((group) => group.directory)
+
+    it('keeps the group of an archive in flight among the running groups until the hub answers', () => {
+        const other = session('other', '/old', { active: true, createdAt: 1_000 })
+        const stopped = session('stopped', '/stopped', { createdAt: 500 })
+        // The newest group holds one running session.
+        expect(directories([session('done', '/new', { active: true, createdAt: 3_000 }), other, stopped]))
+            .toEqual(['/new', '/old', '/stopped'])
+
+        // From the click on the row already reads as archived.
+        const clicked = session('done', '/new', { active: false, createdAt: 3_000, metadata: { path: '/new', lifecycleState: 'archived' } })
+        expect(directories([clicked, other, stopped])).toEqual(['/old', '/new', '/stopped'])
+        expect(directories([clicked, other, stopped], { archiving: new Set(['done']) })).toEqual(['/new', '/old', '/stopped'])
+        // Only the row being archived is held.
+        expect(directories([clicked, other, stopped], { archiving: new Set(['some-other']) })).toEqual(['/old', '/new', '/stopped'])
+    })
+
+    it('does not sink an archive in flight below the other rows of its group', () => {
+        const clicked = session('done', '/proj', { active: false, createdAt: 9_000, metadata: { path: '/proj', lifecycleState: 'archived' } })
+        const mate = session('mate', '/proj', { active: true, createdAt: 5_000 })
+        const order = (settling?: Parameters<typeof groupSessionsByDirectory>[2]) =>
+            groupSessionsByDirectory([clicked, mate], activeFirst, settling)[0]!.sessions.map((row) => row.id)
+        expect(order()).toEqual(['mate', 'done'])
+        expect(order({ archiving: new Set(['done']) })).toEqual(['done', 'mate'])
+    })
+
+    it('keeps the group of a reopen in flight among the stopped groups until the hub answers', () => {
+        const running = session('other', '/old', { active: true, createdAt: 1_000 })
+        const back = (active: boolean) => session('back', '/stopped', { active, createdAt: 5_000, metadata: { path: '/stopped', lifecycleState: 'archived' } })
+        expect(directories([running, back(false)])).toEqual(['/old', '/stopped'])
+        // The hub can report the session running (a push) before its answer to the request arrives.
+        expect(directories([running, back(true)])).toEqual(['/stopped', '/old'])
+        expect(directories([running, back(true)], { reopening: new Set(['back']) })).toEqual(['/old', '/stopped'])
+    })
+
+    it('keeps a reopen in flight with the archived rows, even once the hub no longer calls it archived', () => {
+        const mate = session('mate', '/proj', { createdAt: 1_000 })
+        const back = session('back', '/proj', { createdAt: 9_000, metadata: { path: '/proj' } })
+        const order = (settling?: Parameters<typeof groupSessionsByDirectory>[2]) =>
+            groupSessionsByDirectory([back, mate], { sort: 'last-message', activeFirst: false }, settling)[0]!.sessions.map((row) => row.id)
+        expect(order()).toEqual(['back', 'mate'])
+        expect(order({ reopening: new Set(['back']) })).toEqual(['mate', 'back'])
+    })
+})

@@ -231,6 +231,32 @@ describe('session row reopen progress', () => {
         await waitFor(() => expect(header().getAttribute('aria-expanded')).toBe('false'))
     })
 
+    // From elsewhere the reopen finds the row down with the stopped groups ("Active first").
+    it('keeps the row where it is, spinning, until the hub answers; then it moves up with the running ones', async () => {
+        const reopen = pendingReopen()
+        const api = { reopenSession: vi.fn(() => reopen.promise) }
+        function Driver() {
+            const { reopenSession } = useSessionActions(api as unknown as ApiClient, 'a')
+            return <button type="button" onClick={() => void reopenSession().catch(() => {})}>reopen from elsewhere</button>
+        }
+        setup([
+            makeSession({ id: 'a', active: false, createdAt: 3_000, hasConversationContent: true, metadata: { path: '/work/app', name: 'Title a', lifecycleState: 'archived', agentSessionId: 'agent-a' } }),
+            makeSession({ id: 'b', createdAt: 1_000, active: true, metadata: { path: '/work/old', name: 'Title b' } }),
+        ], api, <Driver />, null)
+        const groupOrder = () => [...document.querySelectorAll('[data-session-scroll-anchor] > [role="button"][aria-expanded]')]
+            .map((header) => (header.textContent ?? '').includes('work/app') ? 'work/app' : (header.textContent ?? '').includes('work/old') ? 'work/old' : 'other')
+            .filter((name) => name !== 'other')
+        expect(groupOrder()).toEqual(['work/old', 'work/app'])
+
+        fireEvent.click(screen.getByRole('button', { name: 'reopen from elsewhere' }))
+        await waitFor(() => expect(spinnerOf('a')).not.toBeNull())
+        expect(groupOrder()).toEqual(['work/old', 'work/app'])
+
+        await act(async () => reopen.resolve({ ok: true, sessionId: 'a', resumed: true }))
+        await waitFor(() => expect(spinnerOf('a')).toBeNull())
+        await waitFor(() => expect(groupOrder()).toEqual(['work/app', 'work/old']))
+    })
+
     it('shows the spinner for a resume that ran under the reopen key outside the hook', async () => {
         let resolve!: (value: string) => void
         const target = new Promise<string>((done) => { resolve = done })
