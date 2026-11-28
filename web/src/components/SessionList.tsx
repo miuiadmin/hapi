@@ -2764,6 +2764,11 @@ export function SessionList(props: {
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
+        // A row the hub is still answering about stays in sight. From the click on an
+        // archive, and for a reopen started anywhere (the row's menu, a toast, the
+        // conversation view), the row's group is open: the row is seen turning grey, or
+        // spinning, instead of the group folding under the click or hiding the spinner.
+        if (group.sessions.some(session => archivingSessionIds.has(session.id) || reopeningSessionIds.has(session.id))) return false
         return !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
     }
 

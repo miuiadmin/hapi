@@ -47,7 +47,7 @@ function CachedList(props: { api: ApiClient; selectedSessionId?: string | null }
         onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={props.api} />
 }
 
-function setup(sessions: SessionSummary[], api: Record<string, unknown>, extra?: ReactNode) {
+function setup(sessions: SessionSummary[], api: Record<string, unknown>, extra?: ReactNode, selectedSessionId: string | null = 'a') {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } })
     client.setQueryData(queryKeys.sessions, { sessions })
     const fullApi = api as unknown as ApiClient
@@ -58,7 +58,7 @@ function setup(sessions: SessionSummary[], api: Record<string, unknown>, extra?:
                 <I18nProvider>
                     <ToastProbe />
                     {/* Selected so its project group stays open; a group of only inactive rows is folded by default. */}
-                    <CachedList api={fullApi} selectedSessionId="a" />
+                    <CachedList api={fullApi} selectedSessionId={selectedSessionId} />
                     <SessionActionErrorDialog />
                     {extra}
                 </I18nProvider>
@@ -188,6 +188,47 @@ describe('session row reopen progress', () => {
         await act(async () => reopen.resolve({ ok: true, sessionId: 'a', resumed: true }))
         await waitFor(() => expect(spinnerOf('a')).toBeNull())
         await waitFor(() => expect(isGrey('a')).toBe(false))
+    })
+
+    // A group of only archived rows is folded, so a reopen started elsewhere (a toast, the
+    // conversation view) would spin on a row nobody sees.
+    it('opens the row\'s group for a reopen started elsewhere, and keeps it open once the session runs', async () => {
+        const reopen = pendingReopen()
+        const api = { reopenSession: vi.fn(() => reopen.promise) }
+        function Driver() {
+            const { reopenSession } = useSessionActions(api as unknown as ApiClient, 'a')
+            return <button type="button" onClick={() => void reopenSession().catch(() => {})}>reopen from elsewhere</button>
+        }
+        setup([archived('a')], api, <Driver />, null)
+        const header = () => document.querySelector<HTMLElement>('[data-session-scroll-anchor] > [role="button"][aria-expanded]')!
+        expect(header().getAttribute('aria-expanded')).toBe('false')
+
+        fireEvent.click(screen.getByRole('button', { name: 'reopen from elsewhere' }))
+        await waitFor(() => expect(api.reopenSession).toHaveBeenCalledWith('a'))
+        expect(header().getAttribute('aria-expanded')).toBe('true')
+        expect(spinnerOf('a')).not.toBeNull()
+
+        await act(async () => reopen.resolve({ ok: true, sessionId: 'a', resumed: true }))
+        await waitFor(() => expect(spinnerOf('a')).toBeNull())
+        await waitFor(() => expect(isGrey('a')).toBe(false))
+        expect(header().getAttribute('aria-expanded')).toBe('true')
+    })
+
+    it('folds the group again when a reopen started elsewhere fails', async () => {
+        const reopen = pendingReopen()
+        const api = { reopenSession: vi.fn(() => reopen.promise) }
+        function Driver() {
+            const { reopenSession } = useSessionActions(api as unknown as ApiClient, 'a')
+            return <button type="button" onClick={() => void reopenSession().catch(() => {})}>reopen from elsewhere</button>
+        }
+        setup([archived('a')], api, <Driver />, null)
+        const header = () => document.querySelector<HTMLElement>('[data-session-scroll-anchor] > [role="button"][aria-expanded]')!
+        fireEvent.click(screen.getByRole('button', { name: 'reopen from elsewhere' }))
+        await waitFor(() => expect(header().getAttribute('aria-expanded')).toBe('true'))
+
+        await act(async () => reopen.reject(new ApiError('HTTP 409 Conflict: {"error":"Machine is offline","code":"no_machine_online"}', 409, 'no_machine_online', '{"error":"Machine is offline"}')))
+        await screen.findByRole('dialog', { name: 'Could not reopen session' })
+        await waitFor(() => expect(header().getAttribute('aria-expanded')).toBe('false'))
     })
 
     it('shows the spinner for a resume that ran under the reopen key outside the hook', async () => {

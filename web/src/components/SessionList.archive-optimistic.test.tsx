@@ -80,6 +80,13 @@ function lookOf(id: string) {
     }
 }
 
+/** The project group's header: its expanded state is whether the group's rows are shown. */
+function groupExpanded(): boolean {
+    const header = document.querySelector<HTMLElement>('[data-session-scroll-anchor] > [role="button"][aria-expanded]')
+    if (!header) throw new Error('the project group header is not in the list')
+    return header.getAttribute('aria-expanded') === 'true'
+}
+
 function rowOrder(): string[] {
     return [...document.querySelectorAll('[data-session-row-id]')].map((row) => row.getAttribute('data-session-row-id')!)
 }
@@ -132,6 +139,44 @@ describe('session row archive is shown at once', () => {
         expect(rowOf('a')).not.toHaveAttribute('data-archive-pending')
         await waitFor(() => expect(api.getSessions).toHaveBeenCalled())
         expect(lookOf('a')).toMatchObject({ grey: true, presence: 'stopped' })
+    })
+
+    // The list folds a group with no running session. A row that was its group's only
+    // running one already reads as archived from the click on, which would fold the group
+    // at once, under the click, before the grey row is ever seen.
+    it('keeps the row in sight: its group stays open until the hub answers, then folds if nothing runs there', async () => {
+        const archive = pendingArchive()
+        const api = {
+            archiveSession: vi.fn(() => archive.promise),
+            getSessions: vi.fn(async () => ({ sessions: [makeSession({ id: 'a', active: false, hasConversationContent: true, metadata: { path: '/work/app', name: 'Title a', lifecycleState: 'archived' } })] })),
+        }
+        setup([makeSession({ id: 'a' })], api)
+        expect(groupExpanded()).toBe(true)
+
+        fireEvent.click(lookOf('a').archiveButton!)
+        await waitFor(() => expect(api.archiveSession).toHaveBeenCalledWith('a'))
+        expect(lookOf('a')).toMatchObject({ grey: true, presence: 'stopped' })
+        expect(groupExpanded()).toBe(true)
+
+        await act(async () => archive.resolve())
+        await waitFor(() => expect(api.getSessions).toHaveBeenCalled())
+        // The hub's answer: the standing rule takes over, the group without a running session folds.
+        await waitFor(() => expect(groupExpanded()).toBe(false))
+        expect(toasts.map(toast => toast.title)).toEqual(['Session archived'])
+    })
+
+    it('keeps the group open when the archive fails, with the row running again', async () => {
+        const archive = pendingArchive()
+        const api = { archiveSession: vi.fn(() => archive.promise) }
+        setup([makeSession({ id: 'a' })], api)
+        fireEvent.click(lookOf('a').archiveButton!)
+        await waitFor(() => expect(api.archiveSession).toHaveBeenCalled())
+        expect(lookOf('a')).toMatchObject({ grey: true })
+
+        await act(async () => archive.reject(new ApiError('HTTP 503 Service Unavailable: {"error":"cleanup unconfirmed","code":"archive_unconfirmed"}', 503, 'archive_unconfirmed', '{"error":"cleanup unconfirmed"}')))
+        expect(within(await screen.findByRole('dialog')).getByText('cleanup unconfirmed')).toBeInTheDocument()
+        await waitFor(() => expect(lookOf('a')).toMatchObject({ grey: false, presence: 'waiting' }))
+        expect(groupExpanded()).toBe(true)
     })
 
     it('sinks the row with the archived sessions and takes it out of the Active lens at once', async () => {
